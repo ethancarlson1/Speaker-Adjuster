@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    name: Plugin (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            pluginval_zip: pluginval_macOS.zip
+            pluginval_bin: pluginval.app/Contents/MacOS/pluginval
+          - name: Windows
+            os: windows-latest
+            pluginval_zip: pluginval_Windows.zip
+            pluginval_bin: pluginval.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Validate VST3 with pluginval
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval_zip }}"
+          unzip -q pluginval.zip
+          ./${{ matrix.pluginval_bin }} --strictness-level 10 --validate-in-process \
+            "build/AdaptiveRoomEQ_artefacts/Release/VST3/Adaptive Room EQ.vst3"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdaptiveRoomEQ-${{ matrix.name }}
+          path: |
+            build/AdaptiveRoomEQ_artefacts/Release/VST3
+            build/AdaptiveRoomEQ_artefacts/Release/AU
+            build/AdaptiveRoomEQ_artefacts/Release/Standalone
+          if-no-files-found: error

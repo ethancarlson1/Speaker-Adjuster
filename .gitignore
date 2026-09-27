@@ -1,0 +1,22 @@
+# CMake / IDE build trees
+build/
+build-*/
+cmake-build-*/
+out/
+.vs/
+.vscode/
+.idea/
+*.xcodeproj/
+CMakeUserPresets.json
+
+# macOS / Windows cruft
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
