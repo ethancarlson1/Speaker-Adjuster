@@ -42,6 +42,17 @@ def in_band(freqs: np.ndarray, f1: float, f2: float) -> np.ndarray:
     return ((freqs >= f1) & (freqs <= f2)).astype(float)
 
 
+def windowed_response(ir: np.ndarray, fs: float, cfg: AnalysisConfig = AnalysisConfig()) -> tuple[np.ndarray, np.ndarray, int]:
+    """|H|^2 of a known IR (e.g. simulator ground truth) through exactly the
+    window a capture uses, around its own peak. Returns (freqs, power, peak index)."""
+    w, n_pre = ir_window(cfg.window, fs)
+    nfft = response_nfft(cfg.window, fs)
+    padded = np.concatenate([np.zeros(n_pre), ir, np.zeros(len(w))])
+    pk = int(np.argmax(np.abs(padded)))
+    power = np.abs(np.fft.rfft(padded[pk - n_pre:pk - n_pre + len(w)] * w, nfft)) ** 2
+    return np.fft.rfftfreq(nfft, 1 / fs), power, pk - n_pre
+
+
 def analyze_sweep_capture(name: str, recordings: list[np.ndarray], sweep_cfg: SweepConfig,
                           cfg: AnalysisConfig = AnalysisConfig(),
                           sweep: np.ndarray | None = None) -> Capture:

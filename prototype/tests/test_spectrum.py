@@ -59,6 +59,14 @@ def test_weights_exclude_bins():
     assert out[0] == pytest.approx(1.0)
 
 
+def test_zero_weight_nan_bins_do_not_poison_neighbours():
+    p = np.ones_like(FREQS)
+    p[FREQS < 20] = np.nan
+    w = np.where(FREQS < 20, 0.0, 1.0)
+    out = spectrum.smooth_power(FREQS, p, 3, GRID, w)
+    assert np.allclose(out, 1.0)
+
+
 def test_rebin_preserves_level():
     fine = np.fft.rfftfreq(2 * NFFT, 1 / FS)
     p = 1 + 0.5 * np.sin(fine / 300)

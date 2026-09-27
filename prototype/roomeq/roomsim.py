@@ -27,6 +27,7 @@ class RoomSpec:
     ceiling: tuple[float, ...] = (0.45, 0.55, 0.60, 0.65, 0.65, 0.65)
     max_order: int = 3
     n_rays: int = 20000
+    seed: int = 1               # ray tracing is random; seeded so runs are repeatable
 
 
 # Audience-area positions at varied distance and off-axis, none on the centre line (x = 6).
@@ -97,6 +98,7 @@ def _room_rirs(room: RoomSpec, positions: tuple[tuple[float, float, float], ...]
     sim.set_ray_tracing(receiver_radius=0.5, n_rays=room.n_rays, energy_thres=1e-7)
     sim.add_source(list(room.source))
     sim.add_microphone_array(np.array(positions, dtype=float).T)
+    pra.random.seed(room.seed)
     sim.compute_rir()
     return tuple(np.asarray(sim.rir[m][0]) for m in range(len(positions)))
 

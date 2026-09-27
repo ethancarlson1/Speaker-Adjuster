@@ -12,12 +12,10 @@ PLAY = sweep.build_playback(CFG, SWEEP)
 GRID = spectrum.log_freq_grid(40, 16000, 24)
 
 
-def truth_power(sim, pos, nfft):
+def truth_power(sim, pos):
     """Linear system response through the same analysis window as a capture."""
-    w, n_pre = spectrum.ir_window(capture.AnalysisConfig().window, CFG.fs)
-    h = np.concatenate([np.zeros(n_pre), sim.linear_ir(pos)])
-    pk = int(np.argmax(np.abs(h)))
-    return np.abs(np.fft.rfft(h[pk - n_pre:pk - n_pre + len(w)] * w, nfft)) ** 2, pk - n_pre
+    _, power, pk = capture.windowed_response(sim.linear_ir(pos), CFG.fs)
+    return power, pk
 
 
 def smoothed_db(freqs, power, fraction=6, weights=None):
@@ -33,7 +31,7 @@ def measure(sim, positions, noise, seed, repeats=2):
 def test_single_capture_matches_truth_and_delay(sim):
     caps = measure(sim, range(len(sim.positions)), roomsim.NoiseSpec(), seed=10)
     for pos, cap in enumerate(caps):
-        truth, pk = truth_power(sim, pos, 2 * (len(cap.freqs) - 1))
+        truth, pk = truth_power(sim, pos)
         err = smoothed_db(cap.freqs, cap.power) - smoothed_db(cap.freqs, truth)
         assert np.max(np.abs(err)) < 0.6, f"P{pos + 1}"
         assert cap.delays_ms[0] == pytest.approx(1000 * pk / CFG.fs, abs=1000 / CFG.fs)
@@ -45,8 +43,7 @@ def test_three_position_average_matches_truth_in_noisy_room(sim):
     caps = measure(sim, (0, 1, 2), noise, seed=11)
     avg = averaging.power_average(caps[0].freqs, [c.power for c in caps],
                                   [averaging.band_mask_weights(c.freqs, c.grade) for c in caps])
-    nfft = 2 * (len(caps[0].freqs) - 1)
-    truths = [truth_power(sim, p, nfft)[0] for p in (0, 1, 2)]
+    truths = [truth_power(sim, p)[0] for p in (0, 1, 2)]
     ref = averaging.power_average(caps[0].freqs, truths, [np.ones_like(truths[0])] * 3)
     err = smoothed_db(avg.freqs, avg.power) - smoothed_db(ref.freqs, ref.power)
     assert np.max(np.abs(err)) < 1.0

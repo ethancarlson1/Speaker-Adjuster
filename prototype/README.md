@@ -5,7 +5,7 @@ A Python (NumPy/SciPy) reference implementation of the Phase 1 measurement engin
 ```sh
 pip install -r requirements.txt
 pytest                      # ~20 s
-python make_plots.py        # writes plots/*.png
+python make_plots.py        # regenerates the review plots in plots/
 ```
 
 ## Modules (`roomeq/`)

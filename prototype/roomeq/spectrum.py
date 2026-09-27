@@ -60,7 +60,9 @@ def smooth_power(freqs: np.ndarray, power: np.ndarray, fraction: float | None,
             return np.where(w[idx] > 0, power[idx], np.nan)
 
     edges = np.concatenate([[-0.5 * df], (np.arange(len(power)) + 0.5) * df])
-    cum_wp = np.concatenate([[0.0], np.cumsum(w * power) * df])
+    # Zero-weight bins may hold NaN (e.g. outside the measured band); keep them out of the sums.
+    wp = np.where(w > 0, w * power, 0.0)
+    cum_wp = np.concatenate([[0.0], np.cumsum(wp) * df])
     cum_w = np.concatenate([[0.0], np.cumsum(w) * df])
 
     half = 2.0 ** (1.0 / (2.0 * fraction))
