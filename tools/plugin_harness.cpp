@@ -717,8 +717,12 @@ int main (int argc, char** argv)
             check (proc.saveCustomTarget ("Harness test target").wasOk(), "custom target saved");
             const auto file = AdaptiveRoomEQProcessor::getTargetsFolder().getChildFile ("Harness test target.json");
             const auto saved = proc.getCustomTarget();
+            check (std::abs (saved.points[1].second - std::round (saved.points[1].second * 100.0) / 100.0) < 1e-12,
+                   "saved at 0.01 dB");
             proc.setCustomTarget ({ "Custom", { { 1000.0, 0.0 } } });
-            check (proc.loadTarget (file).wasOk() && proc.getCustomTarget().points == saved.points, "and loaded back");
+            check (proc.loadTarget (file).wasOk(), "target file loads");
+            check (proc.getCustomTarget().points == saved.points && proc.getCustomTarget().name == "Harness test target",
+                   "and gives back exactly the saved points");
             file.deleteFile();
             setParam (proc, "target", 0.0f);
         }

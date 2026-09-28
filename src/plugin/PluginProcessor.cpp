@@ -415,11 +415,18 @@ juce::Result AdaptiveRoomEQProcessor::saveCustomTarget (const juce::String& name
     const auto clean = juce::File::createLegalFileName (name.trim());
     if (clean.isEmpty())
         return juce::Result::fail ("Give the target a name");
+    // Saved at 0.1 Hz / 0.01 dB (plenty for a target), written as short decimals
+    // so the file reads back exactly, on every platform; the session keeps the
+    // same rounded points.
     auto target = getCustomTarget();
     target.name = name.trim().toStdString();
     juce::Array<juce::var> points;
-    for (const auto& [f, g] : target.points)
+    for (auto& [f, g] : target.points)
+    {
+        f = std::round (f * 10.0) / 10.0;
+        g = std::round (g * 100.0) / 100.0;
         points.add (juce::Array<juce::var> { f, g });
+    }
     auto* obj = new juce::DynamicObject();
     obj->setProperty ("name", name.trim());
     obj->setProperty ("points", points);
@@ -427,7 +434,7 @@ juce::Result AdaptiveRoomEQProcessor::saveCustomTarget (const juce::String& name
     if (! folder.createDirectory())
         return juce::Result::fail ("Couldn't create " + folder.getFullPathName());
     const auto file = folder.getChildFile (clean + ".json");
-    if (! file.replaceWithText (juce::JSON::toString (juce::var (obj))))
+    if (! file.replaceWithText (juce::JSON::toString (juce::var (obj), false, 2)))
         return juce::Result::fail ("Couldn't write " + file.getFullPathName());
     setCustomTarget (target);
     return juce::Result::ok();
