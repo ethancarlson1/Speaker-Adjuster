@@ -96,13 +96,29 @@ jobs:
           name: harness-snapshot-${{ matrix.name }}
           path: harness-${{ matrix.name }}.png
 
+      # upload-artifact drops file permissions, which would leave the macOS
+      # binaries non-executable. ditto zips keep permissions and bundle metadata.
+      - name: Package macOS build
+        if: runner.os == 'macOS'
+        run: |
+          mkdir dist
+          cd build/AdaptiveRoomEQ_artefacts/Release
+          ditto -c -k --keepParent "VST3/Adaptive Room EQ.vst3" "$GITHUB_WORKSPACE/dist/Adaptive Room EQ.vst3.zip"
+          ditto -c -k --keepParent "AU/Adaptive Room EQ.component" "$GITHUB_WORKSPACE/dist/Adaptive Room EQ.component.zip"
+          ditto -c -k --keepParent "Standalone/Adaptive Room EQ.app" "$GITHUB_WORKSPACE/dist/Adaptive Room EQ.app.zip"
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp -r "build/AdaptiveRoomEQ_artefacts/Release/VST3/Adaptive Room EQ.vst3" dist/
+          cp "build/AdaptiveRoomEQ_artefacts/Release/Standalone/Adaptive Room EQ.exe" dist/
+
       - name: Upload build
         if: runner.os != 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: AdaptiveRoomEQ-${{ matrix.name }}
-          path: |
-            build/AdaptiveRoomEQ_artefacts/Release/VST3
-            build/AdaptiveRoomEQ_artefacts/Release/AU
-            build/AdaptiveRoomEQ_artefacts/Release/Standalone
+          path: dist
           if-no-files-found: error

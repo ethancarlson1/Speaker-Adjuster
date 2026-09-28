@@ -17,6 +17,61 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 
 Measurements are saved with the host session.
 
+## Trying it out
+
+### 1. Get a build
+
+Download from the latest green CI run (Actions → CI → the run → **Artifacts**, requires a GitHub login), or build it yourself (see [Building](#building)).
+
+- **macOS (`AdaptiveRoomEQ-macOS`):** unzip the artifact, then unzip the bundles inside it. Copy them into place:
+  - `Adaptive Room EQ.vst3` → `~/Library/Audio/Plug-Ins/VST3/`
+  - `Adaptive Room EQ.component` → `~/Library/Audio/Plug-Ins/Components/`
+  - `Adaptive Room EQ.app` → wherever you like
+
+  The builds aren't notarized, so clear macOS's download quarantine and refresh the AU cache:
+
+  ```sh
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"Adaptive Room EQ.vst3" \
+      ~/Library/Audio/Plug-Ins/Components/"Adaptive Room EQ.component" "/path/to/Adaptive Room EQ.app"
+  killall -9 AudioComponentRegistrar
+  auval -v aufx Areq Ardv        # should end with "AU VALIDATION SUCCEEDED"
+  ```
+
+- **Windows (`AdaptiveRoomEQ-Windows`):**
+  - Copy the `Adaptive Room EQ.vst3` folder to `C:\Program Files\Common Files\VST3\`.
+  - `Adaptive Room EQ.exe` is the standalone app. It isn't signed, so SmartScreen may ask you to confirm the first time you run it.
+
+### 2. Loopback check (no PA needed, 5 minutes)
+
+Patch an interface output into the mic input with a cable:
+- **Plugin:** the output the sweep plays on, into the input you route to the sidechain.
+- **Standalone app:** output 1, into input 3.
+
+Press **Measure position**. You should get **PASS** in every band. Expect a nearly flat curve (the interface's own response), and a delay equal to your interface's round-trip latency (a few ms). If that works, recording, deconvolution and timing are all behaving.
+
+### 3. Desk check
+
+Put a small speaker and the measurement mic about 1 m apart and measure. Then check two things:
+- **Delay:** it should be the loopback delay plus about 2.9 ms per metre.
+- **Repeatability:** measuring the same spot twice should give near-identical curves.
+
+### 4. In a DAW
+
+Any host that can feed a live input to a plugin sidechain works. Reaper is the most flexible:
+1. Put the plugin on the track (or master) that feeds the PA. Set that track to 4 channels.
+2. Record-arm the mic's input track with monitoring on.
+3. Add a send from the mic track (1/2 → 3/4) to the plugin track. Reaper maps channels 3/4 to the plugin's sidechain.
+
+In Logic, choose the mic's input or track from the AU's **Side Chain** menu. The plugin's header shows "Mic not connected" until the sidechain is live.
+
+### 5. On a real PA
+
+This is Phase 1's "done when" test.
+- Start with **Sweep level** around −30 dBFS and the amps turned down. Bring it up until captures grade PASS, with the mic meter well below 0 dBFS.
+- Measure 3 positions and look at the average.
+- Then measure the same spots with REW or Smaart (same mic, 1/6-octave smoothing, RMS/power average with SPL alignment) and compare. They should agree within a couple of dB.
+- Measure a second time with the plugin to check it's repeatable.
+
 ## Layout
 
 | Path | What |
