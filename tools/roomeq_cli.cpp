@@ -5,6 +5,9 @@
 // Recordings are raw little-endian float64 files.
 //
 //   roomeq_cli sweep   --fs 48000 --duration 5 [--level -12] --out sweep.f64
+//   roomeq_cli loudness-plan --fs 48000 --ref 95
+//   roomeq_cli track --fs 48000 --in output.f64 [--mic mic.f64] [--speed 5] [--block 512]
+//   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
 //                      --position P1=a.f64,b.f64 [--position ...]
 //                      [--program P2=reference.f64:mic.f64] [--exclude P1]
@@ -17,6 +20,7 @@
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
+#include "roomeq/loudness.h"
 
 #include <algorithm>
 #include <cctype>
@@ -24,6 +28,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -213,6 +218,55 @@ int run (int argc, char** argv)
     if (args.command == "sweep")
     {
         writeF64 (args.values.at ("out"), roomeq::generateSweep (cfg));
+        return 0;
+    }
+    if (args.command == "loudness-plan")
+    {
+        const auto plan = roomeq::planShelves (args.get ("ref", 95.0), cfg.fs);
+        std::cout << "{\"low_freq\":" << num (plan.lowFreq) << ",\"low_q\":" << num (plan.lowQ)
+                  << ",\"high_freq\":" << num (plan.highFreq) << ",\"high_q\":" << num (plan.highQ)
+                  << ",\"low_gain\":" << numbers ({ plan.lowGain.begin(), plan.lowGain.end() })
+                  << ",\"high_gain\":" << numbers ({ plan.highGain.begin(), plan.highGain.end() }) << "}\n";
+        return 0;
+    }
+    if (args.command == "track")
+    {
+        // The tracker (and a mic tracker following it), block by block as the
+        // plugin runs them; one entry per completed window.
+        const auto toFloat = [] (const std::vector<double>& v) { return std::vector<float> (v.begin(), v.end()); };
+        const auto out = toFloat (readF64 (args.values.at ("in")));
+        const auto hasMic = args.values.count ("mic") > 0;
+        const auto mic = hasMic ? toFloat (readF64 (args.values.at ("mic"))) : std::vector<float> {};
+        roomeq::LoudnessConfig lcfg;
+        lcfg.speedS = args.get ("speed", lcfg.speedS);
+        roomeq::LevelTracker outTracker, micTracker;
+        outTracker.prepare (cfg.fs, lcfg);
+        micTracker.prepare (cfg.fs, lcfg);
+        roomeq::Deadband deadband;
+        const auto block = static_cast<std::size_t> (args.get ("block", 512));
+        std::vector<double> estimates, held, micEstimates;
+        const auto nan = std::numeric_limits<double>::quiet_NaN();
+        for (std::size_t i = 0; i + block <= out.size(); i += block)
+        {
+            const auto windows = outTracker.process (out.data() + i, static_cast<int> (block));
+            if (hasMic)
+                micTracker.process (mic.data() + i, static_cast<int> (block), &outTracker);
+            if (windows > 0)
+            {
+                estimates.push_back (outTracker.hasEstimate() ? outTracker.estimate() : nan);
+                held.push_back (outTracker.hasEstimate() ? deadband.update (outTracker.estimate(), lcfg) : nan);
+                micEstimates.push_back (micTracker.hasEstimate() ? micTracker.estimate() : nan);
+            }
+        }
+        std::cout << "{\"estimates\":" << numbers (estimates) << ",\"held\":" << numbers (held)
+                  << ",\"mic\":" << numbers (micEstimates) << "}\n";
+        return 0;
+    }
+    if (args.command == "transfer-bands")
+    {
+        std::cout << "{\"bands\":"
+                  << numbers (roomeq::transferBandsDb (readF64 (args.values.at ("out")), readF64 (args.values.at ("mic")), cfg.fs))
+                  << "}\n";
         return 0;
     }
     if (args.command != "analyze")
