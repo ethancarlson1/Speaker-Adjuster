@@ -59,7 +59,7 @@ The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the P
 ## Routing notes
 
 - **Plugin:** stereo main in/out carries the program to the PA. The mono **Measurement Mic** sidechain carries the mic. If a host only offers stereo sidechains, the first channel is used.
-- **Standalone app:** JUCE's standalone can't use sidechains, so the app takes three inputs: 1–2 program, 3 mic. JUCE mutes standalone inputs by default to avoid feedback. The app turns that off when its window opens, because the mic has to be heard.
+- **Standalone app:** JUCE's standalone can't use sidechains, so the app takes three inputs: 1–2 program (a reference tap, used only for **Measure from music**), 3 mic. The app only ever outputs the sweep and never passes its inputs to the speakers. That matters because with a single-input device, such as a USB measurement mic, JUCE copies that input to every channel. Because nothing can feed back, the app turns off JUCE's default input mute when its window opens.
 
 ## Licensing note
 

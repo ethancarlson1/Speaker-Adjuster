@@ -64,7 +64,8 @@ public:
 
     // Audio thread. `main` is the stereo main bus, processed in place (it holds
     // the input on entry). `mic` may be null when no mic is connected.
-    void process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept;
+    // Returns true if it wrote the output (a sweep, or silence while stopping one).
+    bool process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept;
 
 private:
     static void finish (CaptureRequest& r, bool cancelled, std::atomic<CaptureRequest*>& active) noexcept;

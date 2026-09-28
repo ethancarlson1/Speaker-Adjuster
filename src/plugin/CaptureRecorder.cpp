@@ -49,21 +49,22 @@ void CaptureRecorder::finish (CaptureRequest& r, bool cancelled, std::atomic<Cap
     r.finished.store (true, std::memory_order_release);   // last access by the audio thread
 }
 
-void CaptureRecorder::process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept
+bool CaptureRecorder::process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept
 {
     auto* r = active.load (std::memory_order_acquire);
     if (r == nullptr)
-        return;
+        return false;
 
     const auto n = static_cast<std::size_t> (numSamples);
 
     if (r->cancelRequested.load (std::memory_order_relaxed))
     {
-        if (r->kind == CaptureRequest::Kind::sweep)
+        const auto wasSweep = r->kind == CaptureRequest::Kind::sweep;
+        if (wasSweep)
             for (int ch = 0; ch < numMainChannels; ++ch)
                 std::fill (main[ch], main[ch] + n, 0.0f);
         finish (*r, true, active);
-        return;
+        return wasSweep;
     }
 
     if (r->kind == CaptureRequest::Kind::sweep)
@@ -91,7 +92,7 @@ void CaptureRecorder::process (float* const* main, int numMainChannels, const fl
                               std::memory_order_relaxed);
         if (r->repeat >= r->repeats)
             finish (*r, false, active);
-        return;
+        return true;
     }
 
     // Program: audio passes through untouched; record the input and the mic.
@@ -110,6 +111,7 @@ void CaptureRecorder::process (float* const* main, int numMainChannels, const fl
     r->samplesDone.store (static_cast<std::int64_t> (r->position), std::memory_order_relaxed);
     if (r->position == r->reference.size())
         finish (*r, false, active);
+    return false;
 }
 
 std::unique_ptr<CaptureRequest> makeSweepRequest (double sampleRate, double seconds, int repeats,

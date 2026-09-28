@@ -135,7 +135,13 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         updatePeak (micPeak, juce::jmax (range.getEnd(), -range.getStart()));
     }
 
-    recorder.process (mainOut.getArrayOfWritePointers(), mainOut.getNumChannels(), mic, numSamples);
+    const auto wroteOutput = recorder.process (mainOut.getArrayOfWritePointers(), mainOut.getNumChannels(), mic, numSamples);
+
+    // The standalone app never passes its inputs to the speakers: with a
+    // single-input device (e.g. a USB measurement mic) JUCE copies that input
+    // to every processor input, which would feed the mic straight back to the PA.
+    if (standalone && ! wroteOutput)
+        mainOut.clear();
 
     updatePeak (outputPeak, mainOut.getMagnitude (0, numSamples));
 }

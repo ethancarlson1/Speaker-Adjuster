@@ -14,8 +14,9 @@
 // there), so it takes a 3-channel main input instead: 1-2 program, 3 mic.
 //
 // Phase 1: the main path passes through, except while a sweep plays (on one
-// speaker; one correction will later be applied to both sides). Analysis
-// never runs on the audio thread.
+// speaker; one correction will later be applied to both sides). The
+// standalone app outputs only the sweep, never its inputs. Analysis never
+// runs on the audio thread.
 class AdaptiveRoomEQProcessor final : public juce::AudioProcessor
 {
 public:

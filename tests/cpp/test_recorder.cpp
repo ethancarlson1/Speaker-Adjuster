@@ -147,6 +147,25 @@ TEST_CASE ("program capture passes audio through and records input and mic")
     CHECK (std::abs (finished->mic[0][48000]) > 0.0f);
 }
 
+TEST_CASE ("process reports when it wrote the output")
+{
+    std::vector<float> l (256, 0.5f), r (256, 0.5f), mic (256, 0.0f);
+    float* main[] = { l.data(), r.data() };
+    CaptureRecorder rec;
+    CHECK_FALSE (rec.process (main, 2, mic.data(), 256));          // idle: untouched
+    CHECK (l[0] == 0.5f);
+
+    REQUIRE (rec.start (makeProgramRequest (48000.0, 1.0)));
+    CHECK_FALSE (rec.process (main, 2, mic.data(), 256));          // program passes through
+    rec.cancel();
+    CHECK_FALSE (rec.process (main, 2, mic.data(), 256));
+    REQUIRE (rec.collectFinished() != nullptr);
+
+    REQUIRE (rec.start (makeSweepRequest (48000.0, 2.0, 1, 1, -12.0)));
+    CHECK (rec.process (main, 2, mic.data(), 256));                // sweep replaces the output
+    CHECK (l[0] == 0.0f);
+}
+
 TEST_CASE ("abortWhileStopped releases a request that never ran")
 {
     CaptureRecorder rec;
