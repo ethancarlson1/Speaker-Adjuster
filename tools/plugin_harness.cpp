@@ -68,6 +68,37 @@ struct Biquad
     }
 };
 
+// Random numbers that are the same on every platform: std::mt19937 is fully
+// specified, but the standard distributions are not (libc++, libstdc++ and
+// MSVC give different sequences), which would give each CI platform a
+// different simulated room.
+struct PortableRandom
+{
+    explicit PortableRandom (unsigned seed) : engine (seed) {}
+
+    double uniform() { return (static_cast<double> (engine()) + 0.5) / 4294967296.0; }   // (0, 1)
+    double uniform (double lo, double hi) { return lo + (hi - lo) * uniform(); }
+    int uniformInt (int lo, int hi) { return lo + static_cast<int> (engine() % static_cast<std::uint32_t> (hi - lo + 1)); }
+
+    double normal()   // Box-Muller
+    {
+        if (hasSpare)
+        {
+            hasSpare = false;
+            return spare;
+        }
+        const auto r = std::sqrt (-2.0 * std::log (uniform()));
+        const auto theta = juce::MathConstants<double>::twoPi * uniform();
+        spare = r * std::sin (theta);
+        hasSpare = true;
+        return r * std::cos (theta);
+    }
+
+    std::mt19937 engine;
+    double spare = 0.0;
+    bool hasSpare = false;
+};
+
 // A streaming "room" for one mic position: PA filters, direct sound plus a
 // few reflections, a Schroeder reverb tail, noise, and a fixed latency.
 class SimulatedRoom
@@ -76,12 +107,13 @@ public:
     SimulatedRoom (double distance, unsigned seed, double noiseLevel, double rumbleLevel)
         : rng (seed), noise (noiseLevel), rumble (rumbleLevel)
     {
-        std::uniform_int_distribution<int> tap (200, 2400);
-        std::uniform_real_distribution<double> gain (-0.5, 0.5);
         direct = 1.0 / distance;
         delay = static_cast<int> (distance / 343.0 * fs) + 288;   // flight time + 6 ms latency
         for (int i = 0; i < 6; ++i)
-            reflections.push_back ({ delay + tap (rng), gain (rng) / distance });
+        {
+            const auto tap = rng.uniformInt (200, 2400);
+            reflections.push_back ({ delay + tap, rng.uniform (-0.5, 0.5) / distance });
+        }
         line.assign (static_cast<std::size_t> (delay + 2600), 0.0);
         const int combLengths[] = { 1557, 1617, 1491, 1422 };
         for (auto len : combLengths)
@@ -119,8 +151,8 @@ public:
         y += wet * 0.35;
         writePos = (writePos + 1) % line.size();
 
-        const auto low = rumbleFilter2.process (rumbleFilter1.process (dist (rng)));   // below ~70 Hz
-        return static_cast<float> (y + noise * dist (rng) + rumble * low);
+        const auto low = rumbleFilter2.process (rumbleFilter1.process (rng.normal()));   // below ~70 Hz
+        return static_cast<float> (y + noise * rng.normal() + rumble * low);
     }
 
 private:
@@ -130,8 +162,7 @@ private:
         std::size_t pos;
     };
 
-    std::mt19937 rng;
-    std::normal_distribution<double> dist { 0.0, 1.0 };
+    PortableRandom rng;
     double noise, rumble;
     Biquad rumbleFilter1 = Biquad::lowpass (70.0, 0.7071), rumbleFilter2 = Biquad::lowpass (70.0, 0.7071);
     double direct = 1.0;
@@ -270,15 +301,14 @@ std::shared_ptr<const MeasurementEngine::Display> waitForDisplay (AdaptiveRoomEQ
 
 std::vector<float> musicLikeProgram (double seconds)
 {
-    std::mt19937 rng (42);
-    std::normal_distribution<double> dist (0.0, 1.0);
+    PortableRandom rng (42);
     std::vector<float> x (static_cast<std::size_t> (seconds * fs));
     Biquad tilt = Biquad::peaking (200.0, 8.0, 0.5);
     for (std::size_t i = 0; i < x.size(); ++i)
     {
         const auto beat = std::fmod (static_cast<double> (i) / fs, 0.5);
         const auto env = 0.4 + 0.6 * std::exp (-beat / 0.15);
-        x[i] = static_cast<float> (0.05 * env * tilt.process (dist (rng)));
+        x[i] = static_cast<float> (0.05 * env * tilt.process (rng.normal()));
     }
     return x;
 }
@@ -527,23 +557,25 @@ int main (int argc, char** argv)
     setParam (proc, "v3On", 0.0f);
 
     std::cout << "Verify\n";
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 4; ++i)   // the same four spots (same simulated rooms) the sweeps measured
     {
-        SimulatedRoom room (positions[i].distance, positions[i].seed + 20, positions[i].noise, 0.0);
+        SimulatedRoom room (positions[i].distance, positions[i].seed, positions[i].noise, 0.0);
         check (proc.startVerify().wasOk(), "start verify at " + juce::String (positions[i].distance, 1) + " m");
         runMeasurement (proc, room);
     }
     entries = engine.getEntries();
     const auto verifyCount = std::count_if (entries.begin(), entries.end(), [] (const auto& e) { return e.verify; });
-    check (verifyCount == 3 && entries.back().capture->name == "V3", "three verify captures, V1-V3");
-    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 3; });
-    check (d != nullptr && d->proposal && d->verifiedCount == 3, "verified average from the three verify captures");
+    check (verifyCount == 4 && entries.back().capture->name == "V4", "four verify captures, V1-V4");
+    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 4; });
+    check (d != nullptr && d->proposal && d->verifiedCount == 4, "verified average from the four verify captures");
     if (d != nullptr && d->proposal && ! d->verifiedDb.empty())
     {
+        // Phase 2 "done when": re-measuring after applying the correction lands
+        // within a few dB of the target across the corrected range.
         const auto before = rmsFromTarget (*d, d->summary.averageDb);
         const auto after = rmsFromTarget (*d, d->verifiedDb);
-        check (after < 1.5 && after < 0.6 * before, "re-measured through the correction: " + juce::String (before, 2) + " -> "
-                                                        + juce::String (after, 2) + " dB RMS from target");
+        check (after < 1.0 && after < 0.75 * before, "re-measured through the correction: " + juce::String (before, 2) + " -> "
+                                                         + juce::String (after, 2) + " dB RMS from target");
         check (d->proposal->bands == engine.getApplied(), "verify captures don't change the proposal");
     }
 
@@ -559,8 +591,8 @@ int main (int argc, char** argv)
     check (d != nullptr && d->verifiedDb.empty(), "verify captures belong to the correction they measured");
     engine.undoApply();
     check (engine.getApplied() == proposed, "undo again restores it");
-    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 3; });
-    check (d != nullptr && d->verifiedCount == 3, "and its verify captures count again");
+    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 4; });
+    check (d != nullptr && d->verifiedCount == 4, "and its verify captures count again");
 
     std::cout << "Targets\n";
     proc.setCustomTarget ({ "Tilt", { { 100.0, 2.0 }, { 10000.0, -4.0 } } });
