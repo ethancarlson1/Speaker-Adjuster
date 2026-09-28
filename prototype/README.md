@@ -65,7 +65,8 @@ Re-measuring the simulated club through the fitted filters lands within 0.3–0.
 
 1. **Calibration:** pink noise plays on both speakers. The C-weighted level at the loudness stage's input (after correction and voicing) is paired with the SPL at the mix position: typed in from a meter (dB C, slow) or read by a calibrated mic. The mic's own level is noted at the same time, so an uncalibrated measurement mic can track SPL later.
 2. **Tracking:** 400 ms C-weighted momentary levels.
-   - The estimate rises with a 1 s time constant, so the boost backs off quickly when it gets louder. It falls with the **speed** setting (5 s), so the boost grows slowly when it gets quieter.
+   - The estimate rises as a 1 s energy average, so the boost backs off quickly when it gets louder. It falls in dB with the **speed** setting (5 s) as its time constant, so the boost grows slowly when it gets quieter: after a 12 dB pull-down it settles in about 13 s.
+   - Rising faster than falling makes it read a fraction of a dB high on music (+0.7 dB in the simulation), which errs towards less boost.
    - Silence, and anything more than 20 dB below the estimate, counts as a pause and holds the estimate. A drop that lasts longer than 8 s is real and is followed.
    - Mic tracking only updates while the plugin's output shows program playing.
 3. **Target:** the ISO 226 contour difference between the current SPL and the reference, `[Lp(f, now) − now] − [Lp(f, ref) − ref]`, zero at or above the reference.

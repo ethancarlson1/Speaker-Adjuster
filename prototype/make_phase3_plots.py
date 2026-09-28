@@ -141,7 +141,7 @@ def plot_tracking():
     ax2.set_xlabel("Time (minutes)")
     ax2.legend(loc="upper left", fontsize=8)
     fig.text(0.01, -0.03, "Grey bands: songs; gaps: 6 s pauses. Calibrated so the first song is the reference. After the "
-             "12 dB pull-down the boost grows over ~15-20 s; after the push back up it backs off within ~2 s.\nThe mic "
+             "12 dB pull-down the boost grows over ~10-15 s; after the push back up it backs off within ~2 s.\nThe mic "
              "estimate only updates while the program plays; crowd noise makes it read slightly high, i.e. a little less boost.",
              color=MUTED, fontsize=8.5)
     save(fig, "13_level_tracking.png")

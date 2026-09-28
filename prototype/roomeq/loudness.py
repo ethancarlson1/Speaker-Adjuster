@@ -12,9 +12,10 @@ SPL and the reference SPL is applied as a low shelf and a high shelf.
   gains against dB below reference). Gains glide; nothing is refitted live.
 - Limits: amount, max low boost, max high boost, and a fixed low-boost
   ceiling nothing can exceed.
-- Tracking: 400 ms C-weighted momentary level; the estimate rises with a
-  ~1 s time constant (boost backs off quickly when it gets louder) and falls
-  with `speed` (boost grows slowly when it gets quieter). Silence, and
+- Tracking: 400 ms C-weighted momentary level; the estimate rises as a ~1 s
+  energy average (boost backs off quickly when it gets louder) and falls in
+  dB with `speed` as the time constant (boost grows slowly when it gets
+  quieter). Silence, and
   anything more than 20 dB below the estimate, is a pause and holds the
   estimate - but a drop that lasts longer than `pause_hold_s` is real and is
   followed.
@@ -237,9 +238,13 @@ class LevelTracker:
                 return False                                     # a pause between songs: hold
         else:
             self.gated_for = 0.0
-        tau = cfg.attack_s if momentary > self.estimate else cfg.speed_s
-        # Smooth in the power domain, so the estimate is an energy average (Leq-like).
-        a = 1 - np.exp(-dt / tau)
-        p = (1 - a) * 10 ** (self.estimate / 10) + a * 10 ** (momentary / 10)
-        self.estimate = 10 * np.log10(p)
+        if momentary > self.estimate:
+            # Rising: energy average (Leq-like), fast, so the boost backs off quickly.
+            a = 1 - np.exp(-dt / cfg.attack_s)
+            self.estimate = 10 * np.log10((1 - a) * 10 ** (self.estimate / 10) + a * 10 ** (momentary / 10))
+        else:
+            # Falling: in dB, with `speed` as the time constant (a 12 dB drop settles
+            # to within 1 dB in ~2.5 x speed; in the power domain it would take ~4x).
+            a = 1 - np.exp(-dt / cfg.speed_s)
+            self.estimate += a * (momentary - self.estimate)
         return True

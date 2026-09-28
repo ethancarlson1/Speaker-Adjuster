@@ -144,7 +144,7 @@ def test_rises_fast_falls_slowly():
     assert first_within_1db < 2.5                                                   # boost backs off quickly
     down = run(tr, pink(40, -26.0, seed=6))
     first_within_1db = np.argmax(np.abs(down - (-26.0)) < 1.0) * block / fs
-    assert 8.0 < first_within_1db < 25.0                                            # and grows back slowly
+    assert 8.0 < first_within_1db < 16.0                                            # and grows back slowly
 
 
 def test_mic_tracking_ignores_the_crowd_in_pauses():
