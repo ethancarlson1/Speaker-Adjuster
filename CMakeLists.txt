@@ -41,7 +41,8 @@ add_library(roomeq_core STATIC
     src/roomeq/noise.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
-    src/roomeq/targets.cpp)
+    src/roomeq/targets.cpp
+    src/roomeq/voicing.cpp)
 target_include_directories(roomeq_core PUBLIC src)
 target_include_directories(roomeq_core SYSTEM PRIVATE ${pocketfft_SOURCE_DIR})
 target_compile_definitions(roomeq_core PRIVATE POCKETFFT_NO_MULTITHREADING)
@@ -76,13 +77,15 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_capture.cpp
         tests/cpp/test_correction.cpp
         tests/cpp/test_dualfft.cpp
+        tests/cpp/test_eq.cpp
         tests/cpp/test_filters.cpp
         tests/cpp/test_grading.cpp
         tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_sweep.cpp
-        src/plugin/CaptureRecorder.cpp)   # real-time recorder is JUCE-free, so it's tested here
+        src/plugin/CaptureRecorder.cpp    # the real-time parts are JUCE-free, so they're tested here
+        src/plugin/EqStages.cpp)
     target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest_headers)
     add_test(NAME roomeq_tests COMMAND roomeq_tests)
 
