@@ -67,8 +67,10 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_capture.cpp
         tests/cpp/test_dualfft.cpp
         tests/cpp/test_grading.cpp
+        tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
-        tests/cpp/test_sweep.cpp)
+        tests/cpp/test_sweep.cpp
+        src/plugin/CaptureRecorder.cpp)   # real-time recorder is JUCE-free, so it's tested here
     target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest::doctest)
     add_test(NAME roomeq_tests COMMAND roomeq_tests)
 
@@ -132,8 +134,12 @@ juce_add_plugin(AdaptiveRoomEQ
 
 target_sources(AdaptiveRoomEQ
     PRIVATE
+        src/plugin/CaptureList.cpp
+        src/plugin/CaptureRecorder.cpp
+        src/plugin/MeasurementEngine.cpp
         src/plugin/PluginEditor.cpp
-        src/plugin/PluginProcessor.cpp)
+        src/plugin/PluginProcessor.cpp
+        src/plugin/ResponseGraph.cpp)
 
 target_include_directories(AdaptiveRoomEQ PRIVATE src)
 
@@ -152,3 +158,36 @@ target_link_libraries(AdaptiveRoomEQ
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# ---------------------------------------------------------------------------
+# Headless harness: runs the real processor + engine against a simulated room,
+# checks the results and renders the editor to a PNG (see tools/plugin_harness.cpp).
+# ---------------------------------------------------------------------------
+if(ARE_BUILD_TESTS)
+    juce_add_console_app(AdaptiveRoomEQ_Harness PRODUCT_NAME "AdaptiveRoomEQ Harness")
+    target_sources(AdaptiveRoomEQ_Harness
+        PRIVATE
+            tools/plugin_harness.cpp
+            src/plugin/CaptureList.cpp
+            src/plugin/CaptureRecorder.cpp
+            src/plugin/MeasurementEngine.cpp
+            src/plugin/PluginEditor.cpp
+            src/plugin/PluginProcessor.cpp
+            src/plugin/ResponseGraph.cpp)
+    target_include_directories(AdaptiveRoomEQ_Harness PRIVATE src)
+    target_compile_definitions(AdaptiveRoomEQ_Harness
+        PRIVATE
+            "JucePlugin_Name=\"${ARE_PRODUCT_NAME}\""
+            JucePlugin_Build_Standalone=0
+            JUCE_MODAL_LOOPS_PERMITTED=1   # lets the harness pump the message loop
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0)
+    target_link_libraries(AdaptiveRoomEQ_Harness
+        PRIVATE
+            roomeq_core
+            juce::juce_audio_utils
+            juce::juce_dsp
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
+endif()

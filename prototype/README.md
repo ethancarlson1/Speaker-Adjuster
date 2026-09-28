@@ -4,9 +4,11 @@ A Python (NumPy/SciPy) reference implementation of the Phase 1 measurement engin
 
 ```sh
 pip install -r requirements.txt
-pytest                      # ~20 s
+pytest                      # ~25 s
 python make_plots.py        # regenerates the review plots in plots/
 ```
+
+**C++ cross-check:** `tests/test_cpp_port.py` runs the C++ port (`roomeq_cli`, built from `src/roomeq`) on the same simulated recordings. It requires every delay, band SNR/level/spread, grade, reason string, offset and curve to match this prototype within 1e-6 dB. Point `ROOMEQ_CLI` at the built binary to run it (CI always does); without it those tests are skipped.
 
 ## Modules (`roomeq/`)
 

@@ -46,13 +46,28 @@ jobs:
             os: macos-latest
             pluginval_zip: pluginval_macOS.zip
             pluginval_bin: pluginval.app/Contents/MacOS/pluginval
+            gui: ""
           - name: Windows
             os: windows-latest
             pluginval_zip: pluginval_Windows.zip
             pluginval_bin: pluginval.exe
+            gui: ""
+          - name: Linux
+            os: ubuntu-latest
+            pluginval_zip: pluginval_Linux.zip
+            pluginval_bin: pluginval
+            gui: xvfb-run -a
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev \
+            libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev xvfb
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -63,15 +78,26 @@ jobs:
       - name: C++ unit tests
         run: ctest --test-dir build -C Release --output-on-failure
 
+      - name: End-to-end harness (processor + engine + UI snapshot)
+        shell: bash
+        run: ${{ matrix.gui }} ./build/AdaptiveRoomEQ_Harness_artefacts/Release/AdaptiveRoomEQ_Harness --out harness-${{ matrix.name }}.png
+
       - name: Validate VST3 with pluginval
         shell: bash
         run: |
           curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval_zip }}"
           unzip -q pluginval.zip
-          ./${{ matrix.pluginval_bin }} --strictness-level 10 --validate-in-process \
+          ${{ matrix.gui }} ./${{ matrix.pluginval_bin }} --strictness-level 10 --validate-in-process \
             "build/AdaptiveRoomEQ_artefacts/Release/VST3/Adaptive Room EQ.vst3"
 
+      - name: Upload UI snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-snapshot-${{ matrix.name }}
+          path: harness-${{ matrix.name }}.png
+
       - name: Upload build
+        if: runner.os != 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: AdaptiveRoomEQ-${{ matrix.name }}
