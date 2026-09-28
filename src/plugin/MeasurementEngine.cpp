@@ -156,6 +156,22 @@ juce::Result MeasurementEngine::startProgram (double sampleRate, double seconds,
     return startRequest (makeProgramRequest (sampleRate, seconds), replaceId, false);
 }
 
+juce::Result MeasurementEngine::startCalibration (double sampleRate, double seconds, double levelDbfs)
+{
+    if (sampleRate <= 0.0)
+        return juce::Result::fail ("Audio isn't running yet");
+    if (recorder.isBusy())
+        return juce::Result::fail ("A measurement is already running");
+    auto request = makeNoiseRequest (sampleRate, seconds, 0, levelDbfs);
+    request->purpose = CaptureRequest::Purpose::calibration;
+    request->allChannels = true;
+    request->throughEq = true;
+    recorder.start (std::move (request));
+    status = "Calibrating";
+    sendChangeMessage();
+    return juce::Result::ok();
+}
+
 juce::Result MeasurementEngine::startRequest (std::unique_ptr<CaptureRequest> request, int replaceId, bool verify)
 {
     if (recorder.isBusy())
@@ -219,6 +235,11 @@ juce::String MeasurementEngine::getStatus() const
         if (r->cancelRequested.load())
             return "Stopping...";
         const auto done = r->samplesDone.load();
+        if (r->purpose == CaptureRequest::Purpose::calibration)
+            return "Calibration noise on both speakers: "
+                   + juce::String (juce::jmin (static_cast<int> (static_cast<double> (done) / r->sampleRate),
+                                               static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)))
+                   + " of " + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)) + " s";
         const auto speaker = juce::String (r->sweepChannel == 0 ? "left" : "right")
                              + (r->throughEq ? " speaker, through the EQ" : " speaker");
         if (r->kind == CaptureRequest::Kind::noise)
@@ -479,7 +500,9 @@ void MeasurementEngine::update()
 
     if (auto finished = recorder.collectFinished())
     {
-        if (finished->cancelled)
+        if (finished->purpose != CaptureRequest::Purpose::capture)
+            status = finished->cancelled ? "Calibration stopped" : "";   // the loudness controller reports it
+        else if (finished->cancelled)
             status = "Measurement stopped";
         else
             analyse (std::move (finished));

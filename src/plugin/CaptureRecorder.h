@@ -20,9 +20,17 @@ struct CaptureRequest
         program    // pass program through, record it and the mic (dual-FFT)
     };
 
+    enum class Purpose
+    {
+        capture,       // becomes a capture in the list
+        calibration    // loudness calibration noise: only played (the loudness stage's tap records)
+    };
+
     Kind kind = Kind::sweep;
+    Purpose purpose = Purpose::capture;
     double sampleRate = 0.0;
     int sweepChannel = 0;                     // 0 = left, 1 = right
+    bool allChannels = false;                 // play on every output (calibration)
     int repeats = 1;
     roomeq::SweepConfig sweepConfig;
     std::vector<float> excitation;            // one take: preroll + sweep + tail, or noise + tail
@@ -78,6 +86,9 @@ public:
         const auto* r = active.load (std::memory_order_acquire);
         return r != nullptr && r->throughEq;
     }
+
+    // Audio thread: whether a measurement is in flight (the loudness stage steps aside).
+    bool isActive() const noexcept { return active.load (std::memory_order_acquire) != nullptr; }
 
 private:
     static void finish (CaptureRequest& r, bool cancelled, std::atomic<CaptureRequest*>& active) noexcept;

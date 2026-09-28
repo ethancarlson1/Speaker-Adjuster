@@ -81,6 +81,9 @@ public:
     juce::Result startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId = -1,
                              bool verify = false);
     juce::Result startProgram (double sampleRate, double seconds, int replaceId = -1);
+    // Loudness calibration: pink noise on both speakers through the EQ. Nothing is
+    // recorded or filed here (the loudness stage's tap records what it needs).
+    juce::Result startCalibration (double sampleRate, double seconds, double levelDbfs);
     void cancel();
 
     Activity getActivity() const;

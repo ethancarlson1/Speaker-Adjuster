@@ -20,6 +20,14 @@ const juce::ParameterID maxBoost { "maxBoost", 1 };
 const juce::ParameterID rangeLo { "rangeLo", 1 };
 const juce::ParameterID rangeHi { "rangeHi", 1 };
 const juce::ParameterID voicingOn { "voicingOn", 1 };
+const juce::ParameterID loudOn { "loudOn", 1 };
+const juce::ParameterID loudRef { "loudRef", 1 };
+const juce::ParameterID loudAmount { "loudAmount", 1 };
+const juce::ParameterID loudMaxLow { "loudMaxLow", 1 };
+const juce::ParameterID loudMaxHigh { "loudMaxHigh", 1 };
+const juce::ParameterID loudSpeed { "loudSpeed", 1 };
+const juce::ParameterID loudSource { "loudSource", 1 };
+const juce::ParameterID loudHighPass { "loudHighPass", 1 };
 
 juce::ParameterID voicing (int band, const char* what)
 {
@@ -105,6 +113,27 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
         v.gain = parameters.getRawParameterValue (ParamIds::voicing (i, "Gain").getParamID());
         v.q = parameters.getRawParameterValue (ParamIds::voicing (i, "Q").getParamID());
     }
+
+    auto& lp = loudnessParams;
+    lp.on = parameters.getRawParameterValue (ParamIds::loudOn.getParamID());
+    lp.reference = parameters.getRawParameterValue (ParamIds::loudRef.getParamID());
+    lp.amount = parameters.getRawParameterValue (ParamIds::loudAmount.getParamID());
+    lp.maxLow = parameters.getRawParameterValue (ParamIds::loudMaxLow.getParamID());
+    lp.maxHigh = parameters.getRawParameterValue (ParamIds::loudMaxHigh.getParamID());
+    lp.speed = parameters.getRawParameterValue (ParamIds::loudSpeed.getParamID());
+    lp.source = parameters.getRawParameterValue (ParamIds::loudSource.getParamID());
+    lp.highPass = parameters.getRawParameterValue (ParamIds::loudHighPass.getParamID());
+
+    loudnessControl.setEnvironmentSource ([this]
+    {
+        LoudnessController::Environment env;
+        env.fs = getSampleRate();
+        env.referenceSpl = loudnessParams.reference->load();
+        env.micConnected = isMicConnected();
+        env.signalLevelDbfs = raw (ParamIds::sweepLevel);
+        env.available = ! standalone;
+        return env;
+    });
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::createParameterLayout()
@@ -167,6 +196,27 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
             AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 2); })));
         layout.add (std::move (group));
     }
+
+    // Loudness compensation.
+    auto loud = std::make_unique<AudioProcessorParameterGroup> ("loudness", "Loudness", "|");
+    loud->addChild (std::make_unique<AudioParameterBool> (ParamIds::loudOn, "Loudness compensation", true));
+    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudRef, "Reference level",
+                                                           NormalisableRange<float> (60.0f, 110.0f, 0.5f), 95.0f,
+                                                           AudioParameterFloatAttributes().withLabel ("dB(C)")));
+    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudAmount, "Loudness amount",
+                                                           NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
+                                                           AudioParameterFloatAttributes().withLabel ("%")));
+    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudMaxLow, "Max low boost",
+                                                           NormalisableRange<float> (0.0f, 12.0f, 0.5f), 8.0f, db));
+    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudMaxHigh, "Max high boost",
+                                                           NormalisableRange<float> (0.0f, 8.0f, 0.5f), 4.0f, db));
+    loud->addChild (std::make_unique<AudioParameterFloat> (
+        ParamIds::loudSpeed, "Level speed", logRange (1.0f, 20.0f), 5.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " s"; })));
+    loud->addChild (std::make_unique<AudioParameterChoice> (ParamIds::loudSource, "Level from",
+                                                           StringArray { "Plugin output", "Mic" }, 0));
+    loud->addChild (std::make_unique<AudioParameterBool> (ParamIds::loudHighPass, "Protective high-pass", false));
+    layout.add (std::move (loud));
     return layout;
 }
 
@@ -194,6 +244,23 @@ EqSettings AdaptiveRoomEQProcessor::getEqSettings() const noexcept
     return s;
 }
 
+LoudnessSettings AdaptiveRoomEQProcessor::getLoudnessSettings() const noexcept
+{
+    const auto& p = loudnessParams;
+    LoudnessSettings s;
+    s.on = p.on->load() > 0.5f;
+    s.useMic = p.source->load() > 0.5f;
+    s.hpBaseHz = loudnessControl.getHighpassBase();
+    auto& c = s.config;
+    c.referenceSpl = p.reference->load();
+    c.amount = juce::jlimit (0.0, 1.0, static_cast<double> (p.amount->load()) / 100.0);
+    c.maxLowDb = p.maxLow->load();
+    c.maxHighDb = p.maxHigh->load();
+    c.speedS = juce::jlimit (1.0, 20.0, static_cast<double> (p.speed->load()));
+    c.hpTrack = p.highPass->load() > 0.5f;
+    return s;
+}
+
 std::vector<roomeq::Band> AdaptiveRoomEQProcessor::getVoicingSections() const
 {
     std::vector<roomeq::Band> out;
@@ -209,17 +276,19 @@ std::vector<roomeq::Band> AdaptiveRoomEQProcessor::getVoicingSections() const
     return out;
 }
 
-void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int)
+void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     // Audio is stopped here, so an unfinished measurement can be dropped safely
     // (its sample rate may no longer match).
     recorder.abortWhileStopped();
     eq.prepare (sampleRate, getEqSettings());
+    loudness.prepare (sampleRate, samplesPerBlock, getLoudnessSettings());
 }
 
 void AdaptiveRoomEQProcessor::releaseResources()
 {
     recorder.abortWhileStopped();
+    loudness.abortTapWhileStopped();
 }
 
 bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -297,6 +366,11 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // The standalone app never passes its input (the mic) to the speakers.
     if (standalone && ! wroteOutput)
         mainOut.clear();
+
+    // Loudness compensation (the standalone app has no program to compensate).
+    // Flat and not tracking while a measurement or calibration plays.
+    if (! standalone)
+        loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), recorder.isActive());
 
     updatePeak (outputPeak, mainOut.getMagnitude (0, numSamples));
 }
@@ -494,6 +568,7 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.setProperty ("stateVersion", 1, nullptr);
     root.appendChild (parameters.copyState(), nullptr);
     root.appendChild (engine.toValueTree(), nullptr);
+    root.appendChild (loudnessControl.toValueTree(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
     ct.setProperty ("name", juce::String::fromUTF8 (custom.name.c_str()), nullptr);
@@ -525,6 +600,7 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
         setCustomTarget (t);
     }
     engine.fromValueTree (root.getChildWithName (MeasurementEngine::treeType));
+    loudnessControl.fromValueTree (root.getChildWithName (LoudnessController::treeType));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

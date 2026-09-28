@@ -2,6 +2,8 @@
 
 #include "plugin/CaptureRecorder.h"
 #include "plugin/EqStages.h"
+#include "plugin/LoudnessController.h"
+#include "plugin/LoudnessStage.h"
 #include "plugin/MeasurementEngine.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -10,8 +12,8 @@
 #include <atomic>
 #include <mutex>
 
-// Audio path: measured correction -> voicing EQ (-> loudness comp, Phase 3),
-// the same on both speakers.
+// Audio path: measured correction -> voicing EQ -> loudness compensation, the
+// same on both speakers.
 //
 // Buses: stereo main in/out plus a mono sidechain input for the measurement
 // mic. The standalone app is a measurement tool: its only input is the mic
@@ -20,7 +22,8 @@
 //
 // Measurements play the test signal on one speaker, straight to the output
 // (the fit needs the PA's own response); verify measurements play it through
-// the EQ. Analysis and fitting never run on the audio thread.
+// the EQ. While any measurement or calibration runs, loudness compensation is
+// flat and doesn't track. Analysis and fitting never run on the audio thread.
 class AdaptiveRoomEQProcessor final : public juce::AudioProcessor
 {
 public:
@@ -85,6 +88,10 @@ public:
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
     std::vector<roomeq::Band> getVoicingSections() const;         // for the graph
 
+    LoudnessSettings getLoudnessSettings() const noexcept;        // what the loudness stage uses now
+    LoudnessController& getLoudness() { return loudnessControl; }
+    const LoudnessStage::Status& getLoudnessStatus() const { return loudness.getStatus(); }
+
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }
     MeasurementEngine& getEngine() { return engine; }
 
@@ -102,6 +109,8 @@ private:
     CaptureRecorder recorder;
     MeasurementEngine engine { recorder };
     EqStages eq;
+    LoudnessStage loudness;
+    LoudnessController loudnessControl { loudness, engine };
 
     // Parameter values the audio thread reads each block.
     struct VoicingParams
@@ -116,6 +125,17 @@ private:
     std::atomic<float>* amountParam = nullptr;
     std::atomic<float>* voicingOnParam = nullptr;
     std::array<VoicingParams, roomeq::numVoicingBands> voicingParams;
+    struct LoudnessParams
+    {
+        std::atomic<float>* on = nullptr;
+        std::atomic<float>* reference = nullptr;
+        std::atomic<float>* amount = nullptr;
+        std::atomic<float>* maxLow = nullptr;
+        std::atomic<float>* maxHigh = nullptr;
+        std::atomic<float>* speed = nullptr;
+        std::atomic<float>* source = nullptr;
+        std::atomic<float>* highPass = nullptr;
+    } loudnessParams;
 
     mutable std::mutex customLock;
     roomeq::TargetCurve customTarget { "Custom", roomeq::houseTarget().points };

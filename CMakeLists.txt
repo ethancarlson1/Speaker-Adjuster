@@ -157,6 +157,7 @@ target_sources(AdaptiveRoomEQ
         src/plugin/CaptureList.cpp
         src/plugin/CaptureRecorder.cpp
         src/plugin/EqStages.cpp
+        src/plugin/LoudnessController.cpp
         src/plugin/LoudnessStage.cpp
         src/plugin/MeasurementEngine.cpp
         src/plugin/PluginEditor.cpp
@@ -193,6 +194,7 @@ if(ARE_BUILD_TESTS)
             src/plugin/CaptureList.cpp
             src/plugin/CaptureRecorder.cpp
             src/plugin/EqStages.cpp
+            src/plugin/LoudnessController.cpp
             src/plugin/LoudnessStage.cpp
             src/plugin/MeasurementEngine.cpp
             src/plugin/PluginEditor.cpp

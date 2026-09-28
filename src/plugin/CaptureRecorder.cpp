@@ -92,7 +92,7 @@ bool CaptureRecorder::process (float* const* main, int numMainChannels, const fl
                 }
             }
             for (int ch = 0; ch < numMainChannels; ++ch)
-                main[ch][i] = ch == sweepChannel ? out : 0.0f;
+                main[ch][i] = r->allChannels || ch == sweepChannel ? out : 0.0f;
         }
         r->samplesDone.store (static_cast<std::int64_t> (static_cast<std::size_t> (r->repeat) * takeLength + r->position),
                               std::memory_order_relaxed);

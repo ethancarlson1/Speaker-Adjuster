@@ -57,7 +57,7 @@ public:
     void prepare (double sampleRate, int maxBlockSize, const LoudnessSettings& settings);
 
     // Message thread (lock-free).
-    void setModel (const LoudnessModel& model) noexcept { pendingModel.write (model); }
+    void setModel (const LoudnessModel& newModel) noexcept { pendingModel.write (newModel); }
     bool startTap (std::unique_ptr<TapRequest> request);
     void cancelTap();
     bool isTapBusy() const { return tap != nullptr; }
