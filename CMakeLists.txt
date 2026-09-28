@@ -151,6 +151,7 @@ target_sources(AdaptiveRoomEQ
     PRIVATE
         src/plugin/CaptureList.cpp
         src/plugin/CaptureRecorder.cpp
+        src/plugin/EqStages.cpp
         src/plugin/MeasurementEngine.cpp
         src/plugin/PluginEditor.cpp
         src/plugin/PluginProcessor.cpp
@@ -185,6 +186,7 @@ if(ARE_BUILD_TESTS)
             tools/plugin_harness.cpp
             src/plugin/CaptureList.cpp
             src/plugin/CaptureRecorder.cpp
+            src/plugin/EqStages.cpp
             src/plugin/MeasurementEngine.cpp
             src/plugin/PluginEditor.cpp
             src/plugin/PluginProcessor.cpp

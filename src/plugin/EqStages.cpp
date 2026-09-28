@@ -236,6 +236,22 @@ void EqStages::updateVoicingTargets() noexcept
 
 void EqStages::process (float* const* channels, int numChannels, int numSamples, const EqSettings& settings) noexcept
 {
+    syncSettings (settings);
+    correctionChain.process (channels, numChannels, numSamples);
+    voicingChain.process (channels, numChannels, numSamples);
+}
+
+void EqStages::skip (const EqSettings& settings) noexcept
+{
+    syncSettings (settings);
+    correctionChain.jumpToTargets();
+    voicingChain.jumpToTargets();
+    correctionChain.reset();
+    voicingChain.reset();
+}
+
+void EqStages::syncSettings (const EqSettings& settings) noexcept
+{
     const auto newCorrection = pending.read (correction);
     if (newCorrection || settings.correctionOn != current.correctionOn || ! same (settings.amount, current.amount))
     {
@@ -249,6 +265,4 @@ void EqStages::process (float* const* channels, int numChannels, int numSamples,
         current.voicing = settings.voicing;
         updateVoicingTargets();
     }
-    correctionChain.process (channels, numChannels, numSamples);
-    voicingChain.process (channels, numChannels, numSamples);
 }

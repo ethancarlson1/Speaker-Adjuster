@@ -1,22 +1,26 @@
 #pragma once
 
 #include "plugin/CaptureRecorder.h"
+#include "plugin/EqStages.h"
 #include "plugin/MeasurementEngine.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <atomic>
+#include <mutex>
 
-// Audio path (later phases): measured correction -> voicing EQ -> loudness comp.
+// Audio path: measured correction -> voicing EQ (-> loudness comp, Phase 3),
+// the same on both speakers.
 //
 // Buses: stereo main in/out plus a mono sidechain input for the measurement
 // mic. The standalone app is a measurement tool: its only input is the mic
-// (JUCE disables sidechains there), and it outputs only the sweep, on the
-// physical output picked in the editor.
+// (JUCE disables sidechains there), and it outputs only the test signal, on
+// the physical output picked in the editor.
 //
-// Phase 1: the main path passes through, except while a sweep plays (on one
-// speaker; one correction will later be applied to both sides). Analysis
-// never runs on the audio thread.
+// Measurements play the test signal on one speaker, straight to the output
+// (the fit needs the PA's own response); verify measurements play it through
+// the EQ. Analysis and fitting never run on the audio thread.
 class AdaptiveRoomEQProcessor final : public juce::AudioProcessor
 {
 public:
@@ -59,11 +63,27 @@ public:
     bool isNoiseSelected() const;
     double getNoiseSeconds() const;
 
-    // Uses the selected signal (sweep or pink noise).
+    // Uses the selected signal (sweep or pink noise). Verify plays it through the EQ.
     juce::Result startMeasurement (int replaceId = -1);
-    juce::Result startSweep (int replaceId = -1);
-    juce::Result startNoise (int replaceId = -1);
+    juce::Result startVerify();
+    juce::Result startSweep (int replaceId = -1, bool verify = false);
+    juce::Result startNoise (int replaceId = -1, bool verify = false);
     juce::Result startProgram (int replaceId = -1);
+
+    // Targets: the three presets, or the session's custom points.
+    enum TargetChoice { targetFlat = 0, targetHouse, targetSpeech, targetCustom };
+    int getTargetChoice() const;
+    roomeq::TargetCurve getTarget() const;
+    roomeq::TargetCurve getCustomTarget() const;
+    void setCustomTarget (const roomeq::TargetCurve& target);   // points are sanitised
+    static juce::File getTargetsFolder();
+    juce::Array<juce::File> getSavedTargets() const;
+    juce::Result saveCustomTarget (const juce::String& name);
+    juce::Result loadTarget (const juce::File& file);             // into Custom, and selects it
+
+    MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
+    EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
+    std::vector<roomeq::Band> getVoicingSections() const;         // for the graph
 
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }
     MeasurementEngine& getEngine() { return engine; }
@@ -75,11 +95,30 @@ private:
     static BusesProperties makeBuses (bool isStandalone);
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     const float* findMic (juce::AudioBuffer<float>& buffer);
+    float raw (const juce::ParameterID& id) const noexcept;
 
     const bool standalone;
     juce::AudioProcessorValueTreeState parameters;
     CaptureRecorder recorder;
     MeasurementEngine engine { recorder };
+    EqStages eq;
+
+    // Parameter values the audio thread reads each block.
+    struct VoicingParams
+    {
+        std::atomic<float>* on = nullptr;
+        std::atomic<float>* type = nullptr;
+        std::atomic<float>* freq = nullptr;
+        std::atomic<float>* gain = nullptr;
+        std::atomic<float>* q = nullptr;
+    };
+    std::atomic<float>* correctionOnParam = nullptr;
+    std::atomic<float>* amountParam = nullptr;
+    std::atomic<float>* voicingOnParam = nullptr;
+    std::array<VoicingParams, roomeq::numVoicingBands> voicingParams;
+
+    mutable std::mutex customLock;
+    roomeq::TargetCurve customTarget { "Custom", roomeq::houseTarget().points };
 
     std::atomic<float> micPeak { 0.0f };
     std::atomic<float> outputPeak { 0.0f };

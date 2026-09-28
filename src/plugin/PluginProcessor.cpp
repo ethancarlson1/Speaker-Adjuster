@@ -12,6 +12,19 @@ const juce::ParameterID sweepLevel { "sweepLevel", 1 };
 const juce::ParameterID smoothing { "smoothing", 1 };
 const juce::ParameterID signal { "measureSignal", 1 };
 const juce::ParameterID noiseLength { "noiseLength", 1 };
+const juce::ParameterID target { "target", 1 };
+const juce::ParameterID correctionOn { "correctionOn", 1 };
+const juce::ParameterID amount { "correctionAmount", 1 };
+const juce::ParameterID maxCut { "maxCut", 1 };
+const juce::ParameterID maxBoost { "maxBoost", 1 };
+const juce::ParameterID rangeLo { "rangeLo", 1 };
+const juce::ParameterID rangeHi { "rangeHi", 1 };
+const juce::ParameterID voicingOn { "voicingOn", 1 };
+
+juce::ParameterID voicing (int band, const char* what)
+{
+    return { "v" + juce::String (band + 1) + what, 1 };
+}
 } // namespace ParamIds
 
 constexpr double sweepSeconds[] = { 2.0, 5.0, 10.0 };
@@ -21,6 +34,20 @@ constexpr int smoothingFractions[] = { 3, 4, 6 };
 bool loadedAsStandalone()
 {
     return juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::wrapperType_Standalone;
+}
+
+// Log-frequency parameter range (even spacing per octave on a slider).
+juce::NormalisableRange<float> logRange (float lo, float hi)
+{
+    return { lo, hi,
+             [] (float start, float end, float v) { return start * std::pow (end / start, v); },
+             [] (float start, float end, float v) { return std::log (v / start) / std::log (end / start); },
+             [] (float, float, float v) { return v; } };
+}
+
+juce::String hzText (float v, int)
+{
+    return v >= 1000.0f ? juce::String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : juce::String (juce::roundToInt (v)) + " Hz";
 }
 
 // Lock-free "max" so the editor can read-and-reset peaks between blocks.
@@ -54,8 +81,30 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
       parameters (*this, nullptr, "Parameters", createParameterLayout())
 {
     // Parameter callbacks can arrive on the audio thread, so the engine polls
-    // the smoothing choice from its message-thread timer instead.
+    // the smoothing choice and correction settings from its message-thread timer instead.
     engine.setSmoothingSource ([this] { return getSmoothingFraction(); });
+    engine.setCorrectionSettingsSource ([this] { return getCorrectionSettings(); });
+    engine.onPlayingCorrectionChanged = [this] (const std::vector<roomeq::Band>& bands)
+    {
+        CorrectionSet set;
+        for (const auto& b : bands)
+            if (set.count < CorrectionSet::maxBands)
+                set.bands[static_cast<std::size_t> (set.count++)] = b;
+        eq.setCorrection (set);
+    };
+
+    correctionOnParam = parameters.getRawParameterValue (ParamIds::correctionOn.getParamID());
+    amountParam = parameters.getRawParameterValue (ParamIds::amount.getParamID());
+    voicingOnParam = parameters.getRawParameterValue (ParamIds::voicingOn.getParamID());
+    for (int i = 0; i < roomeq::numVoicingBands; ++i)
+    {
+        auto& v = voicingParams[static_cast<std::size_t> (i)];
+        v.on = parameters.getRawParameterValue (ParamIds::voicing (i, "On").getParamID());
+        v.type = parameters.getRawParameterValue (ParamIds::voicing (i, "Type").getParamID());
+        v.freq = parameters.getRawParameterValue (ParamIds::voicing (i, "Freq").getParamID());
+        v.gain = parameters.getRawParameterValue (ParamIds::voicing (i, "Gain").getParamID());
+        v.q = parameters.getRawParameterValue (ParamIds::voicing (i, "Q").getParamID());
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::createParameterLayout()
@@ -79,14 +128,92 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
                                                        AudioParameterFloatAttributes().withLabel ("dBFS")));
     layout.add (std::make_unique<AudioParameterChoice> (ParamIds::smoothing, "Smoothing",
                                                         StringArray { "1/3 octave", "1/4 octave", "1/6 octave" }, 2));
+
+    // Correction.
+    const auto hz = AudioParameterFloatAttributes().withStringFromValueFunction (hzText);
+    const auto db = AudioParameterFloatAttributes().withLabel ("dB");
+    layout.add (std::make_unique<AudioParameterChoice> (ParamIds::target, "Target",
+                                                        StringArray { "Flat", "House", "Speech", "Custom" }, 0));
+    layout.add (std::make_unique<AudioParameterBool> (ParamIds::correctionOn, "Correction", true));
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::amount, "Correction amount",
+                                                       NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("%")));
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::maxCut, "Max cut",
+                                                       NormalisableRange<float> (0.0f, 24.0f, 0.5f), 12.0f, db));
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::maxBoost, "Max boost",
+                                                       NormalisableRange<float> (0.0f, 6.0f, 0.5f), 3.0f, db));
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::rangeLo, "Correct from", logRange (20.0f, 500.0f), 20.0f, hz));
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::rangeHi, "Correct up to", logRange (1000.0f, 20000.0f),
+                                                       20000.0f, hz));
+
+    // Voicing EQ.
+    layout.add (std::make_unique<AudioParameterBool> (ParamIds::voicingOn, "Voicing EQ", true));
+    const StringArray types { "Bell", "Low shelf", "High shelf", "High-pass 12 dB", "High-pass 24 dB",
+                              "Low-pass 12 dB", "Low-pass 24 dB" };
+    for (int i = 0; i < roomeq::numVoicingBands; ++i)
+    {
+        const auto d = roomeq::defaultVoicingBand (i);
+        const auto name = "Voicing " + String (i + 1) + " ";
+        auto group = std::make_unique<AudioProcessorParameterGroup> ("voicing" + String (i + 1), "Voicing band " + String (i + 1), "|");
+        group->addChild (std::make_unique<AudioParameterBool> (ParamIds::voicing (i, "On"), name + "on", false));
+        group->addChild (std::make_unique<AudioParameterChoice> (ParamIds::voicing (i, "Type"), name + "type", types,
+                                                                 static_cast<int> (d.type)));
+        group->addChild (std::make_unique<AudioParameterFloat> (ParamIds::voicing (i, "Freq"), name + "frequency",
+                                                                logRange (20.0f, 20000.0f), static_cast<float> (d.freq), hz));
+        group->addChild (std::make_unique<AudioParameterFloat> (ParamIds::voicing (i, "Gain"), name + "gain",
+                                                                NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, db));
+        group->addChild (std::make_unique<AudioParameterFloat> (ParamIds::voicing (i, "Q"), name + "Q", logRange (0.3f, 8.0f),
+                                                                static_cast<float> (d.q)));
+        layout.add (std::move (group));
+    }
     return layout;
 }
 
-void AdaptiveRoomEQProcessor::prepareToPlay (double, int)
+float AdaptiveRoomEQProcessor::raw (const juce::ParameterID& id) const noexcept
+{
+    return parameters.getRawParameterValue (id.getParamID())->load();
+}
+
+EqSettings AdaptiveRoomEQProcessor::getEqSettings() const noexcept
+{
+    EqSettings s;
+    s.correctionOn = correctionOnParam->load() > 0.5f;
+    s.amount = juce::jlimit (0.0, 1.0, static_cast<double> (amountParam->load()) / 100.0);
+    s.voicingOn = voicingOnParam->load() > 0.5f;
+    for (std::size_t i = 0; i < s.voicing.size(); ++i)
+    {
+        const auto& p = voicingParams[i];
+        auto& v = s.voicing[i];
+        v.on = p.on->load() > 0.5f;
+        v.type = static_cast<roomeq::VoicingType> (juce::jlimit (0, roomeq::numVoicingTypes - 1, juce::roundToInt (p.type->load())));
+        v.freq = p.freq->load();
+        v.gainDb = p.gain->load();
+        v.q = p.q->load();
+    }
+    return s;
+}
+
+std::vector<roomeq::Band> AdaptiveRoomEQProcessor::getVoicingSections() const
+{
+    std::vector<roomeq::Band> out;
+    const auto s = getEqSettings();
+    if (! s.voicingOn)
+        return out;
+    for (const auto& v : s.voicing)
+    {
+        const auto sec = roomeq::voicingSections (v);
+        for (int i = 0; i < sec.count; ++i)
+            out.push_back (sec.bands[static_cast<std::size_t> (i)]);
+    }
+    return out;
+}
+
+void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int)
 {
     // Audio is stopped here, so an unfinished measurement can be dropped safely
     // (its sample rate may no longer match).
     recorder.abortWhileStopped();
+    eq.prepare (sampleRate, getEqSettings());
 }
 
 void AdaptiveRoomEQProcessor::releaseResources()
@@ -148,7 +275,23 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         updatePeak (micPeak, juce::jmax (range.getEnd(), -range.getStart()));
     }
 
-    const auto wroteOutput = recorder.process (mainOut.getArrayOfWritePointers(), mainOut.getNumChannels(), mic, numSamples);
+    // Normal measurements replace the EQ'd program with the raw test signal (and
+    // "Measure from music" records the EQ'd program as its reference): EQ first.
+    // Verify measurements play the test signal through the EQ: EQ last.
+    const auto settings = getEqSettings();
+    const auto throughEq = recorder.playsThroughEq();
+    auto* const* channels = mainOut.getArrayOfWritePointers();
+    const auto numChannels = mainOut.getNumChannels();
+    if (! throughEq)
+    {
+        if (standalone)
+            eq.skip (settings);     // the app only ever outputs test signals
+        else
+            eq.process (channels, numChannels, numSamples, settings);
+    }
+    const auto wroteOutput = recorder.process (channels, numChannels, mic, numSamples, throughEq);
+    if (throughEq)
+        eq.process (channels, numChannels, numSamples, settings);
 
     // The standalone app never passes its input (the mic) to the speakers.
     if (standalone && ! wroteOutput)
@@ -196,11 +339,11 @@ int AdaptiveRoomEQProcessor::getSmoothingFraction() const
     return smoothingFractions[juce::jlimit (0, 2, index)];
 }
 
-juce::Result AdaptiveRoomEQProcessor::startSweep (int replaceId)
+juce::Result AdaptiveRoomEQProcessor::startSweep (int replaceId, bool verify)
 {
     if (! isMicConnected())
         return juce::Result::fail ("Connect the measurement mic first");
-    return engine.startSweep (getSampleRate(), getSweepSettings(), replaceId);
+    return engine.startSweep (getSampleRate(), getSweepSettings(), replaceId, verify);
 }
 
 juce::Result AdaptiveRoomEQProcessor::startMeasurement (int replaceId)
@@ -208,12 +351,118 @@ juce::Result AdaptiveRoomEQProcessor::startMeasurement (int replaceId)
     return isNoiseSelected() ? startNoise (replaceId) : startSweep (replaceId);
 }
 
-juce::Result AdaptiveRoomEQProcessor::startNoise (int replaceId)
+juce::Result AdaptiveRoomEQProcessor::startVerify()
+{
+    return isNoiseSelected() ? startNoise (-1, true) : startSweep (-1, true);
+}
+
+juce::Result AdaptiveRoomEQProcessor::startNoise (int replaceId, bool verify)
 {
     if (! isMicConnected())
         return juce::Result::fail ("Connect the measurement mic first");
     const auto s = getSweepSettings();
-    return engine.startNoise (getSampleRate(), getNoiseSeconds(), s.channel, s.levelDbfs, replaceId);
+    return engine.startNoise (getSampleRate(), getNoiseSeconds(), s.channel, s.levelDbfs, replaceId, verify);
+}
+
+// ---------------------------------------------------------------------------
+// Targets
+
+int AdaptiveRoomEQProcessor::getTargetChoice() const
+{
+    return juce::jlimit (0, 3, juce::roundToInt (raw (ParamIds::target)));
+}
+
+roomeq::TargetCurve AdaptiveRoomEQProcessor::getTarget() const
+{
+    const auto choice = getTargetChoice();
+    if (choice == targetCustom)
+        return getCustomTarget();
+    return roomeq::targetPresets()[static_cast<std::size_t> (choice)];
+}
+
+roomeq::TargetCurve AdaptiveRoomEQProcessor::getCustomTarget() const
+{
+    const std::lock_guard<std::mutex> guard (customLock);
+    return customTarget;
+}
+
+void AdaptiveRoomEQProcessor::setCustomTarget (const roomeq::TargetCurve& target)
+{
+    const std::lock_guard<std::mutex> guard (customLock);
+    customTarget.name = target.name.empty() ? std::string ("Custom") : target.name;
+    customTarget.points = roomeq::sanitizeTargetPoints (target.points);
+}
+
+juce::File AdaptiveRoomEQProcessor::getTargetsFolder()
+{
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    base = base.getChildFile ("Application Support");
+   #endif
+    return base.getChildFile ("Adaptive Room EQ").getChildFile ("Targets");
+}
+
+juce::Array<juce::File> AdaptiveRoomEQProcessor::getSavedTargets() const
+{
+    auto files = getTargetsFolder().findChildFiles (juce::File::findFiles, false, "*.json");
+    files.sort();
+    return files;
+}
+
+juce::Result AdaptiveRoomEQProcessor::saveCustomTarget (const juce::String& name)
+{
+    const auto clean = juce::File::createLegalFileName (name.trim());
+    if (clean.isEmpty())
+        return juce::Result::fail ("Give the target a name");
+    auto target = getCustomTarget();
+    target.name = name.trim().toStdString();
+    juce::Array<juce::var> points;
+    for (const auto& [f, g] : target.points)
+        points.add (juce::Array<juce::var> { f, g });
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty ("name", name.trim());
+    obj->setProperty ("points", points);
+    const auto folder = getTargetsFolder();
+    if (! folder.createDirectory())
+        return juce::Result::fail ("Couldn't create " + folder.getFullPathName());
+    const auto file = folder.getChildFile (clean + ".json");
+    if (! file.replaceWithText (juce::JSON::toString (juce::var (obj))))
+        return juce::Result::fail ("Couldn't write " + file.getFullPathName());
+    setCustomTarget (target);
+    return juce::Result::ok();
+}
+
+juce::Result AdaptiveRoomEQProcessor::loadTarget (const juce::File& file)
+{
+    const auto json = juce::JSON::parse (file.loadFileAsString());
+    const auto* list = json["points"].getArray();
+    if (list == nullptr || list->isEmpty())
+        return juce::Result::fail (file.getFileName() + " isn't a target file");
+    roomeq::TargetCurve t;
+    t.name = json["name"].toString().toStdString();
+    if (t.name.empty())
+        t.name = file.getFileNameWithoutExtension().toStdString();
+    for (const auto& p : *list)
+        if (p.isArray() && p.size() >= 2)
+            t.points.push_back ({ static_cast<double> (p[0]), static_cast<double> (p[1]) });
+    if (t.points.empty())
+        return juce::Result::fail (file.getFileName() + " has no points");
+    setCustomTarget (t);
+    if (auto* param = parameters.getParameter (ParamIds::target.getParamID()))
+        param->setValueNotifyingHost (param->convertTo0to1 (static_cast<float> (targetCustom)));
+    return juce::Result::ok();
+}
+
+MeasurementEngine::CorrectionSettings AdaptiveRoomEQProcessor::getCorrectionSettings() const
+{
+    MeasurementEngine::CorrectionSettings s;
+    s.target = getTarget();
+    s.config.maxCutDb = raw (ParamIds::maxCut);
+    s.config.maxBoostDb = raw (ParamIds::maxBoost);
+    s.config.rangeLoHz = raw (ParamIds::rangeLo);
+    s.config.rangeHiHz = raw (ParamIds::rangeHi);
+    s.fs = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+    return s;
 }
 
 juce::Result AdaptiveRoomEQProcessor::startProgram (int replaceId)
@@ -237,6 +486,17 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.setProperty ("stateVersion", 1, nullptr);
     root.appendChild (parameters.copyState(), nullptr);
     root.appendChild (engine.toValueTree(), nullptr);
+    const auto custom = getCustomTarget();
+    juce::ValueTree ct ("CustomTarget");
+    ct.setProperty ("name", juce::String::fromUTF8 (custom.name.c_str()), nullptr);
+    for (const auto& [f, g] : custom.points)
+    {
+        juce::ValueTree pt ("Point");
+        pt.setProperty ("f", f, nullptr);
+        pt.setProperty ("db", g, nullptr);
+        ct.appendChild (pt, nullptr);
+    }
+    root.appendChild (ct, nullptr);
     juce::MemoryOutputStream stream (destData, false);
     root.writeToStream (stream);
 }
@@ -248,6 +508,14 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
         return;
     if (const auto params = root.getChildWithName (parameters.state.getType()); params.isValid())
         parameters.replaceState (params);
+    if (const auto ct = root.getChildWithName ("CustomTarget"); ct.isValid() && ct.getNumChildren() > 0)
+    {
+        roomeq::TargetCurve t;
+        t.name = ct["name"].toString().toStdString();
+        for (const auto& pt : ct)
+            t.points.push_back ({ static_cast<double> (pt["f"]), static_cast<double> (pt["db"]) });
+        setCustomTarget (t);
+    }
     engine.fromValueTree (root.getChildWithName (MeasurementEngine::treeType));
 }
 

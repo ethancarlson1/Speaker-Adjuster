@@ -198,3 +198,25 @@ TEST_CASE ("abortWhileStopped releases a request that never ran")
     CHECK (finished->cancelled);
     CHECK (rec.start (makeSweepRequest (48000.0, 2.0, 1, 0, -12.0)));
 }
+
+TEST_CASE ("a verify request only starts in a block where the EQ follows it")
+{
+    CaptureRecorder rec;
+    auto req = makeSweepRequest (48000.0, 2.0, 1, 0, -12.0);
+    req->throughEq = true;
+    REQUIRE (rec.start (std::move (req)));
+    CHECK (rec.playsThroughEq());
+
+    std::vector<float> l (256, 0.25f), r (256, 0.25f), mic (256, 0.0f);
+    float* main[] = { l.data(), r.data() };
+    // The caller already ran the EQ this block: the request waits, audio untouched.
+    CHECK_FALSE (rec.process (main, 2, mic.data(), 256, false));
+    CHECK (l[10] == 0.25f);
+    CHECK (rec.getCurrent()->samplesDone.load() == 0);
+    // Next block the EQ follows: it starts.
+    CHECK (rec.process (main, 2, mic.data(), 256, true));
+    CHECK (rec.getCurrent()->samplesDone.load() == 256);
+    // Once started it keeps going, whatever the order says (it can't change mid-take).
+    CHECK (rec.process (main, 2, mic.data(), 256, false));
+    CHECK (rec.getCurrent()->samplesDone.load() == 512);
+}

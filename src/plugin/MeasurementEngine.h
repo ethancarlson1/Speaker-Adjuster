@@ -3,6 +3,8 @@
 #include "plugin/CaptureRecorder.h"
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
+#include "roomeq/correction.h"
+#include "roomeq/targets.h"
 
 #include <juce_events/juce_events.h>
 #include <juce_data_structures/juce_data_structures.h>
@@ -10,12 +12,17 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
-// Message-thread side of Phase 1: starts measurements, hands finished
-// recordings to a background thread for analysis, keeps the capture list,
-// recomputes the averaged response (also in the background), and saves /
-// restores everything with the session.
+// Message-thread side of measurement and correction: starts measurements,
+// hands finished recordings to a background thread for analysis, keeps the
+// capture list, recomputes the averaged response and the proposed correction
+// (also in the background), keeps the applied / previous corrections, and
+// saves / restores everything with the session.
+//
+// Verify captures are measured through the EQ. They never feed the fit; the
+// ones taken with the current correction are averaged separately.
 class MeasurementEngine : public juce::ChangeBroadcaster,
                           private juce::Timer
 {
@@ -24,6 +31,8 @@ public:
     {
         int id = 0;
         std::shared_ptr<const roomeq::Capture> capture;
+        bool verify = false;
+        int correctionId = 0;     // verify captures: the applied correction they measured
     };
 
     struct SweepSettings
@@ -34,13 +43,25 @@ public:
         double levelDbfs = -12.0;
     };
 
-    // The averaged response plus which capture each position curve belongs to
-    // (computed in the background from a snapshot, so ids travel with it).
+    // What the fit works to; polled from the processor.
+    struct CorrectionSettings
+    {
+        roomeq::TargetCurve target = roomeq::flatTarget();
+        roomeq::CorrectionConfig config;
+        double fs = 48000.0;
+    };
+
+    // Computed in the background from a snapshot, so ids travel with it.
     struct Display
     {
-        roomeq::SessionSummary summary;
-        std::vector<int> ids;
+        roomeq::SessionSummary summary;              // fit captures only
+        std::vector<int> ids;                        // per position curve
         std::vector<bool> excluded;
+        std::vector<double> targetDb;                // anchored target on the display grid
+        std::optional<roomeq::CorrectionResult> proposal;
+        double fitFs = 48000.0;
+        std::vector<double> verifiedDb;              // verify average, aligned to the fit average (empty if none)
+        int verifiedCount = 0;
     };
 
     enum class Activity
@@ -54,8 +75,10 @@ public:
     ~MeasurementEngine() override;
 
     // Measurements. replaceId redoes an existing capture (keeping its name).
-    juce::Result startSweep (double sampleRate, const SweepSettings& settings, int replaceId = -1);
-    juce::Result startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId = -1);
+    // verify plays through the EQ and files the capture as a verify capture.
+    juce::Result startSweep (double sampleRate, const SweepSettings& settings, int replaceId = -1, bool verify = false);
+    juce::Result startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId = -1,
+                             bool verify = false);
     juce::Result startProgram (double sampleRate, double seconds, int replaceId = -1);
     void cancel();
 
@@ -71,7 +94,23 @@ public:
 
     void setSmoothingFraction (int fraction);
     void setSmoothingSource (std::function<int()> source) { smoothingSource = std::move (source); }
+    void setCorrectionSettingsSource (std::function<CorrectionSettings()> source) { settingsSource = std::move (source); }
     std::shared_ptr<const Display> getDisplay() const;
+
+    // Correction. Apply keeps the one it replaces as "previous".
+    bool canApply() const;                       // a proposal exists and differs from the applied one
+    void applyProposal();
+    void undoApply();                            // swaps applied and previous
+    void setComparingPrevious (bool shouldCompare);
+    bool isComparingPrevious() const { return comparing; }
+    bool hasPrevious() const { return hasPreviousCorrection; }
+    const std::vector<roomeq::Band>& getApplied() const { return applied; }
+    const std::vector<roomeq::Band>& getPrevious() const { return previous; }
+    int getAppliedId() const { return appliedId; }
+    const std::vector<roomeq::Band>& getPlaying() const { return comparing ? previous : applied; }
+
+    // Called on the message thread whenever the correction to play changes.
+    std::function<void (const std::vector<roomeq::Band>&)> onPlayingCorrectionChanged;
 
     // Persistence (safe from any thread).
     juce::ValueTree toValueTree() const;
@@ -87,6 +126,8 @@ private:
     struct AnalysisResult
     {
         int replaceId = -1;
+        bool verify = false;
+        int correctionId = 0;
         std::shared_ptr<const roomeq::Capture> capture;
         juce::String name, error;
     };
@@ -102,10 +143,11 @@ private:
     };
 
     void timerCallback() override { update(); }
-    juce::Result startRequest (std::unique_ptr<CaptureRequest> request, int replaceId);
+    juce::Result startRequest (std::unique_ptr<CaptureRequest> request, int replaceId, bool verify);
     void analyse (std::unique_ptr<CaptureRequest> request);
     void requestSummary();
     void replaceCapture (int id, const std::function<void (roomeq::Capture&)>& change);
+    void playingChanged();
 
     CaptureRecorder& recorder;
     std::shared_ptr<Mailbox> mailbox = std::make_shared<Mailbox>();
@@ -117,12 +159,24 @@ private:
 
     int nextId = 1;
     int nextNumber = 1;
+    int nextVerifyNumber = 1;
     int smoothingFraction = 6;
     std::function<int()> smoothingSource;
+    std::function<CorrectionSettings()> settingsSource;
+    std::optional<CorrectionSettings> lastSettings;
     int summaryGeneration = 0;
     int analysesPending = 0;
     juce::String pendingName, status;
+    bool pendingVerify = false;
+    int pendingCorrectionId = 0;
     const std::vector<double> grid = roomeq::logFreqGrid (20.0, 20000.0, 48);
+
+    std::vector<roomeq::Band> applied, previous;
+    bool hasPreviousCorrection = false;
+    bool comparing = false;
+    int appliedId = 0;        // 0 = no correction applied yet
+    int previousId = 0;
+    int nextCorrectionId = 1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MeasurementEngine)
 };

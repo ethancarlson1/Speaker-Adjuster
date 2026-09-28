@@ -30,6 +30,7 @@ struct CaptureRequest
     std::vector<float> reference;             // noise: what was played; program: mono sum of the input
 
     int replaceId = -1;                       // capture being redone, or -1 for a new one
+    bool throughEq = false;                   // verify: the excitation plays through the correction and voicing EQ
 
     std::int64_t totalSamples = 0;
     std::atomic<std::int64_t> samplesDone { 0 };
@@ -65,8 +66,18 @@ public:
 
     // Audio thread. `main` is the stereo main bus, processed in place (it holds
     // the input on entry). `mic` may be null when no mic is connected.
+    // `eqFollows` says whether the caller runs the EQ after this call; a
+    // request that wants the other order waits for the next block to start.
     // Returns true if it wrote the output (a sweep, or silence while stopping one).
-    bool process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept;
+    bool process (float* const* main, int numMainChannels, const float* mic, int numSamples,
+                  bool eqFollows = false) noexcept;
+
+    // Audio thread: whether the measurement in flight plays through the EQ.
+    bool playsThroughEq() const noexcept
+    {
+        const auto* r = active.load (std::memory_order_acquire);
+        return r != nullptr && r->throughEq;
+    }
 
 private:
     static void finish (CaptureRequest& r, bool cancelled, std::atomic<CaptureRequest*>& active) noexcept;

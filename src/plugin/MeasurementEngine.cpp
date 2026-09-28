@@ -15,6 +15,10 @@ const juce::Identifier power { "power" }, noise { "noise" }, weight { "weight" }
 const juce::Identifier center { "center" }, lo { "lo" }, hi { "hi" }, level { "level" }, snr { "snr" };
 const juce::Identifier spread { "spread" }, excess { "excess" }, outOfRange { "outOfRange" };
 const juce::Identifier snrGrade { "snrGrade" }, consistencyGrade { "consistencyGrade" };
+const juce::Identifier verify { "verify" }, correctionId { "correctionId" }, nextVerifyNumber { "nextVerifyNumber" };
+const juce::Identifier applied { "Applied" }, previous { "Previous" }, appliedId { "appliedId" };
+const juce::Identifier nextCorrectionId { "nextCorrectionId" }, correctionBand { "CorrectionBand" };
+const juce::Identifier freq { "freq" }, gain { "gain" }, q { "q" };
 } // namespace ids
 
 // Spectra are stored as float32: plenty for dB-domain data, half the size.
@@ -55,9 +59,65 @@ std::vector<std::string> splitLines (const juce::String& s)
     return out;
 }
 
-juce::String captureNumberName (int n)
+juce::String captureNumberName (int n, bool verify)
 {
-    return "P" + juce::String (n);
+    return (verify ? "V" : "P") + juce::String (n);
+}
+
+bool same (double a, double b) { return std::equal_to<double>() (a, b); }
+
+bool sameSettings (const MeasurementEngine::CorrectionSettings& a, const MeasurementEngine::CorrectionSettings& b)
+{
+    const auto& x = a.config;
+    const auto& y = b.config;
+    return a.target == b.target && same (a.fs, b.fs) && same (x.maxCutDb, y.maxCutDb) && same (x.maxBoostDb, y.maxBoostDb)
+           && same (x.rangeLoHz, y.rangeLoHz) && same (x.rangeHiHz, y.rangeHiHz);
+}
+
+juce::ValueTree bandsToTree (const juce::Identifier& type, const std::vector<roomeq::Band>& bands)
+{
+    juce::ValueTree t (type);
+    for (const auto& b : bands)
+    {
+        juce::ValueTree bt (ids::correctionBand);
+        bt.setProperty (ids::kind, static_cast<int> (b.kind), nullptr);
+        bt.setProperty (ids::freq, b.freq, nullptr);
+        bt.setProperty (ids::gain, b.gainDb, nullptr);
+        bt.setProperty (ids::q, b.q, nullptr);
+        t.appendChild (bt, nullptr);
+    }
+    return t;
+}
+
+std::vector<roomeq::Band> bandsFromTree (const juce::ValueTree& t)
+{
+    std::vector<roomeq::Band> bands;
+    for (const auto& bt : t)
+    {
+        const auto kind = static_cast<int> (bt[ids::kind]);
+        roomeq::Band b;
+        b.kind = static_cast<roomeq::BandKind> (juce::jlimit (0, 4, kind));
+        b.freq = juce::jlimit (10.0, 24000.0, static_cast<double> (bt[ids::freq]));
+        b.gainDb = juce::jlimit (-30.0, 30.0, static_cast<double> (bt[ids::gain]));
+        b.q = juce::jlimit (0.1, 20.0, static_cast<double> (bt[ids::q]));
+        if (bands.size() < 12 && std::isfinite (b.freq) && std::isfinite (b.gainDb) && std::isfinite (b.q))
+            bands.push_back (b);
+    }
+    return bands;
+}
+
+// Mean of the finite values over 250 Hz-4 kHz.
+double midbandMean (const std::vector<double>& grid, const std::vector<double>& db)
+{
+    double sum = 0.0;
+    int n = 0;
+    for (std::size_t i = 0; i < grid.size(); ++i)
+        if (grid[i] >= 250.0 && grid[i] <= 4000.0 && std::isfinite (db[i]))
+        {
+            sum += db[i];
+            ++n;
+        }
+    return n > 0 ? sum / n : std::nan ("");
 }
 } // namespace
 
@@ -74,28 +134,29 @@ MeasurementEngine::~MeasurementEngine()
     pool.removeAllJobs (true, 10000);
 }
 
-juce::Result MeasurementEngine::startSweep (double sampleRate, const SweepSettings& s, int replaceId)
+juce::Result MeasurementEngine::startSweep (double sampleRate, const SweepSettings& s, int replaceId, bool verify)
 {
     if (sampleRate <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
-    return startRequest (makeSweepRequest (sampleRate, s.seconds, s.repeats, s.channel, s.levelDbfs), replaceId);
+    return startRequest (makeSweepRequest (sampleRate, s.seconds, s.repeats, s.channel, s.levelDbfs), replaceId, verify);
 }
 
-juce::Result MeasurementEngine::startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId)
+juce::Result MeasurementEngine::startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId,
+                                            bool verify)
 {
     if (sampleRate <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
-    return startRequest (makeNoiseRequest (sampleRate, seconds, channel, levelDbfs), replaceId);
+    return startRequest (makeNoiseRequest (sampleRate, seconds, channel, levelDbfs), replaceId, verify);
 }
 
 juce::Result MeasurementEngine::startProgram (double sampleRate, double seconds, int replaceId)
 {
     if (sampleRate <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
-    return startRequest (makeProgramRequest (sampleRate, seconds), replaceId);
+    return startRequest (makeProgramRequest (sampleRate, seconds), replaceId, false);
 }
 
-juce::Result MeasurementEngine::startRequest (std::unique_ptr<CaptureRequest> request, int replaceId)
+juce::Result MeasurementEngine::startRequest (std::unique_ptr<CaptureRequest> request, int replaceId, bool verify)
 {
     if (recorder.isBusy())
         return juce::Result::fail ("A measurement is already running");
@@ -105,16 +166,30 @@ juce::Result MeasurementEngine::startRequest (std::unique_ptr<CaptureRequest> re
         const std::lock_guard<std::mutex> guard (stateLock);
         const auto it = std::find_if (entries.begin(), entries.end(), [&] (const Entry& e) { return e.id == replaceId; });
         if (it != entries.end())
+        {
             name = juce::String::fromUTF8 (it->capture->name.c_str());
+            verify = it->verify;   // a redo is the same kind of capture
+        }
         else
+        {
             replaceId = -1;
+        }
     }
+    if (verify && request->kind == CaptureRequest::Kind::program)
+        return juce::Result::fail ("Verify with a sweep or pink noise");
     if (name.isEmpty())
-        name = captureNumberName (nextNumber++);
+        name = captureNumberName (verify ? nextVerifyNumber++ : nextNumber++, verify);
+
+    // A verify capture measures the correction that's applied, not the one being compared.
+    if (verify)
+        setComparingPrevious (false);
 
     request->replaceId = replaceId;
+    request->throughEq = verify;
     recorder.start (std::move (request));
     pendingName = name;
+    pendingVerify = verify;
+    pendingCorrectionId = appliedId;
     status = "Measuring " + name;
     sendChangeMessage();
     return juce::Result::ok();
@@ -144,20 +219,21 @@ juce::String MeasurementEngine::getStatus() const
         if (r->cancelRequested.load())
             return "Stopping...";
         const auto done = r->samplesDone.load();
-        const auto speaker = juce::String (r->sweepChannel == 0 ? "left" : "right");
+        const auto speaker = juce::String (r->sweepChannel == 0 ? "left" : "right")
+                             + (r->throughEq ? " speaker, through the EQ" : " speaker");
         if (r->kind == CaptureRequest::Kind::noise)
             return "Measuring " + pendingName + ": pink noise, "
                    + juce::String (juce::jmin (static_cast<int> (static_cast<double> (done) / r->sampleRate),
                                                static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)))
                    + " of " + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate))
-                   + " s on the " + speaker + " speaker";
+                   + " s on the " + speaker;
         if (r->kind == CaptureRequest::Kind::program)
             return "Recording program for " + pendingName + ": "
                    + juce::String (static_cast<int> (static_cast<double> (done) / r->sampleRate)) + " of "
                    + juce::String (static_cast<int> (static_cast<double> (r->totalSamples) / r->sampleRate)) + " s";
         const auto take = std::min<std::int64_t> (r->repeats, done / std::max<std::int64_t> (1, static_cast<std::int64_t> (r->excitation.size())) + 1);
         return "Measuring " + pendingName + ": sweep " + juce::String (take) + " of " + juce::String (r->repeats)
-               + " on the " + speaker + " speaker";
+               + " on the " + speaker;
     }
     return status;
 }
@@ -220,15 +296,68 @@ void MeasurementEngine::setSmoothingFraction (int fraction)
     requestSummary();
 }
 
+bool MeasurementEngine::canApply() const
+{
+    const auto d = getDisplay();
+    return d != nullptr && d->proposal && d->proposal->bands != applied;
+}
+
+void MeasurementEngine::applyProposal()
+{
+    const auto d = getDisplay();
+    if (d == nullptr || ! d->proposal)
+        return;
+    previous = applied;
+    previousId = appliedId;
+    hasPreviousCorrection = true;
+    applied = d->proposal->bands;
+    appliedId = nextCorrectionId++;
+    comparing = false;
+    status = applied.empty() ? juce::String ("Applied: no correction needed")
+                             : "Applied a " + juce::String (static_cast<int> (applied.size())) + "-band correction";
+    playingChanged();
+    requestSummary();    // verify captures belong to the correction they measured
+}
+
+void MeasurementEngine::undoApply()
+{
+    if (! hasPreviousCorrection)
+        return;
+    std::swap (applied, previous);
+    std::swap (appliedId, previousId);
+    comparing = false;
+    status = "Swapped back to the previous correction";
+    playingChanged();
+    requestSummary();
+}
+
+void MeasurementEngine::setComparingPrevious (bool shouldCompare)
+{
+    shouldCompare = shouldCompare && hasPreviousCorrection;
+    if (shouldCompare == comparing)
+        return;
+    comparing = shouldCompare;
+    playingChanged();
+}
+
+void MeasurementEngine::playingChanged()
+{
+    if (onPlayingCorrectionChanged)
+        onPlayingCorrectionChanged (getPlaying());
+    sendChangeMessage();
+}
+
 void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
 {
     ++analysesPending;
     status = "Analysing " + pendingName + "...";
     std::shared_ptr<CaptureRequest> req = std::move (request);
-    pool.addJob ([mb = mailbox, req, name = pendingName]
+    pool.addJob ([mb = mailbox, req, name = pendingName, verify = pendingVerify, correctionId = pendingCorrectionId]
     {
         AnalysisResult result;
         result.replaceId = req->replaceId;
+        result.verify = verify;
+        result.correctionId = correctionId;
         result.name = name;
         try
         {
@@ -264,18 +393,25 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
 
 void MeasurementEngine::requestSummary()
 {
-    std::vector<std::shared_ptr<const roomeq::Capture>> snapshot;
+    std::vector<std::shared_ptr<const roomeq::Capture>> snapshot, verifySnapshot;
     std::vector<int> ids;
     {
         const std::lock_guard<std::mutex> guard (stateLock);
         for (const auto& e : entries)
         {
+            if (e.verify)
+            {
+                if (e.correctionId == appliedId)
+                    verifySnapshot.push_back (e.capture);
+                continue;
+            }
             snapshot.push_back (e.capture);
             ids.push_back (e.id);
         }
     }
+    const auto settings = lastSettings.value_or (CorrectionSettings {});
     const auto generation = ++summaryGeneration;
-    pool.addJob ([mb = mailbox, snapshot, ids, fraction = smoothingFraction, generation, g = grid]
+    pool.addJob ([mb = mailbox, snapshot, verifySnapshot, ids, fraction = smoothingFraction, generation, g = grid, settings]
     {
         auto s = roomeq::summarizeSession (snapshot, fraction, g);
         std::shared_ptr<const Display> shared;
@@ -286,6 +422,23 @@ void MeasurementEngine::requestSummary()
             d->ids = ids;
             for (const auto& c : snapshot)
                 d->excluded.push_back (c->excluded);
+
+            const auto& avg = d->summary.averageDb;
+            const auto offset = roomeq::anchorOffsetDb (g, avg, settings.target);
+            d->targetDb = settings.target.db (g);
+            for (auto& v : d->targetDb)
+                v += offset;
+            d->fitFs = settings.fs;
+            d->proposal = roomeq::designCorrection (snapshot, d->summary, settings.target, settings.fs, settings.config);
+
+            if (auto v = roomeq::summarizeSession (verifySnapshot, fraction, g))
+            {
+                d->verifiedDb = v->averageDb;
+                const auto shift = midbandMean (g, avg) - midbandMean (g, d->verifiedDb);
+                for (auto& x : d->verifiedDb)
+                    x += std::isfinite (shift) ? shift : 0.0;
+                d->verifiedCount = v->nGood;
+            }
             shared = std::move (d);
         }
         const std::lock_guard<std::mutex> guard (mb->lock);
@@ -303,6 +456,15 @@ void MeasurementEngine::update()
     auto changed = false;
     if (smoothingSource)
         setSmoothingFraction (smoothingSource());
+    if (settingsSource)
+    {
+        auto s = settingsSource();
+        if (! lastSettings || ! sameSettings (*lastSettings, s))
+        {
+            lastSettings = std::move (s);
+            requestSummary();
+        }
+    }
 
     if (auto finished = recorder.collectFinished())
     {
@@ -340,10 +502,12 @@ void MeasurementEngine::update()
                 auto redone = std::make_shared<roomeq::Capture> (*r.capture);
                 redone->excluded = it->capture->excluded;
                 it->capture = std::move (redone);
+                it->verify = r.verify;
+                it->correctionId = r.correctionId;
             }
             else
             {
-                entries.push_back ({ nextId++, r.capture });
+                entries.push_back ({ nextId++, r.capture, r.verify, r.correctionId });
             }
         }
         status = r.name + " analysed: " + juce::String (roomeq::gradeLabel (r.capture->grade.overall));
@@ -369,6 +533,16 @@ juce::ValueTree MeasurementEngine::toValueTree() const
     tree.setProperty (ids::version, 1, nullptr);
     tree.setProperty (ids::smoothing, smoothingFraction, nullptr);
     tree.setProperty (ids::nextNumber, nextNumber, nullptr);
+    tree.setProperty (ids::nextVerifyNumber, nextVerifyNumber, nullptr);
+    tree.setProperty (ids::appliedId, appliedId, nullptr);
+    tree.setProperty (ids::nextCorrectionId, nextCorrectionId, nullptr);
+    tree.appendChild (bandsToTree (ids::applied, applied), nullptr);
+    if (hasPreviousCorrection)
+    {
+        auto prev = bandsToTree (ids::previous, previous);
+        prev.setProperty (ids::correctionId, previousId, nullptr);
+        tree.appendChild (prev, nullptr);
+    }
 
     const std::lock_guard<std::mutex> guard (stateLock);
     for (const auto& e : entries)
@@ -380,6 +554,11 @@ juce::ValueTree MeasurementEngine::toValueTree() const
         ct.setProperty (ids::kind, juce::String (c.kind), nullptr);
         ct.setProperty (ids::fs, c.fs, nullptr);
         ct.setProperty (ids::excluded, c.excluded, nullptr);
+        if (e.verify)
+        {
+            ct.setProperty (ids::verify, true, nullptr);
+            ct.setProperty (ids::correctionId, e.correctionId, nullptr);
+        }
         ct.setProperty (ids::overall, static_cast<int> (c.grade.overall), nullptr);
         ct.setProperty (ids::reasons, joinLines (c.grade.reasons), nullptr);
         ct.setProperty (ids::notes, joinLines (c.grade.notes), nullptr);
@@ -456,7 +635,7 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
         }
         const auto id = static_cast<int> (ct[ids::id]);
         maxId = std::max (maxId, id);
-        loaded.push_back ({ id, std::move (c) });
+        loaded.push_back ({ id, std::move (c), static_cast<bool> (ct[ids::verify]), static_cast<int> (ct[ids::correctionId]) });
     }
 
     {
@@ -465,7 +644,18 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
     }
     nextId = maxId + 1;
     nextNumber = std::max (static_cast<int> (tree.getProperty (ids::nextNumber, 1)), 1);
+    nextVerifyNumber = std::max (static_cast<int> (tree.getProperty (ids::nextVerifyNumber, 1)), 1);
     smoothingFraction = tree.getProperty (ids::smoothing, 6);
+
+    applied = bandsFromTree (tree.getChildWithName (ids::applied));
+    appliedId = tree.getProperty (ids::appliedId, 0);
+    const auto prev = tree.getChildWithName (ids::previous);
+    hasPreviousCorrection = prev.isValid();
+    previous = bandsFromTree (prev);
+    previousId = prev.getProperty (ids::correctionId, 0);
+    nextCorrectionId = std::max ({ static_cast<int> (tree.getProperty (ids::nextCorrectionId, 1)), appliedId + 1, previousId + 1 });
+    comparing = false;
+
+    playingChanged();
     requestSummary();
-    sendChangeMessage();
 }

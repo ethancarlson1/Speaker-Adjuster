@@ -83,7 +83,13 @@ public:
     // Audio thread.
     void process (float* const* channels, int numChannels, int numSamples, const EqSettings& settings) noexcept;
 
+    // Audio thread, for blocks where nothing plays through the EQ (the
+    // standalone app between measurements): keep up with the settings and
+    // settle at once, so a later measurement through the EQ starts settled.
+    void skip (const EqSettings& settings) noexcept;
+
 private:
+    void syncSettings (const EqSettings& settings) noexcept;
     void updateCorrectionTargets() noexcept;
     void updateVoicingTargets() noexcept;
 

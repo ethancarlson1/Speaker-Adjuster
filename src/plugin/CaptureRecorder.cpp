@@ -51,10 +51,14 @@ void CaptureRecorder::finish (CaptureRequest& r, bool cancelled, std::atomic<Cap
     r.finished.store (true, std::memory_order_release);   // last access by the audio thread
 }
 
-bool CaptureRecorder::process (float* const* main, int numMainChannels, const float* mic, int numSamples) noexcept
+bool CaptureRecorder::process (float* const* main, int numMainChannels, const float* mic, int numSamples,
+                               bool eqFollows) noexcept
 {
     auto* r = active.load (std::memory_order_acquire);
     if (r == nullptr)
+        return false;
+    const auto notStarted = r->repeat == 0 && r->position == 0;
+    if (r->throughEq != eqFollows && notStarted && ! r->cancelRequested.load (std::memory_order_relaxed))
         return false;
 
     const auto n = static_cast<std::size_t> (numSamples);
