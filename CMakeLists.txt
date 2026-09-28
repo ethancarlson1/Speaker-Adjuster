@@ -13,6 +13,73 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Sources contain UTF-8 text (grade reasons, symbols).
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+
+option(ARE_BUILD_PLUGIN "Build the JUCE plugin (downloads JUCE)" ON)
+option(ARE_BUILD_TESTS "Build the C++ unit tests and the roomeq_cli analysis tool" ON)
+
+include(FetchContent)
+
+# ---------------------------------------------------------------------------
+# Analysis core: plain C++17, no JUCE. Port of prototype/roomeq (Python).
+# pocketfft is the FFT numpy uses (header-only, BSD-3).
+# ---------------------------------------------------------------------------
+FetchContent_Declare(pocketfft
+    GIT_REPOSITORY https://github.com/mreineck/pocketfft.git
+    GIT_TAG        c90e55b3d529f8efa40ed01a20de22405f45fc65)   # branch "cpp"
+FetchContent_MakeAvailable(pocketfft)
+
+add_library(roomeq_core STATIC
+    src/roomeq/averaging.cpp
+    src/roomeq/capture.cpp
+    src/roomeq/dualfft.cpp
+    src/roomeq/fft.cpp
+    src/roomeq/grading.cpp
+    src/roomeq/spectrum.cpp
+    src/roomeq/sweep.cpp)
+target_include_directories(roomeq_core PUBLIC src)
+target_include_directories(roomeq_core SYSTEM PRIVATE ${pocketfft_SOURCE_DIR})
+target_compile_definitions(roomeq_core PRIVATE POCKETFFT_NO_MULTITHREADING)
+target_compile_features(roomeq_core PUBLIC cxx_std_17)
+set_target_properties(roomeq_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+    target_compile_options(roomeq_core PRIVATE /W4)
+else()
+    target_compile_options(roomeq_core PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests and the analysis CLI (used to cross-check the port against Python).
+# ---------------------------------------------------------------------------
+if(ARE_BUILD_TESTS)
+    enable_testing()
+
+    FetchContent_Declare(doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG        v2.4.11
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(doctest)
+
+    add_executable(roomeq_tests
+        tests/cpp/main.cpp
+        tests/cpp/test_averaging.cpp
+        tests/cpp/test_capture.cpp
+        tests/cpp/test_dualfft.cpp
+        tests/cpp/test_grading.cpp
+        tests/cpp/test_spectrum.cpp
+        tests/cpp/test_sweep.cpp)
+    target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest::doctest)
+    add_test(NAME roomeq_tests COMMAND roomeq_tests)
+
+    add_executable(roomeq_cli tools/roomeq_cli.cpp)
+    target_link_libraries(roomeq_cli PRIVATE roomeq_core)
+endif()
+
+if(NOT ARE_BUILD_PLUGIN)
+    return()
+endif()
+
 # ---------------------------------------------------------------------------
 # Plugin identity.
 # PLACEHOLDERS: set these for real before the plugin is used in saved sessions.
@@ -30,7 +97,6 @@ set(ARE_PLUGIN_CODE       "Areq")   # 4 chars, exactly one upper-case
 # ---------------------------------------------------------------------------
 set(ARE_JUCE_TAG "8.0.15" CACHE STRING "JUCE git tag to fetch")
 
-include(FetchContent)
 FetchContent_Declare(JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG        ${ARE_JUCE_TAG}
@@ -66,8 +132,8 @@ juce_add_plugin(AdaptiveRoomEQ
 
 target_sources(AdaptiveRoomEQ
     PRIVATE
-        src/plugin/PluginProcessor.cpp
-        src/plugin/PluginEditor.cpp)
+        src/plugin/PluginEditor.cpp
+        src/plugin/PluginProcessor.cpp)
 
 target_include_directories(AdaptiveRoomEQ PRIVATE src)
 
@@ -79,6 +145,7 @@ target_compile_definitions(AdaptiveRoomEQ
 
 target_link_libraries(AdaptiveRoomEQ
     PRIVATE
+        roomeq_core
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC

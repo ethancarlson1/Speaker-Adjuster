@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .grading import CaptureGrade, Grade
-from .spectrum import OCTAVE_CENTERS, log_freq_grid, smooth_power, to_db
+from .spectrum import OCTAVE_CENTERS, log_freq_grid, rebin_power, smooth_power, to_db
 
 
 def band_mask_weights(freqs: np.ndarray, grade: CaptureGrade) -> np.ndarray:
@@ -47,8 +47,8 @@ def power_average(freqs: np.ndarray, powers: list[np.ndarray], weights: list[np.
     offsets = [0.0] * len(powers)
     if align_levels and powers:
         levels = [level_offset_db(freqs, p, band, w) for p, w in zip(powers, weights)]
-        target = float(np.mean(levels))
-        offsets = [target - lv for lv in levels]
+        target = float(np.nanmean(levels))
+        offsets = [0.0 if np.isnan(lv) else target - lv for lv in levels]
 
     num = np.zeros_like(powers[0])
     den = np.zeros_like(powers[0])
@@ -104,3 +104,66 @@ def quick_mode_policy(n_good: int, user_fraction: int) -> QuickModePolicy:
     if n_good == 2:
         return QuickModePolicy(min(user_fraction, 3), 0.75, 6.0)
     return QuickModePolicy(user_fraction, 1.0, None)
+
+
+@dataclass
+class SessionSummary:
+    """Everything the response graph needs for a set of captures."""
+    freqs: np.ndarray               # linear grid of the average
+    power: np.ndarray
+    weight: np.ndarray
+    offsets_db: list[float]         # per capture (all, including excluded)
+    n_good: int                     # included captures not graded redo
+    policy: QuickModePolicy
+    grid: np.ndarray                # log display grid
+    average_db: np.ndarray          # smoothed at policy.smoothing_fraction
+    position_db: list[np.ndarray]   # per capture, level-aligned, same smoothing
+    usable: tuple[float, float]
+    target_db: float
+
+
+def summarize_session(captures, user_fraction: int = 6, grid: np.ndarray | None = None) -> SessionSummary | None:
+    """Average the non-excluded captures and prepare display curves.
+
+    Redo bands are masked per capture; levels are aligned to the mean of the
+    included captures (excluded ones are aligned too, for display). Captures
+    on a different sample rate are rebinned onto the first included one's grid.
+    """
+    included = [i for i, c in enumerate(captures) if not c.excluded]
+    if not included:
+        return None
+    ref = captures[included[0]]
+    freqs = ref.freqs
+
+    def on_grid(c, values):
+        if len(c.freqs) == len(freqs) and c.fs == ref.fs:
+            return values
+        return rebin_power(c.freqs, values, freqs)
+
+    powers = [on_grid(c, c.power) for c in captures]
+    mask_weights = [on_grid(c, band_mask_weights(c.freqs, c.grade) * c.weight) for c in captures]
+    display_weights = [on_grid(c, c.weight) for c in captures]
+
+    levels = [level_offset_db(freqs, p, (250.0, 4000.0), w) for p, w in zip(powers, mask_weights)]
+    target = float(np.nanmean([levels[i] for i in included]))
+    offsets = [0.0 if np.isnan(lv) or np.isnan(target) else target - lv for lv in levels]
+
+    num = np.zeros_like(freqs)
+    den = np.zeros_like(freqs)
+    for i in included:
+        num += mask_weights[i] * powers[i] * 10 ** (offsets[i] / 10)
+        den += mask_weights[i]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        avg = np.where(den > 0, num / np.maximum(den, 1e-30), np.nan)
+
+    n_good = sum(1 for i in included if captures[i].grade.overall != Grade.REDO)
+    policy = quick_mode_policy(n_good, user_fraction)
+    grid = grid if grid is not None else log_freq_grid(20, 20000, 48)
+    fraction = policy.smoothing_fraction
+    average_db = to_db(smooth_power(freqs, avg, fraction, grid, den))
+    position_db = [to_db(smooth_power(freqs, powers[i] * 10 ** (offsets[i] / 10), fraction, grid, display_weights[i]))
+                   for i in range(len(captures))]
+    usable = usable_range(grid, to_db(smooth_power(freqs, avg, 1, grid, den)))
+    return SessionSummary(freqs=freqs, power=avg, weight=den, offsets_db=offsets, n_good=n_good, policy=policy,
+                          grid=grid, average_db=average_db, position_db=position_db, usable=usable,
+                          target_db=target_level_db(grid, average_db))

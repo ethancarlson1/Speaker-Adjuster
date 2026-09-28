@@ -59,3 +59,34 @@ def test_quick_mode_strength_grows_with_good_positions():
     assert [p.strength for p in policies] == sorted(p.strength for p in policies)
     assert policies[0].max_correction_db == 3.0
     assert policies[-1].max_correction_db is None
+
+
+def _fake_capture(power, grade_noise, excluded=False, fs=FS):
+    from types import SimpleNamespace
+    freqs = np.fft.rfftfreq(2 * (len(power) - 1), 1 / fs)
+    return SimpleNamespace(freqs=freqs, fs=fs, power=power, weight=((freqs >= 20) & (freqs <= 20000)).astype(float),
+                           grade=grade_capture(freqs, power, grade_noise, f_max=20000), excluded=excluded)
+
+
+def test_session_summary_excludes_and_aligns():
+    shape = 1 + 0.5 * np.cos(FREQS / 500)
+    quiet = np.full_like(FREQS, 1e-6)
+    caps = [_fake_capture(shape, quiet), _fake_capture(shape * 4, quiet), _fake_capture(shape * 100, quiet, excluded=True)]
+    s = averaging.summarize_session(caps, user_fraction=6)
+    assert s.n_good == 2
+    assert s.policy.smoothing_fraction == 3            # two good positions -> 1/3 octave
+    # Included captures meet in the middle; the excluded one is aligned for display only.
+    assert s.offsets_db[0] == pytest.approx(3.01, abs=0.02) and s.offsets_db[1] == pytest.approx(-3.01, abs=0.02)
+    assert s.offsets_db[2] == pytest.approx(3.01 - 20, abs=0.05)
+    assert np.allclose(s.position_db[0], s.position_db[2], atol=1e-6, equal_nan=True)
+    assert averaging.summarize_session([_fake_capture(shape, quiet, excluded=True)]) is None
+
+
+def test_session_summary_rebins_other_sample_rates():
+    quiet48 = np.full_like(FREQS, 1e-6)
+    f44 = np.fft.rfftfreq(32768, 1 / 44100)
+    caps = [_fake_capture(np.ones_like(FREQS), quiet48),
+            _fake_capture(np.ones_like(f44) * 2, np.full_like(f44, 1e-6), fs=44100)]
+    s = averaging.summarize_session(caps)
+    band = (s.grid > 100) & (s.grid < 10000)
+    assert np.allclose(s.average_db[band], 10 * np.log10(np.sqrt(2)), atol=0.01)   # both aligned to the mean level
