@@ -33,12 +33,15 @@ FetchContent_MakeAvailable(pocketfft)
 add_library(roomeq_core STATIC
     src/roomeq/averaging.cpp
     src/roomeq/capture.cpp
+    src/roomeq/correction.cpp
     src/roomeq/dualfft.cpp
     src/roomeq/fft.cpp
+    src/roomeq/filters.cpp
     src/roomeq/grading.cpp
     src/roomeq/noise.cpp
     src/roomeq/spectrum.cpp
-    src/roomeq/sweep.cpp)
+    src/roomeq/sweep.cpp
+    src/roomeq/targets.cpp)
 target_include_directories(roomeq_core PUBLIC src)
 target_include_directories(roomeq_core SYSTEM PRIVATE ${pocketfft_SOURCE_DIR})
 target_compile_definitions(roomeq_core PRIVATE POCKETFFT_NO_MULTITHREADING)
@@ -71,7 +74,9 @@ if(ARE_BUILD_TESTS)
         tests/cpp/main.cpp
         tests/cpp/test_averaging.cpp
         tests/cpp/test_capture.cpp
+        tests/cpp/test_correction.cpp
         tests/cpp/test_dualfft.cpp
+        tests/cpp/test_filters.cpp
         tests/cpp/test_grading.cpp
         tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp

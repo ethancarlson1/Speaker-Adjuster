@@ -136,3 +136,61 @@ def test_tail_too_short_is_an_error(sim, tmp_path):
     out = subprocess.run([CLI, "analyze", "--fs", "48000", "--duration", "2", "--tail", "0.6",
                           "--position", f"P={save(tmp_path, 'short', rec)}"], capture_output=True, text=True)
     assert out.returncode == 1 and "tail too short" in out.stderr
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: the correction fit
+
+FIT_TOL_DB = 0.05       # rounding can steer the optimiser differently per platform (locally ~2e-6 dB)
+
+
+def _fit_session(sim, tmp_path, positions, seed):
+    rng = np.random.default_rng(seed)
+    play = sweep.build_playback(CFG)
+    args, caps = [], []
+    for pos, noise in positions:
+        recs = [sim.play(play, pos, noise, rng) for _ in range(2)]
+        files = ",".join(str(save(tmp_path, f"fit{pos}_{i}", r)) for i, r in enumerate(recs))
+        args += ["--position", f"P{pos}={files}"]
+        caps.append(capture.analyze_sweep_capture(f"P{pos}", recs, CFG))
+    return args, caps
+
+
+@pytest.mark.parametrize("target_name,positions,limits", [
+    ("house", [(0, roomsim.NoiseSpec()), (1, roomsim.NoiseSpec()), (2, roomsim.NoiseSpec(rumble_dbfs=-25.0)),
+               (3, roomsim.NoiseSpec())], {}),
+    ("speech", [(0, roomsim.NoiseSpec()), (2, roomsim.NoiseSpec()), (4, roomsim.NoiseSpec())],
+     {"max_cut_db": 9.0, "max_boost_db": 2.0, "range_hz": (60.0, 12000.0)}),
+    ("flat", [(1, roomsim.NoiseSpec())], {}),                                            # quick mode
+])
+def test_correction_fit_matches_python(sim, tmp_path, target_name, positions, limits):
+    from roomeq import correction, filters, targets
+
+    args, caps = _fit_session(sim, tmp_path, positions, 41 + len(positions))
+    cfg = correction.CorrectionConfig(**limits)
+    extra = ["--target", target_name, "--max-cut", cfg.max_cut_db, "--max-boost", cfg.max_boost_db,
+             "--range-lo", cfg.range_hz[0], "--range-hi", cfg.range_hz[1]]
+    result = run_cli("analyze", "--fs", CFG.fs, "--duration", CFG.duration, "--smoothing", 6, *args, *extra)
+    cpp = result["correction"]
+
+    target = {t.name.lower(): t for t in targets.PRESETS}[target_name]
+    summary = averaging.summarize_session(caps, 6, log_freq_grid(20, 20000, 48))
+    py = correction.design_correction(caps, summary, target, CFG.fs, cfg)
+
+    # Everything before the optimiser is deterministic: exact to rounding.
+    assert_curve(cpp["grid"], py.grid, "grid")
+    assert_curve(cpp["average_db"], py.average_db, "average")
+    assert_curve(cpp["target_db"], py.target_db, "target")
+    assert_curve(cpp["desired_db"], py.desired_db, "desired")
+    assert np.array_equal(np.array(cpp["null_mask"], dtype=bool), py.null_mask)
+    assert cpp["fit_range"] == pytest.approx(list(py.fit_range), abs=1e-9)
+    assert cpp["strength"] == py.strength
+
+    # The fit itself: same bands, same curve.
+    assert len(cpp["bands"]) == len(py.bands)
+    for cb, pb in zip(cpp["bands"], py.bands):
+        assert cb["kind"] == pb.kind
+    assert np.max(np.abs(np.array(cpp["correction_db"]) - py.correction_db)) < FIT_TOL_DB
+    cpp_bands = [filters.Band(b["kind"], b["freq"], b["gain_db"], b["q"]) for b in cpp["bands"]]
+    assert np.max(np.abs(filters.response_db(cpp_bands, py.grid, CFG.fs) - py.correction_db)) < FIT_TOL_DB
+    assert cpp["rms_error_db"] == pytest.approx(py.rms_error_db, abs=FIT_TOL_DB)

@@ -27,7 +27,7 @@ for step.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -112,13 +112,6 @@ def q_max(f: float, gain: float, cfg: CorrectionConfig) -> float:
     return filters.q_for_bandwidth(octaves)
 
 
-def _params(b: Band) -> list[float]:
-    p = [np.log2(b.freq), b.gain_db]
-    if b.kind == BELL:
-        p.append(np.log2(b.q))
-    return p
-
-
 def _from_params(kind: str, p) -> Band:
     q = 2.0 ** p[2] if kind == BELL else SHELF_Q
     return Band(kind, float(2.0 ** p[0]), float(p[1]), float(q))
@@ -173,11 +166,7 @@ def levenberg_marquardt(slots: list[_Slot], free: list[int], prob: FitProblem, f
     diagonal of J^T J (Marquardt). Returns the final cost.
     """
     responses = {i: _slot_db(slots[i], prob) for i in free}
-
-    def total():
-        return fixed_db + sum(responses.values())
-
-    c = total()
+    c = fixed_db + sum(responses.values())
     cost = _cost(prob, c)
     lam = 1e-2
     sp = np.sqrt(prob.cfg.penalty)
@@ -185,7 +174,6 @@ def levenberg_marquardt(slots: list[_Slot], free: list[int], prob: FitProblem, f
     for _ in range(max_iter):
         # Jacobian of the correction curve w.r.t. each free parameter (forward differences).
         cols = []
-        index = []
         for i in free:
             s = slots[i]
             for k in range(len(s.p)):
@@ -194,7 +182,6 @@ def levenberg_marquardt(slots: list[_Slot], free: list[int], prob: FitProblem, f
                 q[k] += h
                 d = (filters.band_db(_from_params(s.kind, q), prob.freqs, prob.fs) - responses[i]) / h
                 cols.append(d)
-                index.append((i, k))
         dc = np.array(cols).T                                  # (points, params)
         over = (c > prob.upper).astype(float)
         under = (prob.lower > c).astype(float)
@@ -293,6 +280,8 @@ def fit_bands(prob: FitProblem) -> list[Band]:
         return zero + sum((_slot_db(s, prob) for s in ss), zero)
 
     inside = (prob.weight > 0) & (prob.freqs >= prob.f_lo) & (prob.freqs <= prob.f_hi)
+    if not np.any(inside):
+        return []
     cost = _cost(prob, zero)
     for _ in range(prob.cfg.max_bands):
         c = curve(slots)
@@ -414,8 +403,3 @@ def design_correction(captures, summary: SessionSummary, target: TargetCurve, fs
                             upper_db=upper, lower_db=lower, null_mask=null, fit_range=(lo, hi), fitted=fitted,
                             bands=bands, strength=strength, correction_db=correction, predicted_db=predicted,
                             rms_error_db=rms, notes=notes)
-
-
-def with_amount(bands: list[Band], amount: float) -> list[Band]:
-    """The user's correction amount (0..1) applied on top of the fit."""
-    return [replace(b, gain_db=b.gain_db * amount) for b in bands]

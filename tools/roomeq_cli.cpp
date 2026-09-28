@@ -8,13 +8,18 @@
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
 //                      --position P1=a.f64,b.f64 [--position ...]
 //                      [--program P2=reference.f64:mic.f64] [--exclude P1]
+//                      [--target flat|house|speech [--max-cut 12] [--max-boost 3] [--range-lo 20] [--range-hi 20000]]
 //
 // `analyze` prints JSON: every capture's grade plus the session summary
-// (level-aligned position curves, average, usable range, target level).
+// (level-aligned position curves, average, usable range, target level) and,
+// with --target, the fitted correction.
 
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
+#include "roomeq/correction.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -123,6 +128,26 @@ std::string summaryJson (const roomeq::SessionSummary& s)
            + ",\"target_db\":" + num (s.targetDb) + "}";
 }
 
+std::string bandJson (const roomeq::Band& b)
+{
+    return std::string ("{\"kind\":") + str (roomeq::bandKindName (b.kind)) + ",\"freq\":" + num (b.freq)
+           + ",\"gain_db\":" + num (b.gainDb) + ",\"q\":" + num (b.q) + "}";
+}
+
+std::string correctionJson (const roomeq::CorrectionResult& r)
+{
+    std::vector<double> nulls;
+    for (auto v : r.nullMask)
+        nulls.push_back (v ? 1.0 : 0.0);
+    return std::string ("{") + "\"grid\":" + numbers (r.grid) + ",\"average_db\":" + numbers (r.averageDb)
+           + ",\"target_db\":" + numbers (r.targetDb) + ",\"desired_db\":" + numbers (r.desiredDb)
+           + ",\"null_mask\":" + numbers (nulls)
+           + ",\"fit_range\":[" + num (r.fitRange.first) + "," + num (r.fitRange.second) + "]"
+           + ",\"strength\":" + num (r.strength) + ",\"fitted\":" + list (r.fitted, bandJson)
+           + ",\"bands\":" + list (r.bands, bandJson) + ",\"correction_db\":" + numbers (r.correctionDb)
+           + ",\"rms_error_db\":" + num (r.rmsErrorDb) + "}";
+}
+
 struct Args
 {
     std::string command;
@@ -217,8 +242,28 @@ int run (int argc, char** argv)
 
     const auto fraction = static_cast<int> (args.get ("smoothing", 6));
     const auto summary = roomeq::summarizeSession (captures, fraction, roomeq::logFreqGrid (20.0, 20000.0, 48));
+    std::string correction = "null";
+    if (summary && args.values.count ("target") > 0)
+    {
+        const auto& name = args.values.at ("target");
+        const roomeq::TargetCurve* target = nullptr;
+        for (const auto& t : roomeq::targetPresets())
+            if (t.name == name || (name.size() == t.name.size()
+                                   && std::equal (name.begin(), name.end(), t.name.begin(),
+                                                  [] (char a, char b) { return std::tolower (a) == std::tolower (b); })))
+                target = &t;
+        if (target == nullptr)
+            throw std::runtime_error ("unknown target: " + name);
+        roomeq::CorrectionConfig ccfg;
+        ccfg.maxCutDb = args.get ("max-cut", ccfg.maxCutDb);
+        ccfg.maxBoostDb = args.get ("max-boost", ccfg.maxBoostDb);
+        ccfg.rangeLoHz = args.get ("range-lo", ccfg.rangeLoHz);
+        ccfg.rangeHiHz = args.get ("range-hi", ccfg.rangeHiHz);
+        correction = correctionJson (roomeq::designCorrection (captures, *summary, *target, cfg.fs, ccfg));
+    }
     std::cout << "{\"captures\":" << list (captures, [] (const auto& c) { return captureJson (*c); })
-              << ",\"summary\":" << (summary ? summaryJson (*summary) : "null") << "}\n";
+              << ",\"summary\":" << (summary ? summaryJson (*summary) : "null")
+              << ",\"correction\":" << correction << "}\n";
     return 0;
 }
 } // namespace
