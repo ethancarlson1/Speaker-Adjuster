@@ -10,13 +10,13 @@
 // Audio path (later phases): measured correction -> voicing EQ -> loudness comp.
 //
 // Buses: stereo main in/out plus a mono sidechain input for the measurement
-// mic. The standalone app can't use sidechains (JUCE disables non-main buses
-// there), so it takes a 3-channel main input instead: 1-2 program, 3 mic.
+// mic. The standalone app is a measurement tool: its only input is the mic
+// (JUCE disables sidechains there), and it outputs only the sweep, on the
+// physical output picked in the editor.
 //
 // Phase 1: the main path passes through, except while a sweep plays (on one
-// speaker; one correction will later be applied to both sides). The
-// standalone app outputs only the sweep, never its inputs. Analysis never
-// runs on the audio thread.
+// speaker; one correction will later be applied to both sides). Analysis
+// never runs on the audio thread.
 class AdaptiveRoomEQProcessor final : public juce::AudioProcessor
 {
 public:

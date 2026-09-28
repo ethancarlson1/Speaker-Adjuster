@@ -4,6 +4,7 @@
 #include "plugin/PluginProcessor.h"
 #include "plugin/ResponseGraph.h"
 
+#include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
 // Phase 1 UI: measurement controls on the left; capture list with grades and
@@ -29,6 +30,11 @@ private:
     void showResult (const juce::Result& result);
     void redo (int id);
     void drawMeter (juce::Graphics&, juce::Rectangle<int> area, const juce::String& label, float levelDb) const;
+
+    // Standalone only: pick the physical mic input and speaker output as single
+    // channels (JUCE's own audio settings dialog only offers stereo pairs).
+    void refreshDeviceChannels();
+    void applyDeviceChannels();
     juce::String summaryLine() const;
 
     juce::Rectangle<int> headerArea() const;
@@ -43,6 +49,10 @@ private:
     juce::Label sweepLengthLabel, sweepsLabel, speakerLabel, levelLabel, smoothingLabel;
     std::unique_ptr<ComboAttachment> sweepLengthAttachment, sweepsAttachment, speakerAttachment, smoothingAttachment;
     std::unique_ptr<SliderAttachment> levelAttachment;
+
+    juce::AudioDeviceManager* deviceManager = nullptr;
+    juce::ComboBox micInput, speakerOutput;
+    juce::Label micInputLabel, speakerOutputLabel;
 
     juce::TextButton measureButton { "Measure position" };
     juce::TextButton programButton { "Measure from music (30 s)" };

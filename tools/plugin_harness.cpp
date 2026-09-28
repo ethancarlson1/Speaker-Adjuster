@@ -192,6 +192,77 @@ std::vector<float> musicLikeProgram (double seconds)
 }
 } // namespace
 
+void writeSnapshot (juce::Component& c, const juce::String& path)
+{
+    const auto image = c.createComponentSnapshot (c.getLocalBounds(), true, 1.5f);
+    juce::File file (juce::File::getCurrentWorkingDirectory().getChildFile (path));
+    file.deleteFile();
+    juce::FileOutputStream stream (file);
+    check (stream.openedOk() && juce::PNGImageFormat().writeImageToStream (image, stream), "wrote " + file.getFullPathName());
+}
+
+// The standalone app: mono mic in, stereo out, and the mic shares channel 0
+// with the first output (as JUCE's AudioProcessorPlayer lays the buffer out).
+void standaloneChecks (const juce::String& snapshotPath)
+{
+    std::cout << "Standalone app mode\n";
+    // Same steps as JUCE's createPluginFilterOfType for the standalone wrapper.
+    juce::PluginHostType::jucePlugInClientCurrentWrapperType = juce::AudioProcessor::wrapperType_Standalone;
+    juce::AudioProcessor::setTypeOfNextNewPlugin (juce::AudioProcessor::wrapperType_Standalone);
+    auto proc = std::make_unique<AdaptiveRoomEQProcessor>();
+    juce::AudioProcessor::setTypeOfNextNewPlugin (juce::AudioProcessor::wrapperType_Undefined);
+    juce::PluginHostType::jucePlugInClientCurrentWrapperType = juce::AudioProcessor::wrapperType_Undefined;
+    check (proc->isStandalone(), "processor knows it's the standalone app");
+    check (proc->getTotalNumInputChannels() == 1 && proc->getTotalNumOutputChannels() == 2, "mono mic input, stereo output");
+    proc->setRateAndBufferSizeDetails (fs, blockSize);
+    proc->prepareToPlay (fs, blockSize);
+    check (proc->startProgram().failed(), "music capture refused (no program passes through the app)");
+
+    const double distance = 7.0;
+    SimulatedRoom room (distance, 11, 3e-4, 0.0);
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    std::vector<float> speaker (blockSize, 0.0f);
+    check (proc->startSweep().wasOk(), "start sweep");
+    for (int block = 0; block < 100000 && proc->getEngine().getActivity() != MeasurementEngine::Activity::idle; ++block)
+    {
+        for (int i = 0; i < blockSize; ++i)
+        {
+            buffer.setSample (0, i, room.process (speaker[static_cast<std::size_t> (i)]));   // mic, in place
+            buffer.setSample (1, i, 0.0f);
+        }
+        proc->processBlock (buffer, midi);
+        for (int i = 0; i < blockSize; ++i)
+            speaker[static_cast<std::size_t> (i)] = buffer.getSample (0, i);   // output 1 feeds the speaker
+        if (block % 64 == 0)
+            pump (*proc);
+    }
+    for (int i = 0; i < 400 && proc->getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
+        pump (*proc);
+    const auto entries = proc->getEngine().getEntries();
+    check (entries.size() == 1 && entries[0].capture->grade.overall == roomeq::Grade::pass, "sweep capture graded pass");
+    if (! entries.empty())
+    {
+        const auto expected = 1000.0 * (distance / 343.0 * fs + 288 + blockSize) / fs;
+        check (std::abs (entries[0].capture->delaysMs.front() - expected) < 0.5,
+               "loop delay within 0.5 ms of the simulated " + juce::String (expected, 2) + " ms");
+    }
+
+    // Idle: a loud mic must never reach the speakers.
+    for (int i = 0; i < blockSize; ++i)
+        buffer.setSample (0, i, 0.5f * std::sin (0.05f * static_cast<float> (i)));
+    proc->processBlock (buffer, midi);
+    check (buffer.getMagnitude (0, blockSize) <= 0.0f, "mic is not passed through to the outputs");
+
+    for (int i = 0; i < 20; ++i)
+        pump (*proc);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (proc->createEditor());
+    editor->setSize (1160, 760);
+    for (int i = 0; i < 20; ++i)
+        pump (*proc);
+    writeSnapshot (*editor, snapshotPath);
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI juce;
@@ -286,12 +357,10 @@ int main (int argc, char** argv)
         editor->setSize (1160, 760);
         for (int i = 0; i < 20; ++i)
             pump (proc);
-        const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.5f);
-        juce::File file (juce::File::getCurrentWorkingDirectory().getChildFile (outPath));
-        file.deleteFile();
-        juce::FileOutputStream stream (file);
-        check (stream.openedOk() && juce::PNGImageFormat().writeImageToStream (image, stream), "wrote " + file.getFullPathName());
+        writeSnapshot (*editor, outPath);
     }
+
+    standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 
     std::cout << (failures == 0 ? "All checks passed\n" : juce::String (failures) + " check(s) failed\n");
     return failures == 0 ? 0 : 1;

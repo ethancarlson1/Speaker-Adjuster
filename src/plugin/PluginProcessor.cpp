@@ -32,9 +32,11 @@ void updatePeak (std::atomic<float>& peak, float value) noexcept
 
 juce::AudioProcessor::BusesProperties AdaptiveRoomEQProcessor::makeBuses (bool isStandalone)
 {
+    // The standalone app is a measurement tool: its only input is the mic, and
+    // the user picks the physical mic input and speaker output in the editor.
     if (isStandalone)
         return BusesProperties()
-            .withInput ("Input + Mic", juce::AudioChannelSet::discreteChannels (3), true)
+            .withInput ("Measurement Mic", juce::AudioChannelSet::mono(), true)
             .withOutput ("Output", juce::AudioChannelSet::stereo(), true);
 
     return BusesProperties()
@@ -90,7 +92,7 @@ bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts
         return false;
 
     if (standalone)
-        return layouts.getMainInputChannelSet() == juce::AudioChannelSet::discreteChannels (3);
+        return layouts.getMainInputChannelSet() == juce::AudioChannelSet::mono();
 
     if (layouts.getMainInputChannelSet() != mainOut)
         return false;
@@ -109,7 +111,7 @@ bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts
 const float* AdaptiveRoomEQProcessor::findMic (juce::AudioBuffer<float>& buffer)
 {
     if (standalone)
-        return getTotalNumInputChannels() > 2 ? buffer.getReadPointer (2) : nullptr;
+        return getTotalNumInputChannels() > 0 ? buffer.getReadPointer (0) : nullptr;
 
     if (auto* micBus = getBus (true, micBusIndex); micBus != nullptr && micBus->isEnabled())
     {
@@ -125,8 +127,10 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     juce::ScopedNoDenormals noDenormals;
     const auto numSamples = buffer.getNumSamples();
 
-    // Main output shares channels 0-1 with the main input; the mic lives on
-    // a channel above them, so writing the outputs never touches it.
+    // Plugin: the mic sidechain sits on a channel above the main outputs.
+    // Standalone: the mic is input channel 0, which shares memory with output
+    // channel 0; the recorder reads each mic sample before writing that output
+    // sample, so the sweep never overwrites the recording.
     auto mainOut = getBusBuffer (buffer, false, 0);
     const auto* mic = findMic (buffer);
     if (mic != nullptr)
@@ -137,9 +141,7 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     const auto wroteOutput = recorder.process (mainOut.getArrayOfWritePointers(), mainOut.getNumChannels(), mic, numSamples);
 
-    // The standalone app never passes its inputs to the speakers: with a
-    // single-input device (e.g. a USB measurement mic) JUCE copies that input
-    // to every processor input, which would feed the mic straight back to the PA.
+    // The standalone app never passes its input (the mic) to the speakers.
     if (standalone && ! wroteOutput)
         mainOut.clear();
 
@@ -149,7 +151,7 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 bool AdaptiveRoomEQProcessor::isMicConnected() const
 {
     if (standalone)
-        return getTotalNumInputChannels() > 2;
+        return getTotalNumInputChannels() > 0;
     const auto* micBus = getBus (true, micBusIndex);
     return micBus != nullptr && micBus->isEnabled();
 }
@@ -161,7 +163,9 @@ MeasurementEngine::SweepSettings AdaptiveRoomEQProcessor::getSweepSettings() con
     { return juce::roundToInt (parameters.getRawParameterValue (id.getParamID())->load()); };
     s.seconds = sweepSeconds[juce::jlimit (0, 2, index (ParamIds::sweepLength))];
     s.repeats = juce::jlimit (0, 2, index (ParamIds::sweepsPerPosition)) + 1;
-    s.channel = juce::jlimit (0, 1, index (ParamIds::sweepSpeaker));
+    // Standalone: the speaker is chosen as a physical output in the editor, and
+    // the sweep always plays on the first output channel.
+    s.channel = standalone ? 0 : juce::jlimit (0, 1, index (ParamIds::sweepSpeaker));
     s.levelDbfs = parameters.getRawParameterValue (ParamIds::sweepLevel.getParamID())->load();
     return s;
 }
@@ -181,6 +185,9 @@ juce::Result AdaptiveRoomEQProcessor::startSweep (int replaceId)
 
 juce::Result AdaptiveRoomEQProcessor::startProgram (int replaceId)
 {
+    if (standalone)
+        return juce::Result::fail ("Measuring from music needs the program to pass through the plugin, "
+                                   "so it's only available in the plugin inside your DAW.");
     if (! isMicConnected())
         return juce::Result::fail ("Connect the measurement mic first");
     return engine.startProgram (getSampleRate(), programSeconds, replaceId);

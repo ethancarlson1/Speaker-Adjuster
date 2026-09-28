@@ -70,12 +70,42 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     addAndMakeVisible (graph);
 
    #if JucePlugin_Build_Standalone
-    // JUCE's standalone mutes inputs by default to avoid feedback, which would
-    // also silence the measurement mic.
     if (processor.isStandalone())
+    {
         if (auto* holder = juce::StandalonePluginHolder::getInstance())
+        {
+            // JUCE's standalone mutes inputs by default to avoid feedback. The app
+            // never sends its input to the speakers, and the mic must be heard.
             holder->getMuteInputValue().setValue (false);
+            deviceManager = &holder->deviceManager;
+        }
+    }
    #endif
+
+    if (processor.isStandalone())
+    {
+        const auto setUpPicker = [this] (juce::ComboBox& box, juce::Label& label, const juce::String& text, const juce::String& tip)
+        {
+            label.setText (text, juce::dontSendNotification);
+            label.setColour (juce::Label::textColourId, theme::ink2);
+            box.setTooltip (tip);
+            box.setTextWhenNothingSelected ("None");
+            box.setTextWhenNoChoicesAvailable ("No audio device");
+            box.onChange = [this] { applyDeviceChannels(); };
+            addAndMakeVisible (box);
+            addAndMakeVisible (label);
+        };
+        setUpPicker (micInput, micInputLabel, "Mic input", "The interface input the measurement mic is plugged into");
+        setUpPicker (speakerOutput, speakerOutputLabel, "Speaker output",
+                     "The interface output feeding the speaker to measure. The sweep plays only here.");
+        // The speaker is chosen as a physical output instead.
+        sweepSpeaker.setVisible (false);
+        speakerLabel.setVisible (false);
+        programButton.setTooltip ("Only in the plugin: measuring from music needs the program to pass through it.");
+        if (deviceManager != nullptr)
+            deviceManager->addChangeListener (this);
+        refreshDeviceChannels();
+    }
 
     processor.getEngine().addChangeListener (this);
     refreshFromEngine();
@@ -88,6 +118,8 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
 
 AdaptiveRoomEQEditor::~AdaptiveRoomEQEditor()
 {
+    if (deviceManager != nullptr)
+        deviceManager->removeChangeListener (this);
     processor.getEngine().removeChangeListener (this);
     stopTimer();
 }
@@ -105,9 +137,58 @@ void AdaptiveRoomEQEditor::redo (int id)
             showResult (e.capture->kind == "program" ? processor.startProgram (id) : processor.startSweep (id));
 }
 
-void AdaptiveRoomEQEditor::changeListenerCallback (juce::ChangeBroadcaster*)
+void AdaptiveRoomEQEditor::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
-    refreshFromEngine();
+    if (deviceManager != nullptr && source == deviceManager)
+        refreshDeviceChannels();
+    else
+        refreshFromEngine();
+}
+
+void AdaptiveRoomEQEditor::refreshDeviceChannels()
+{
+    const auto fill = [] (juce::ComboBox& box, const juce::StringArray& names, const juce::BigInteger& active,
+                          const juce::String& fallback)
+    {
+        box.clear (juce::dontSendNotification);
+        for (int i = 0; i < names.size(); ++i)
+            box.addItem (juce::String (i + 1) + ": " + (names[i].isNotEmpty() ? names[i] : fallback + " " + juce::String (i + 1)), i + 1);
+        // Show the first active channel (JUCE may have a stereo pair active by default).
+        if (const auto first = active.findNextSetBit (0); first >= 0 && first < names.size())
+            box.setSelectedId (first + 1, juce::dontSendNotification);
+    };
+
+    auto* device = deviceManager != nullptr ? deviceManager->getCurrentAudioDevice() : nullptr;
+    if (device == nullptr)
+    {
+        fill (micInput, {}, {}, {});
+        fill (speakerOutput, {}, {}, {});
+        return;
+    }
+    fill (micInput, device->getInputChannelNames(), device->getActiveInputChannels(), "Input");
+    fill (speakerOutput, device->getOutputChannelNames(), device->getActiveOutputChannels(), "Output");
+    repaint (headerArea());
+}
+
+void AdaptiveRoomEQEditor::applyDeviceChannels()
+{
+    if (deviceManager == nullptr)
+        return;
+    auto setup = deviceManager->getAudioDeviceSetup();
+    if (const auto mic = micInput.getSelectedId() - 1; mic >= 0)
+    {
+        setup.useDefaultInputChannels = false;
+        setup.inputChannels.clear();
+        setup.inputChannels.setBit (mic);
+    }
+    if (const auto out = speakerOutput.getSelectedId() - 1; out >= 0)
+    {
+        setup.useDefaultOutputChannels = false;
+        setup.outputChannels.clear();
+        setup.outputChannels.setBit (out);
+    }
+    errorText = deviceManager->setAudioDeviceSetup (setup, true);
+    refreshDeviceChannels();
 }
 
 void AdaptiveRoomEQEditor::refreshFromEngine()
@@ -132,8 +213,10 @@ void AdaptiveRoomEQEditor::timerCallback()
     const auto activity = processor.getEngine().getActivity();
     const auto measuring = activity == MeasurementEngine::Activity::measuring;
     measureButton.setEnabled (! measuring);
-    programButton.setEnabled (! measuring);
+    programButton.setEnabled (! measuring && ! processor.isStandalone());
     stopButton.setEnabled (measuring);
+    micInput.setEnabled (! measuring && micInput.getNumItems() > 0);
+    speakerOutput.setEnabled (! measuring && speakerOutput.getNumItems() > 0);
     if (measuring)
         errorText.clear();
 
@@ -200,9 +283,11 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     const auto micConnected = processor.isMicConnected();
     g.setFont (juce::FontOptions (13.0f));
     g.setColour (micConnected ? theme::ink2 : theme::warning);
-    const auto micText = ! micConnected ? juce::String ("! Mic not connected: route the measurement mic to the sidechain input")
-                         : processor.isStandalone() ? juce::String ("Inputs 1-2: program   Input 3: measurement mic")
-                                                    : juce::String ("Measurement mic on the sidechain input");
+    auto micText = ! micConnected ? juce::String ("! Mic not connected: route the measurement mic to the sidechain input")
+                                  : juce::String ("Measurement mic on the sidechain input");
+    if (processor.isStandalone())
+        micText = speakerOutput.getNumItems() == 0 ? juce::String ("! No audio device: open Options > Audio/MIDI Settings")
+                  : "Mic: " + micInput.getText() + "     Sweep plays on: " + speakerOutput.getText();
     g.drawText (micText, header, juce::Justification::centredLeft);
 
     // Controls panel.
@@ -271,9 +356,15 @@ void AdaptiveRoomEQEditor::resized()
         control.setBounds (r);
         controls.removeFromTop (8);
     };
+    if (processor.isStandalone())
+    {
+        row (micInputLabel, micInput);
+        row (speakerOutputLabel, speakerOutput);
+    }
     row (sweepLengthLabel, sweepLength);
     row (sweepsLabel, sweepsPerPosition);
-    row (speakerLabel, sweepSpeaker);
+    if (! processor.isStandalone())
+        row (speakerLabel, sweepSpeaker);
     row (levelLabel, sweepLevel);
     row (smoothingLabel, smoothing);
 

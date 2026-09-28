@@ -166,6 +166,28 @@ TEST_CASE ("process reports when it wrote the output")
     CHECK (l[0] == 0.0f);
 }
 
+TEST_CASE ("mic sharing a buffer with the sweep output is recorded before it's overwritten")
+{
+    // The standalone app's mic is input channel 0, the same memory as output 0.
+    CaptureRecorder rec;
+    REQUIRE (rec.start (makeSweepRequest (48000.0, 2.0, 1, 0, -12.0)));
+    const auto length = rec.getCurrent()->excitation.size();
+    std::vector<float> micInput;
+    std::vector<float> l (256), r (256);
+    float* main[] = { l.data(), r.data() };
+    for (std::size_t done = 0; done < length; done += 256)
+    {
+        for (std::size_t i = 0; i < 256; ++i)
+            l[i] = static_cast<float> ((done + i) % 1000) * 1e-3f;   // what the mic "hears"
+        micInput.insert (micInput.end(), l.begin(), l.end());
+        rec.process (main, 2, l.data(), 256);
+    }
+    auto finished = rec.collectFinished();
+    REQUIRE (finished != nullptr);
+    for (std::size_t i = 0; i < length; i += 101)
+        CHECK (finished->mic[0][i] == micInput[i]);
+}
+
 TEST_CASE ("abortWhileStopped releases a request that never ran")
 {
     CaptureRecorder rec;

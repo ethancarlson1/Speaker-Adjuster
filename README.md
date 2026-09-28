@@ -6,8 +6,8 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 
 ## Measuring a room
 
-1. Route the measurement mic to the plugin's **sidechain input** (in the standalone app, device input 3).
-2. Pick **Sweep speaker** (Left or Right). The sweep plays on that speaker only, and the other side stays silent. The Phase 2 correction will be applied to both sides.
+1. Route the measurement mic to the plugin's **sidechain input**. In the standalone app, pick it in **Mic input** instead.
+2. Pick the speaker to sweep. In the plugin that's **Sweep speaker** (Left or Right), and the other side stays silent. In the standalone app it's **Speaker output**, any single interface output. The Phase 2 correction will be applied to both sides.
 3. Set **Sweep level** so the mic meter peaks well below 0 dBFS. The default is −12 dBFS.
 4. Press **Measure position** at 3–5 spots across the audience area, at different distances and off-axis. Avoid symmetric spots on the centre line. Each position plays 1–3 sweeps (2, 5 or 10 s) and averages them.
 5. Each capture is graded **pass / marginal / redo** with the reason (e.g. "low-end noise too high below 180 Hz"). You can rename a capture (double-click), take it out of the average, redo it, or delete it.
@@ -45,7 +45,7 @@ Download from the latest green CI run (Actions → CI → the run → **Artifact
 
 Patch an interface output into the mic input with a cable:
 - **Plugin:** the output the sweep plays on, into the input you route to the sidechain.
-- **Standalone app:** output 1, into input 3.
+- **Standalone app:** the **Speaker output**, into the **Mic input**.
 
 Press **Measure position**. You should get **PASS** in every band. Expect a nearly flat curve (the interface's own response), and a delay equal to your interface's round-trip latency (a few ms). If that works, recording, deconvolution and timing are all behaving.
 
@@ -114,7 +114,12 @@ The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the P
 ## Routing notes
 
 - **Plugin:** stereo main in/out carries the program to the PA. The mono **Measurement Mic** sidechain carries the mic. If a host only offers stereo sidechains, the first channel is used.
-- **Standalone app:** JUCE's standalone can't use sidechains, so the app takes three inputs: 1–2 program (a reference tap, used only for **Measure from music**), 3 mic. The app only ever outputs the sweep and never passes its inputs to the speakers. That matters because with a single-input device, such as a USB measurement mic, JUCE copies that input to every channel. Because nothing can feed back, the app turns off JUCE's default input mute when its window opens.
+- **Standalone app:** a measurement tool with one input (the mic) and one output (the speaker being swept).
+  - Choose the audio device, sample rate and buffer size in **Options → Audio/MIDI Settings**.
+  - Pick the channels with the app's own **Mic input** and **Speaker output** menus. They list every channel individually, whereas JUCE's settings dialog only offers stereo pairs.
+  - The app only ever outputs the sweep and never sends the mic to the speakers, so it turns off JUCE's default input mute.
+  - **Measure from music** is plugin-only, because no program passes through the app.
+  - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
 
 ## Licensing note
 
