@@ -1076,7 +1076,7 @@ void AdaptiveRoomEQEditor::resized()
     // What's left: correction / loudness details and the tab's tip (the Loudness
     // tab keeps its details and drops the tip when the window is small).
     if (currentTab == Tab::loudness)
-        tipBounds = content.getHeight() >= 190 ? content.removeFromBottom (64) : juce::Rectangle<int>();
+        tipBounds = content.getHeight() >= 150 ? content.removeFromBottom (64) : juce::Rectangle<int>();
     else
         tipBounds = content.removeFromBottom (84);
     infoBounds = content.withTrimmedTop (4);
