@@ -81,6 +81,13 @@ juce::Result MeasurementEngine::startSweep (double sampleRate, const SweepSettin
     return startRequest (makeSweepRequest (sampleRate, s.seconds, s.repeats, s.channel, s.levelDbfs), replaceId);
 }
 
+juce::Result MeasurementEngine::startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId)
+{
+    if (sampleRate <= 0.0)
+        return juce::Result::fail ("Audio isn't running yet");
+    return startRequest (makeNoiseRequest (sampleRate, seconds, channel, levelDbfs), replaceId);
+}
+
 juce::Result MeasurementEngine::startProgram (double sampleRate, double seconds, int replaceId)
 {
     if (sampleRate <= 0.0)
@@ -137,13 +144,20 @@ juce::String MeasurementEngine::getStatus() const
         if (r->cancelRequested.load())
             return "Stopping...";
         const auto done = r->samplesDone.load();
+        const auto speaker = juce::String (r->sweepChannel == 0 ? "left" : "right");
+        if (r->kind == CaptureRequest::Kind::noise)
+            return "Measuring " + pendingName + ": pink noise, "
+                   + juce::String (juce::jmin (static_cast<int> (static_cast<double> (done) / r->sampleRate),
+                                               static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)))
+                   + " of " + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate))
+                   + " s on the " + speaker + " speaker";
         if (r->kind == CaptureRequest::Kind::program)
             return "Recording program for " + pendingName + ": "
                    + juce::String (static_cast<int> (static_cast<double> (done) / r->sampleRate)) + " of "
                    + juce::String (static_cast<int> (static_cast<double> (r->totalSamples) / r->sampleRate)) + " s";
         const auto take = std::min<std::int64_t> (r->repeats, done / std::max<std::int64_t> (1, static_cast<std::int64_t> (r->excitation.size())) + 1);
         return "Measuring " + pendingName + ": sweep " + juce::String (take) + " of " + juce::String (r->repeats)
-               + " on the " + (r->sweepChannel == 0 ? "left" : "right") + " speaker";
+               + " on the " + speaker + " speaker";
     }
     return status;
 }
@@ -228,10 +242,13 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
             }
             else
             {
+                // Noise and program both use the dual-FFT against a known reference.
                 c = roomeq::analyzeProgramCapture (name.toStdString(),
                                                    std::vector<double> (req->reference.begin(), req->reference.end()),
                                                    std::vector<double> (req->mic[0].begin(), req->mic[0].end()),
                                                    req->sampleRate);
+                if (req->kind == CaptureRequest::Kind::noise)
+                    c.kind = "noise";
             }
             c.repeatPowers.clear();   // only needed for grading
             result.capture = std::make_shared<roomeq::Capture> (std::move (c));

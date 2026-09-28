@@ -10,9 +10,12 @@ const juce::ParameterID sweepsPerPosition { "sweepsPerPosition", 1 };
 const juce::ParameterID sweepSpeaker { "sweepSpeaker", 1 };
 const juce::ParameterID sweepLevel { "sweepLevel", 1 };
 const juce::ParameterID smoothing { "smoothing", 1 };
+const juce::ParameterID signal { "measureSignal", 1 };
+const juce::ParameterID noiseLength { "noiseLength", 1 };
 } // namespace ParamIds
 
 constexpr double sweepSeconds[] = { 2.0, 5.0, 10.0 };
+constexpr double noiseSeconds[] = { 10.0, 20.0, 30.0 };
 constexpr int smoothingFractions[] = { 3, 4, 6 };
 
 bool loadedAsStandalone()
@@ -65,7 +68,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
                                                         StringArray { "1", "2", "3" }, 1));
     layout.add (std::make_unique<AudioParameterChoice> (ParamIds::sweepSpeaker, "Sweep speaker",
                                                         StringArray { "Left", "Right" }, 0));
-    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::sweepLevel, "Sweep level",
+    layout.add (std::make_unique<AudioParameterChoice> (ParamIds::signal, "Measurement signal",
+                                                        StringArray { "Sweep", "Pink noise" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParamIds::noiseLength, "Noise length",
+                                                        StringArray { "10 s", "20 s", "30 s" }, 1));
+    // The ID keeps its original name so saved sessions still load; it's the peak
+    // level of whichever signal is used.
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::sweepLevel, "Signal level",
                                                        NormalisableRange<float> (-40.0f, 0.0f, 0.5f), -12.0f,
                                                        AudioParameterFloatAttributes().withLabel ("dBFS")));
     layout.add (std::make_unique<AudioParameterChoice> (ParamIds::smoothing, "Smoothing",
@@ -170,6 +179,17 @@ MeasurementEngine::SweepSettings AdaptiveRoomEQProcessor::getSweepSettings() con
     return s;
 }
 
+bool AdaptiveRoomEQProcessor::isNoiseSelected() const
+{
+    return parameters.getRawParameterValue (ParamIds::signal.getParamID())->load() > 0.5f;
+}
+
+double AdaptiveRoomEQProcessor::getNoiseSeconds() const
+{
+    const auto index = juce::roundToInt (parameters.getRawParameterValue (ParamIds::noiseLength.getParamID())->load());
+    return noiseSeconds[juce::jlimit (0, 2, index)];
+}
+
 int AdaptiveRoomEQProcessor::getSmoothingFraction() const
 {
     const auto index = juce::roundToInt (parameters.getRawParameterValue (ParamIds::smoothing.getParamID())->load());
@@ -181,6 +201,19 @@ juce::Result AdaptiveRoomEQProcessor::startSweep (int replaceId)
     if (! isMicConnected())
         return juce::Result::fail ("Connect the measurement mic first");
     return engine.startSweep (getSampleRate(), getSweepSettings(), replaceId);
+}
+
+juce::Result AdaptiveRoomEQProcessor::startMeasurement (int replaceId)
+{
+    return isNoiseSelected() ? startNoise (replaceId) : startSweep (replaceId);
+}
+
+juce::Result AdaptiveRoomEQProcessor::startNoise (int replaceId)
+{
+    if (! isMicConnected())
+        return juce::Result::fail ("Connect the measurement mic first");
+    const auto s = getSweepSettings();
+    return engine.startNoise (getSampleRate(), getNoiseSeconds(), s.channel, s.levelDbfs, replaceId);
 }
 
 juce::Result AdaptiveRoomEQProcessor::startProgram (int replaceId)

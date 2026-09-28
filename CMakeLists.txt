@@ -36,6 +36,7 @@ add_library(roomeq_core STATIC
     src/roomeq/dualfft.cpp
     src/roomeq/fft.cpp
     src/roomeq/grading.cpp
+    src/roomeq/noise.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp)
 target_include_directories(roomeq_core PUBLIC src)
@@ -72,6 +73,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_capture.cpp
         tests/cpp/test_dualfft.cpp
         tests/cpp/test_grading.cpp
+        tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_sweep.cpp

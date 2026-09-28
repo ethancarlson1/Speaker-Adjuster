@@ -62,7 +62,7 @@ public:
         g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
         g.drawText (theme::gradeText (grade), badge, juce::Justification::centred);
 
-        juce::String detail = capture->kind == "program" ? "music" : "sweep";
+        juce::String detail = capture->kind == "program" ? "music" : capture->kind == "noise" ? "pink noise" : "sweep";
         if (! capture->delaysMs.empty())
             detail << "  " << juce::String (capture->delaysMs.front(), 1) << " ms";
         g.setColour (theme::muted);

@@ -55,6 +55,7 @@ public:
 
     // Measurements. replaceId redoes an existing capture (keeping its name).
     juce::Result startSweep (double sampleRate, const SweepSettings& settings, int replaceId = -1);
+    juce::Result startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId = -1);
     juce::Result startProgram (double sampleRate, double seconds, int replaceId = -1);
     void cancel();
 

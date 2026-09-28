@@ -19,6 +19,7 @@ python make_plots.py        # regenerates the review plots in plots/
 | `grading.py` | Per-octave SNR + repeat consistency → pass / marginal / redo, with reasons |
 | `averaging.py` | Weighted multi-position power average, level alignment, PA usable range, quick-mode policy |
 | `dualfft.py` | Program-material fallback: H1 transfer function, coherence, noise estimate |
+| `noise.py` | Pink noise measurement signal (analysed with the dual-FFT) |
 | `capture.py` | Ties it together: one position's recordings → graded `Capture` |
 | `roomsim.py` | Simulator: PA model with mild distortion → pyroomacoustics room → mic, plus load-in noise (pink, rumble, crowd, bangs) and synthetic walk-in music |
 

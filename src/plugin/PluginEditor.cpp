@@ -18,7 +18,7 @@ constexpr int headerHeight = 60;
 
 const char* const placementTip =
     "Measure 3-5 spots across the audience area, at different distances and off-axis. "
-    "Avoid symmetric spots on the centre line. The sweep plays on one speaker; the "
+    "Avoid symmetric spots on the centre line. The signal plays on one speaker; the "
     "correction will be applied to both sides.";
 } // namespace
 
@@ -43,21 +43,27 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         addAndMakeVisible (box);
         addAndMakeVisible (label);
     };
+    setUpCombo (signal, signalLabel, "Signal", "measureSignal", signalAttachment);
     setUpCombo (sweepLength, sweepLengthLabel, "Sweep length", "sweepLength", sweepLengthAttachment);
     setUpCombo (sweepsPerPosition, sweepsLabel, "Sweeps per position", "sweepsPerPosition", sweepsAttachment);
-    setUpCombo (sweepSpeaker, speakerLabel, "Sweep speaker", "sweepSpeaker", speakerAttachment);
+    setUpCombo (noiseLength, noiseLengthLabel, "Noise length", "noiseLength", noiseLengthAttachment);
+    setUpCombo (sweepSpeaker, speakerLabel, "Speaker", "sweepSpeaker", speakerAttachment);
+    signal.setTooltip ("Sweep: quick and rejects speaker distortion. Pink noise: steadier in a noisy room "
+                       "(a stray bang is averaged away) but needs 20-30 s.");
+    sweepSpeaker.setTooltip ("The speaker the sweep or noise plays on; the other side stays silent.");
     setUpCombo (smoothing, smoothingLabel, "Smoothing", "smoothing", smoothingAttachment);
 
     levelAttachment = std::make_unique<SliderAttachment> (params, "sweepLevel", sweepLevel);
     sweepLevel.setTextValueSuffix (" dBFS");
     sweepLevel.setColour (juce::Slider::trackColourId, theme::blue.withAlpha (0.5f));
-    levelLabel.setText ("Sweep level", juce::dontSendNotification);
+    levelLabel.setText ("Level", juce::dontSendNotification);
+    sweepLevel.setTooltip ("Peak level of the sweep or noise. Pink noise sits ~6 dB lower on average at the same setting.");
     levelLabel.setColour (juce::Label::textColourId, theme::ink2);
     addAndMakeVisible (sweepLevel);
     addAndMakeVisible (levelLabel);
 
     measureButton.setColour (juce::TextButton::buttonColourId, theme::blue);
-    measureButton.onClick = [this] { showResult (processor.startSweep()); };
+    measureButton.onClick = [this] { showResult (processor.startMeasurement()); };
     programButton.setTooltip ("Estimate the response from walk-in music or soundcheck when a sweep isn't possible. "
                               "Uses the plugin input as the reference; both speakers play.");
     programButton.onClick = [this] { showResult (processor.startProgram()); };
@@ -97,7 +103,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         };
         setUpPicker (micInput, micInputLabel, "Mic input", "The interface input the measurement mic is plugged into");
         setUpPicker (speakerOutput, speakerOutputLabel, "Speaker output",
-                     "The interface output feeding the speaker to measure. The sweep plays only here.");
+                     "The interface output feeding the speaker to measure. The test signal plays only here.");
         // The speaker is chosen as a physical output instead.
         sweepSpeaker.setVisible (false);
         speakerLabel.setVisible (false);
@@ -107,6 +113,8 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         refreshDeviceChannels();
     }
 
+    showingNoiseRows = processor.isNoiseSelected();
+    updateSignalRows();
     processor.getEngine().addChangeListener (this);
     refreshFromEngine();
 
@@ -134,7 +142,9 @@ void AdaptiveRoomEQEditor::redo (int id)
 {
     for (const auto& e : processor.getEngine().getEntries())
         if (e.id == id)
-            showResult (e.capture->kind == "program" ? processor.startProgram (id) : processor.startSweep (id));
+            showResult (e.capture->kind == "program" ? processor.startProgram (id)
+                        : e.capture->kind == "noise"  ? processor.startNoise (id)
+                                                      : processor.startSweep (id));
 }
 
 void AdaptiveRoomEQEditor::changeListenerCallback (juce::ChangeBroadcaster* source)
@@ -219,6 +229,11 @@ void AdaptiveRoomEQEditor::timerCallback()
     speakerOutput.setEnabled (! measuring && speakerOutput.getNumItems() > 0);
     if (measuring)
         errorText.clear();
+    if (processor.isNoiseSelected() != showingNoiseRows)   // also follows host automation
+    {
+        showingNoiseRows = processor.isNoiseSelected();
+        updateSignalRows();
+    }
 
     repaint (headerArea());
     repaint (statusArea());
@@ -257,7 +272,19 @@ juce::Rectangle<int> AdaptiveRoomEQEditor::controlsArea() const
 
 juce::Rectangle<int> AdaptiveRoomEQEditor::statusArea() const
 {
-    return controlsArea().withTrimmedTop (350).withHeight (96);
+    return statusBounds;
+}
+
+void AdaptiveRoomEQEditor::updateSignalRows()
+{
+    sweepLength.setVisible (! showingNoiseRows);
+    sweepLengthLabel.setVisible (! showingNoiseRows);
+    sweepsPerPosition.setVisible (! showingNoiseRows);
+    sweepsLabel.setVisible (! showingNoiseRows);
+    noiseLength.setVisible (showingNoiseRows);
+    noiseLengthLabel.setVisible (showingNoiseRows);
+    resized();
+    repaint();
 }
 
 juce::Rectangle<int> AdaptiveRoomEQEditor::summaryArea() const
@@ -361,8 +388,16 @@ void AdaptiveRoomEQEditor::resized()
         row (micInputLabel, micInput);
         row (speakerOutputLabel, speakerOutput);
     }
-    row (sweepLengthLabel, sweepLength);
-    row (sweepsLabel, sweepsPerPosition);
+    row (signalLabel, signal);
+    if (showingNoiseRows)
+    {
+        row (noiseLengthLabel, noiseLength);
+    }
+    else
+    {
+        row (sweepLengthLabel, sweepLength);
+        row (sweepsLabel, sweepsPerPosition);
+    }
     if (! processor.isStandalone())
         row (speakerLabel, sweepSpeaker);
     row (levelLabel, sweepLevel);
@@ -375,6 +410,8 @@ void AdaptiveRoomEQEditor::resized()
     stopButton.setBounds (buttons.removeFromRight (70));
     buttons.removeFromRight (8);
     programButton.setBounds (buttons);
+    controls.removeFromTop (20);
+    statusBounds = controls.removeFromTop (96).expanded (12, 0);
 
     auto right = getLocalBounds().withTrimmedTop (headerHeight).reduced (margin).withTrimmedLeft (controlsWidth + margin);
     right.removeFromBottom (30);   // summary line

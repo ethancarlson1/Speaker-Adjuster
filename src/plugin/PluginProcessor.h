@@ -56,7 +56,13 @@ public:
 
     MeasurementEngine::SweepSettings getSweepSettings() const;
     int getSmoothingFraction() const;
+    bool isNoiseSelected() const;
+    double getNoiseSeconds() const;
+
+    // Uses the selected signal (sweep or pink noise).
+    juce::Result startMeasurement (int replaceId = -1);
     juce::Result startSweep (int replaceId = -1);
+    juce::Result startNoise (int replaceId = -1);
     juce::Result startProgram (int replaceId = -1);
 
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }

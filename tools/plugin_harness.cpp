@@ -254,6 +254,9 @@ void standaloneChecks (const juce::String& snapshotPath)
     proc->processBlock (buffer, midi);
     check (buffer.getMagnitude (0, blockSize) <= 0.0f, "mic is not passed through to the outputs");
 
+    // Render this editor with pink noise selected so both layouts get a snapshot.
+    auto* signal = proc->getParameters().getParameter ("measureSignal");
+    signal->setValueNotifyingHost (signal->convertTo0to1 (1.0f));
     for (int i = 0; i < 20; ++i)
         pump (*proc);
     std::unique_ptr<juce::AudioProcessorEditor> editor (proc->createEditor());
@@ -297,8 +300,20 @@ int main (int argc, char** argv)
         runMeasurement (proc, room, &program);
     }
 
+    std::cout << "Measuring with pink noise\n";
+    const double noiseDistance = 7.2;
+    {
+        auto* signal = proc.getParameters().getParameter ("measureSignal");
+        signal->setValueNotifyingHost (signal->convertTo0to1 (1.0f));   // "Pink noise"
+        check (proc.isNoiseSelected() && proc.getNoiseSeconds() > 19.0, "pink noise selected, 20 s");
+        SimulatedRoom room (noiseDistance, 11, 3e-4, 0.0);
+        check (proc.startMeasurement().wasOk(), "start pink noise capture");
+        runMeasurement (proc, room);
+        signal->setValueNotifyingHost (signal->convertTo0to1 (0.0f));
+    }
+
     auto entries = proc.getEngine().getEntries();
-    check (entries.size() == 6, "six captures (" + juce::String (static_cast<int> (entries.size())) + ")");
+    check (entries.size() == 7, "seven captures (" + juce::String (static_cast<int> (entries.size())) + ")");
     for (const auto& e : entries)
     {
         const auto& c = *e.capture;
@@ -308,7 +323,7 @@ int main (int argc, char** argv)
             std::cout << "  | " << r;
         std::cout << "\n";
     }
-    if (entries.size() == 6)
+    if (entries.size() == 7)
     {
         for (int i = 0; i < 4; ++i)
         {
@@ -320,6 +335,11 @@ int main (int argc, char** argv)
         }
         check (entries[4].capture->grade.overall == roomeq::Grade::redo, "rumble capture graded redo");
         check (entries[5].capture->kind == "program", "music capture analysed with the dual-FFT");
+        check (entries[6].capture->kind == "noise" && entries[6].capture->grade.overall == roomeq::Grade::pass,
+               "pink noise capture graded pass");
+        const auto expected = 1000.0 * (noiseDistance / 343.0 * fs + 288 + blockSize) / fs;
+        check (std::abs (entries[6].capture->delaysMs.front() - expected) < 0.5,
+               "pink noise delay within 0.5 ms of the simulated " + juce::String (expected, 2) + " ms");
         proc.getEngine().setExcluded (entries[4].id, true);
         for (int i = 0; i < 40; ++i)
             pump (proc);

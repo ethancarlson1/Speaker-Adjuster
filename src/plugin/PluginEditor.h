@@ -35,6 +35,7 @@ private:
     // channels (JUCE's own audio settings dialog only offers stereo pairs).
     void refreshDeviceChannels();
     void applyDeviceChannels();
+    void updateSignalRows();   // sweep length/count vs noise length
     juce::String summaryLine() const;
 
     juce::Rectangle<int> headerArea() const;
@@ -44,10 +45,13 @@ private:
 
     AdaptiveRoomEQProcessor& processor;
 
-    juce::ComboBox sweepLength, sweepsPerPosition, sweepSpeaker, smoothing;
+    juce::ComboBox signal, sweepLength, sweepsPerPosition, noiseLength, sweepSpeaker, smoothing;
     juce::Slider sweepLevel { juce::Slider::LinearBar, juce::Slider::TextBoxRight };
-    juce::Label sweepLengthLabel, sweepsLabel, speakerLabel, levelLabel, smoothingLabel;
-    std::unique_ptr<ComboAttachment> sweepLengthAttachment, sweepsAttachment, speakerAttachment, smoothingAttachment;
+    juce::Label signalLabel, sweepLengthLabel, sweepsLabel, noiseLengthLabel, speakerLabel, levelLabel, smoothingLabel;
+    std::unique_ptr<ComboAttachment> signalAttachment, sweepLengthAttachment, sweepsAttachment, noiseLengthAttachment,
+        speakerAttachment, smoothingAttachment;
+    bool showingNoiseRows = false;
+    juce::Rectangle<int> statusBounds;
     std::unique_ptr<SliderAttachment> levelAttachment;
 
     juce::AudioDeviceManager* deviceManager = nullptr;

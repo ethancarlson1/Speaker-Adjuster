@@ -16,6 +16,7 @@ struct CaptureRequest
     enum class Kind
     {
         sweep,     // play the sweep on one speaker, record the mic
+        noise,     // play pink noise on one speaker, record the mic (dual-FFT)
         program    // pass program through, record it and the mic (dual-FFT)
     };
 
@@ -24,9 +25,9 @@ struct CaptureRequest
     int sweepChannel = 0;                     // 0 = left, 1 = right
     int repeats = 1;
     roomeq::SweepConfig sweepConfig;
-    std::vector<float> excitation;            // one repeat: preroll + sweep + tail
-    std::vector<std::vector<float>> mic;      // per repeat (sweep) or a single take (program)
-    std::vector<float> reference;             // program only: mono sum of the main input
+    std::vector<float> excitation;            // one take: preroll + sweep + tail, or noise + tail
+    std::vector<std::vector<float>> mic;      // per repeat (sweep) or a single take (noise, program)
+    std::vector<float> reference;             // noise: what was played; program: mono sum of the input
 
     int replaceId = -1;                       // capture being redone, or -1 for a new one
 
@@ -77,6 +78,9 @@ private:
 // Builds a sweep request with buffers sized for `repeats` takes.
 std::unique_ptr<CaptureRequest> makeSweepRequest (double sampleRate, double seconds, int repeats,
                                                   int channel, double levelDbfs);
+
+// Builds a pink-noise request: `seconds` of noise on one speaker, then a 1 s tail.
+std::unique_ptr<CaptureRequest> makeNoiseRequest (double sampleRate, double seconds, int channel, double levelDbfs);
 
 // Builds a program-material request recording `seconds` of input and mic.
 std::unique_ptr<CaptureRequest> makeProgramRequest (double sampleRate, double seconds);

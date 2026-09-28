@@ -1,5 +1,7 @@
 #include "plugin/CaptureRecorder.h"
 
+#include "roomeq/noise.h"
+
 #include <algorithm>
 
 bool CaptureRecorder::start (std::unique_ptr<CaptureRequest> request)
@@ -59,17 +61,17 @@ bool CaptureRecorder::process (float* const* main, int numMainChannels, const fl
 
     if (r->cancelRequested.load (std::memory_order_relaxed))
     {
-        const auto wasSweep = r->kind == CaptureRequest::Kind::sweep;
-        if (wasSweep)
+        const auto wasPlaying = r->kind != CaptureRequest::Kind::program;
+        if (wasPlaying)
             for (int ch = 0; ch < numMainChannels; ++ch)
                 std::fill (main[ch], main[ch] + n, 0.0f);
         finish (*r, true, active);
-        return wasSweep;
+        return wasPlaying;
     }
 
-    if (r->kind == CaptureRequest::Kind::sweep)
+    if (r->kind != CaptureRequest::Kind::program)
     {
-        // The sweep replaces the program: it plays on one speaker, the other is silent.
+        // The sweep (or noise) replaces the program: it plays on one speaker, the other is silent.
         const auto sweepChannel = std::min (r->sweepChannel, numMainChannels - 1);
         const auto takeLength = r->excitation.size();
         for (std::size_t i = 0; i < n; ++i)
@@ -130,6 +132,27 @@ std::unique_ptr<CaptureRequest> makeSweepRequest (double sampleRate, double seco
     r->excitation.assign (playback.begin(), playback.end());
     r->mic.assign (static_cast<std::size_t> (r->repeats), std::vector<float> (r->excitation.size(), 0.0f));
     r->totalSamples = static_cast<std::int64_t> (r->excitation.size()) * r->repeats;
+    return r;
+}
+
+std::unique_ptr<CaptureRequest> makeNoiseRequest (double sampleRate, double seconds, int channel, double levelDbfs)
+{
+    roomeq::NoiseConfig cfg;
+    cfg.fs = sampleRate;
+    cfg.duration = seconds;
+    cfg.levelDbfs = levelDbfs;
+    const auto noise = roomeq::generatePinkNoise (cfg);
+
+    auto r = std::make_unique<CaptureRequest>();
+    r->kind = CaptureRequest::Kind::noise;
+    r->sampleRate = sampleRate;
+    r->sweepChannel = channel;
+    r->repeats = 1;
+    r->reference.assign (noise.begin(), noise.end());
+    r->excitation = r->reference;
+    r->excitation.resize (noise.size() + cfg.nTail(), 0.0f);   // let the room decay
+    r->mic.assign (1, std::vector<float> (r->excitation.size(), 0.0f));
+    r->totalSamples = static_cast<std::int64_t> (r->excitation.size());
     return r;
 }
 
