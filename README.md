@@ -2,7 +2,7 @@
 
 A VST3/AU plugin (plus a standalone app) that measures a PA in the room, corrects it, and keeps the tonal balance consistent as the volume drops and the room fills. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** Phase 1 (measurement tool) is implemented. The plugin measures positions with log sweeps or pink noise (or from program material), grades each capture, and shows every position, the power average and the target. Audio passes through unchanged except while a measurement signal plays. The correction EQ comes in Phase 2. Phase 1 has only been checked against simulated rooms; the next step is a real PA and a comparison with Smaart or REW.
+**Status:** Phase 1 (measurement tool) is implemented. The plugin measures positions with log sweeps or pink noise (or from program material), grades each capture, and shows every position, the power average and the target. Audio passes through unchanged except while a measurement signal plays. The Phase 2 correction fit is prototyped in Python (`prototype/`, plots 07–11) and not yet in the plugin. Phase 1 has only been checked against simulated rooms; the next step is a real PA and a comparison with Smaart or REW.
 
 ## Measuring a room
 
