@@ -55,11 +55,16 @@ endif()
 if(ARE_BUILD_TESTS)
     enable_testing()
 
+    # doctest is header-only: fetch it without running its CMakeLists
+    # (SOURCE_SUBDIR points nowhere), so its CMake policies can't break ours.
     FetchContent_Declare(doctest
         GIT_REPOSITORY https://github.com/doctest/doctest.git
-        GIT_TAG        v2.4.11
-        GIT_SHALLOW    TRUE)
+        GIT_TAG        v2.5.3
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  header-only)
     FetchContent_MakeAvailable(doctest)
+    add_library(doctest_headers INTERFACE)
+    target_include_directories(doctest_headers SYSTEM INTERFACE ${doctest_SOURCE_DIR})
 
     add_executable(roomeq_tests
         tests/cpp/main.cpp
@@ -71,7 +76,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_sweep.cpp
         src/plugin/CaptureRecorder.cpp)   # real-time recorder is JUCE-free, so it's tested here
-    target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest::doctest)
+    target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest_headers)
     add_test(NAME roomeq_tests COMMAND roomeq_tests)
 
     add_executable(roomeq_cli tools/roomeq_cli.cpp)
