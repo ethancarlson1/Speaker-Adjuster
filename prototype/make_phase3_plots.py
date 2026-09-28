@@ -142,7 +142,8 @@ def plot_tracking():
     ax2.legend(loc="upper left", fontsize=8)
     fig.text(0.01, -0.03, "Grey bands: songs; gaps: 6 s pauses. Calibrated so the first song is the reference. After the "
              "12 dB pull-down the boost grows over ~10-15 s; after the push back up it backs off within ~2 s.\nThe mic "
-             "estimate only updates while the program plays; crowd noise makes it read slightly high, i.e. a little less boost.",
+             "estimate only updates while the program plays, but the crowd doesn't turn down with the PA: it reads high, most "
+             "at low show levels\n(about +3.5 dB after the pull-down here), which means less boost. Output tracking has no such bias.",
              color=MUTED, fontsize=8.5)
     save(fig, "13_level_tracking.png")
     return true_leq, est_out, times
