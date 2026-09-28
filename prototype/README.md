@@ -71,5 +71,7 @@ Re-measuring the simulated club through the fitted filters lands within 0.3–0.
    - Mic tracking only updates while the plugin's output shows program playing.
 3. **Target:** the ISO 226 contour difference between the current SPL and the reference, `[Lp(f, now) − now] − [Lp(f, ref) − ref]`, zero at or above the reference.
 4. **Shelves:** that difference keeps its shape as the level drops and just scales, so a low shelf and a high shelf are fitted once per reference level (frequency and Q). A table then gives their gains for every dB below the reference. They stay within 0.8 dB of the ISO curve from 30 Hz to 16 kHz for drops up to 20 dB.
-5. **Limits:** amount, max low boost (8 dB), max high boost (4 dB), and a fixed 12 dB low-boost ceiling.
-6. **Protective high-pass (optional):** 24 dB/octave at the PA's measured roll-off, rising up to half an octave as the low boost reaches its maximum.
+5. **Deadband:** the level the compensation uses only moves when the tracked level pushes more than 2 dB past it; inside that it drifts towards it over ~30 s. So the music's dynamics don't make the EQ wander, but a real change still lands exactly.
+6. **Re-check:** ~10 s of program, plugin output vs mic, re-anchors the calibration if the gain after the plugin has changed (amps, a fader after it). It compares the output-to-mic transfer per third octave (63 Hz–8 kHz) with the one stored at calibration, using the dual-FFT H1 with its noise bias removed, so crowd noise drops out. The median change across bands is the gain change. It refuses when fewer than 6 bands compare.
+7. **Limits:** amount, max low boost (8 dB), max high boost (4 dB), and a fixed 12 dB low-boost ceiling.
+8. **Protective high-pass (optional):** 24 dB/octave at the PA's measured roll-off, rising up to half an octave as the low boost reaches its maximum.

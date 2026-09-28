@@ -159,3 +159,55 @@ def test_mic_tracking_ignores_the_crowd_in_pauses():
     program_at_mic = loudness.c_weighted_level_dbfs(0.1 * program[:10 * fs], fs)
     assert np.allclose(in_pause, in_pause[0])                                    # held through the pause
     assert 0.0 < est[-1] - program_at_mic < 1.5                                  # crowd reads slightly high: less boost
+
+
+# ---------------------------------------------------------------------------
+# Deadband and re-check
+
+def test_deadband_ignores_the_music_but_lands_on_a_real_change():
+    fs, block = 48000, 512
+    tr, db = LevelTracker(fs, CFG), loudness.Deadband(CFG)
+    # 60 s whose level swells +-1.5 dB every 8 s, then a 6 dB pull-down.
+    t = np.arange(60 * fs) / fs
+    swell = pink(60, -20.0, seed=11) * 10 ** (1.5 * np.sin(2 * np.pi * t / 8.0) / 20)
+    held, estimates = [], []
+    for x in (swell, pink(90, -26.0, seed=12)):
+        for i in range(0, len(x) - block + 1, block):
+            tr.process(x[i:i + block])
+            if tr.count < block:                  # a window just completed
+                held.append(db.update(tr.estimate))
+                estimates.append(tr.estimate)
+    held, estimates = np.array(held, dtype=float), np.array(estimates, dtype=float)
+    minute = slice(int(10 / CFG.window_s), int(60 / CFG.window_s))
+    assert np.ptp(estimates[minute]) > 1.0                    # the tracker follows the swells...
+    assert np.ptp(held[minute]) < 0.5                         # ...the EQ barely moves
+    after = held[int(60 / CFG.window_s):]
+    assert np.all(np.diff(after) <= 1e-9)                    # it follows the pull-down smoothly (no steps back)
+    assert held[-1] == pytest.approx(-26.0, abs=0.5)         # and lands on it
+
+
+def test_recheck_finds_an_amp_change_through_the_crowd(sim):
+    fs = 48000
+    rng = np.random.default_rng(21)
+    # Calibration: pink noise at the mix position (quiet room).
+    cal_noise = pink(10, -20.0, seed=13)
+    cal_bands = loudness.transfer_bands_db(cal_noise, sim.play(cal_noise, 0, roomsim.NoiseSpec(pink_dbfs=-75.0), rng), fs)
+    assert np.count_nonzero(np.isfinite(cal_bands)) >= 18
+
+    program = roomsim.synthetic_program(12.0, fs, rng)
+    clean = sim.play(program, 0, roomsim.NoiseSpec(pink_dbfs=None), rng)
+    crowd_dbfs = loudness.c_weighted_level_dbfs(clean, fs) - 10.0            # crowd 10 dB under the program at the mic
+    for amp_change in (0.0, 4.0, -6.0):
+        heard = 10 ** (amp_change / 20) * clean + roomsim.make_noise(
+            len(clean), fs, roomsim.NoiseSpec(pink_dbfs=None, babble_dbfs=crowd_dbfs + amp_change * 0), rng)
+        change = loudness.recheck_gain_change(cal_bands, loudness.transfer_bands_db(program, heard, fs))
+        assert change == pytest.approx(amp_change, abs=0.6), amp_change
+    cal = Calibration(output_dbfs=-22.0, spl=95.0)
+    assert loudness.recalibrated(cal, 4.0).spl_from_output(-22.0) == pytest.approx(99.0)
+
+
+def test_recheck_refuses_without_enough_program():
+    cal = np.zeros(len(loudness.RECHECK_BANDS))
+    now = np.full(len(loudness.RECHECK_BANDS), np.nan)
+    now[:3] = 1.0
+    assert loudness.recheck_gain_change(cal, now) is None

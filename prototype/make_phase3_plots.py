@@ -93,20 +93,26 @@ def plot_tracking():
     cal = loudness.Calibration(output_dbfs=cal_out, spl=REF, mic_dbfs=cal_mic)
 
     out_tr, mic_tr = loudness.LevelTracker(FS, CFG), loudness.LevelTracker(FS, CFG)
+    deadband = loudness.Deadband(CFG)
+    held_level = None
     y = loudness.ss.sosfilt(loudness.c_weighting_sos(FS), x)
     block = 512
-    times, est_out, est_mic, momentary, lows, highs = [], [], [], [], [], []
+    times, est_out, est_mic, momentary, lows, highs, held = [], [], [], [], [], [], []
     for i in range(0, len(x) - block + 1, block):
         out_tr.process(x[i:i + block])
         mic_tr.process(mic[i:i + block], follow=out_tr)
+        if out_tr.count < block:                   # a window just completed
+            held_level = deadband.update(out_tr.estimate)
         if (i // block) % 20 == 0:
             times.append(i / FS)
             spl = cal.spl_from_output(out_tr.estimate) if out_tr.estimate is not None else np.nan
             est_out.append(spl)
+            held_spl = cal.spl_from_output(held_level) if held_level is not None else np.nan
+            held.append(held_spl)
             est_mic.append(cal.spl_from_mic(mic_tr.estimate) if mic_tr.estimate is not None else np.nan)
             seg = y[max(0, i - int(0.4 * FS)):i + 1]
             momentary.append(cal.spl_from_output(10 * np.log10(np.mean(seg ** 2) + 1e-30)) if len(seg) > 10 else np.nan)
-            low, high = loudness.shelf_gains(PLAN, spl, CFG) if np.isfinite(spl) else (0.0, 0.0)
+            low, high = loudness.shelf_gains(PLAN, held_spl, CFG) if np.isfinite(held_spl) else (0.0, 0.0)
             lows.append(low)
             highs.append(high)
     times = np.array(times) / 60.0
@@ -122,6 +128,7 @@ def plot_tracking():
     ax.plot(times, np.clip(momentary, 40, None), color=CONTEXT, lw=0.8, label="Momentary level (400 ms)", zorder=1)
     ax.plot(times, est_out, color=BLUE, lw=2.4, label="Tracked from the plugin's output", zorder=4)
     ax.plot(times, est_mic, color=VIOLET, lw=1.6, label="Tracked from the mic (crowd noise included)", zorder=3)
+    ax.plot(times, held, color=INK, lw=1.6, label="Level the compensation uses (2 dB deadband)", zorder=5)
     ax.axhline(REF, color=ORANGE, lw=1.2, label=f"Reference {REF:g} dB(C)")
     ax.plot([], [], color=INK, lw=1.2, ls=(0, (5, 3)), label="Each song's true Leq")
     for t0, g in events[1:]:
@@ -140,8 +147,10 @@ def plot_tracking():
     ax2.set_ylabel("Boost (dB)")
     ax2.set_xlabel("Time (minutes)")
     ax2.legend(loc="upper left", fontsize=8)
-    fig.text(0.01, -0.03, "Grey bands: songs; gaps: 6 s pauses. Calibrated so the first song is the reference. After the "
-             "12 dB pull-down the boost grows over ~10-15 s; after the push back up it backs off within ~2 s.\nThe mic "
+    fig.text(0.01, -0.03, "Grey bands: songs; gaps: 6 s pauses. Calibrated so the first song is the reference. The boost follows the "
+             "deadband level: swells within 2 dB don't move it.\nAfter the "
+             "12 dB pull-down most of the boost arrives within ~15 s and the last dB over the next minute; after the push back up it "
+             "backs off within ~2 s.\nThe mic "
              "estimate only updates while the program plays, but the crowd doesn't turn down with the PA: it reads high, most "
              "at low show levels\n(about +3.5 dB after the pull-down here), which means less boost. Output tracking has no such bias.",
              color=MUTED, fontsize=8.5)

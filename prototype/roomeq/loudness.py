@@ -21,6 +21,15 @@ SPL and the reference SPL is applied as a low shelf and a high shelf.
   followed.
 - Optional protective high-pass (24 dB/octave) at the PA's measured low-end
   roll-off, rising up to half an octave as the low boost reaches its maximum.
+- Deadband: the compensation's level only moves when the estimate pushes
+  more than 2 dB past it, and otherwise drifts towards it over ~30 s, so the
+  EQ doesn't wander with the music's dynamics but still ends up exactly on a
+  real change.
+- Re-check: ~10 s of program, output vs mic, re-anchors the calibration if
+  the gain after the plugin changed (amps, a fader after it). It compares the
+  output-to-mic transfer function per third octave with the one stored at
+  calibration (dual-FFT H1, so crowd noise, uncorrelated with the output,
+  drops out); the median change is the gain change.
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.signal as ss
 
-from . import filters, iso226
+from . import dualfft, filters, iso226
 from .filters import HIGH_PASS, HIGH_SHELF, LOW_SHELF, Band
 
 
@@ -49,6 +58,8 @@ class LoudnessConfig:
     pause_hold_s: float = 8.0         # ...unless it lasts longer than this
     hp_track: bool = False
     hp_rise_octaves: float = 0.5
+    deadband_db: float = 2.0          # level changes smaller than this don't move the EQ...
+    drift_s: float = 30.0             # ...except by a slow drift that lands it on the level
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +259,71 @@ class LevelTracker:
             a = 1 - np.exp(-dt / cfg.speed_s)
             self.estimate += a * (momentary - self.estimate)
         return True
+
+
+class Deadband:
+    """The level the compensation uses. It only moves when the tracked estimate
+    pushes more than `deadband_db` past it (backlash: no steps, the music's
+    swells never reach it); inside the band it drifts towards the estimate
+    with a `drift_s` time constant, so after a real change it lands exactly
+    on the new level. Called once per tracker window."""
+
+    def __init__(self, cfg: LoudnessConfig):
+        self.cfg = cfg
+        self.held: float | None = None
+
+    def update(self, estimate: float | None) -> float | None:
+        if estimate is None:
+            return self.held
+        if self.held is None:
+            self.held = estimate
+        elif estimate > self.held + self.cfg.deadband_db:
+            self.held = estimate - self.cfg.deadband_db
+        elif estimate < self.held - self.cfg.deadband_db:
+            self.held = estimate + self.cfg.deadband_db
+        else:
+            self.held += (1 - np.exp(-self.cfg.window_s / self.cfg.drift_s)) * (estimate - self.held)
+        return self.held
+
+
+# ---------------------------------------------------------------------------
+# Re-check: has the gain after the plugin changed since calibration?
+
+RECHECK_BANDS = np.array([63.0 * 2 ** (k / 3) for k in range(22)])   # third octaves, 63 Hz - 8 kHz
+
+
+def transfer_bands_db(output: np.ndarray, mic: np.ndarray, fs: float, min_coherence: float = 0.3) -> np.ndarray:
+    """Output-to-mic gain per third octave (dB, NaN where the program didn't
+    excite the band or the mic didn't hear it coherently)."""
+    est = dualfft.transfer_function(output, mic, fs)
+    gate = dualfft.excitation_gate(est) > 0
+    out = np.full(len(RECHECK_BANDS), np.nan)
+    for i, fc in enumerate(RECHECK_BANDS):
+        sel = (est.freqs >= fc * 2 ** (-1 / 6)) & (est.freqs < fc * 2 ** (1 / 6)) & gate
+        if np.count_nonzero(sel) < 3:
+            continue
+        if np.mean(est.coherence[sel]) < min_coherence:
+            continue
+        # |H1|^2 averaged over a band reads high by the incoherent power / K
+        # (K = segments averaged); remove that before averaging.
+        coherent = np.abs(est.H[sel]) ** 2 * est.gxx[sel]
+        incoherent = np.maximum(est.gyy[sel] - coherent, 0.0)
+        h2 = np.maximum(coherent - incoherent / est.n_segments, 0.0) / est.gxx[sel]
+        if np.mean(h2) <= 0:
+            continue
+        out[i] = 10 * np.log10(np.mean(h2))
+    return out
+
+
+def recheck_gain_change(calibration_bands: np.ndarray, now_bands: np.ndarray, min_bands: int = 6) -> float | None:
+    """Median per-band change (dB) between calibration and now, or None if too few bands compare."""
+    both = np.isfinite(calibration_bands) & np.isfinite(now_bands)
+    if np.count_nonzero(both) < min_bands:
+        return None
+    return float(np.median(now_bands[both] - calibration_bands[both]))
+
+
+def recalibrated(cal: Calibration, gain_change_db: float) -> Calibration:
+    """The gain after the plugin went up by gain_change_db: the same output level now gives that much more SPL."""
+    return Calibration(output_dbfs=cal.output_dbfs - gain_change_db, spl=cal.spl,
+                       mic_dbfs=cal.mic_dbfs)
