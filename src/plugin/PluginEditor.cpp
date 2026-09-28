@@ -32,6 +32,19 @@ const char* const voicingTip =
     "numbered handle: sideways for frequency, up and down for gain. The mouse wheel sets Q; "
     "double-click switches a band on or off.";
 
+const char* const loudnessTip =
+    "Keeps the balance you hear at the reference level as the show gets quieter: bass and treble come up "
+    "as the level drops (ISO 226). Turn the volume down before the plugin. Calibrate once per setup; "
+    "re-check if the amp gain changes.";
+
+juce::String signedDb (double v)
+{
+    const auto r = std::round (v * 10.0) / 10.0;   // no "-0.0"
+    if (std::abs (r) < 0.05)
+        return "0.0";
+    return (r > 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
+}
+
 juce::String paramId (int band, const char* what)
 {
     return "v" + juce::String (band + 1) + what;
@@ -72,16 +85,18 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     auto& params = processor.getParameters();
 
     // ---- Tabs
-    for (auto* tab : { &measureTab, &correctTab, &voicingTab })
+    for (auto* tab : { &measureTab, &correctTab, &voicingTab, &loudnessTab })
     {
         tab->setRadioGroupId (1);
         tab->setClickingTogglesState (true);
         tab->setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.6f));
         addAndMakeVisible (tab);
     }
+    loudnessTab.setVisible (! processor.isStandalone());   // the app has no program to compensate
     measureTab.onClick = [this] { showTab (Tab::measure); };
     correctTab.onClick = [this] { showTab (Tab::correct); };
     voicingTab.onClick = [this] { showTab (Tab::voicing); };
+    loudnessTab.onClick = [this] { showTab (Tab::loudness); };
 
     const auto combo = [&] (juce::ComboBox& box, juce::Label& label, const juce::String& text, const juce::String& id,
                             std::unique_ptr<ComboAttachment>& attachment, std::vector<juce::Component*>& group)
@@ -128,7 +143,13 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     programButton.setTooltip ("Estimate the response from walk-in music or soundcheck when a sweep isn't possible. "
                               "Uses the plugin's output as the reference; both speakers play.");
     programButton.onClick = [this] { showResult (processor.startProgram()); };
-    stopButton.onClick = [this] { processor.getEngine().cancel(); };
+    stopButton.onClick = [this]
+    {
+        if (processor.getLoudness().getStep() != LoudnessController::Step::idle)
+            processor.getLoudness().cancel();   // also stops calibration noise
+        else
+            processor.getEngine().cancel();
+    };
     button (measureButton, measureControls);
     button (programButton, measureControls);
     addAndMakeVisible (stopButton);   // on every tab: Verify runs from the Correct tab
@@ -196,6 +217,68 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         button (*l, voicingControls);
     graph.onVoicingBandSelected = [this] (int b) { selectVoicingBand (b); };
 
+    // ---- Loudness tab
+    loudOnAttachment = std::make_unique<ButtonAttachment> (params, "loudOn", loudOn);
+    button (loudOn, loudnessControls);
+    slider (loudRef, loudRefLabel, "Reference", "loudRef", loudRefAttachment, loudnessControls);
+    slider (loudAmount, loudAmountLabel, "Amount", "loudAmount", loudAmountAttachment, loudnessControls);
+    slider (loudMaxLow, loudMaxLabel, "Max boost", "loudMaxLow", loudMaxLowAttachment, loudnessControls);
+    loudMaxHighAttachment = std::make_unique<SliderAttachment> (params, "loudMaxHigh", loudMaxHigh);
+    styleBar (loudMaxHigh);
+    button (loudMaxHigh, loudnessControls);
+    combo (loudSource, loudSourceLabel, "Level from", "loudSource", loudSourceAttachment, loudnessControls);
+    slider (loudSpeed, loudSpeedLabel, "Speed", "loudSpeed", loudSpeedAttachment, loudnessControls);
+    loudHighPassAttachment = std::make_unique<ButtonAttachment> (params, "loudHighPass", loudHighPass);
+    button (loudHighPass, loudnessControls);
+    loudRef.setTextValueSuffix (" dB(C)");
+    loudAmount.setTextValueSuffix (" %");
+    // Two bars share the "Max boost" row, so each says which it is.
+    const auto numberIn = [] (const juce::String& text) { return text.retainCharacters ("0123456789.-").getDoubleValue(); };
+    loudMaxLow.textFromValueFunction = [] (double v) { return "low " + juce::String (v, 1) + " dB"; };
+    loudMaxHigh.textFromValueFunction = [] (double v) { return "high " + juce::String (v, 1) + " dB"; };
+    loudMaxLow.valueFromTextFunction = numberIn;
+    loudMaxHigh.valueFromTextFunction = numberIn;
+    loudMaxLow.updateText();
+    loudMaxHigh.updateText();
+    loudRef.setTooltip ("The level (dB C at the mix position) where the mix sounds right with no compensation. "
+                        "Below it, bass and treble are raised to keep that balance.");
+    loudAmount.setTooltip ("How much of the ISO 226 compensation to apply.");
+    loudMaxLow.setTooltip ("Most low-shelf boost, however quiet it gets (never more than 12 dB).");
+    loudMaxHigh.setTooltip ("Most high-shelf boost, however quiet it gets.");
+    loudSource.setTooltip ("Plugin output: the level is worked out from what the plugin sends (steady, ignores the crowd). "
+                           "Mic: from the measurement mic (needs a calibration with the mic connected; only counts "
+                           "while the music plays).");
+    loudSpeed.setTooltip ("How quickly the EQ follows a lower level. Louder is followed within about a second; "
+                          "pauses between songs are held. Changes under 2 dB are mostly ignored.");
+    loudHighPass.setTooltip ("A 24 dB/octave high-pass at the PA's measured low-end roll-off, rising up to half an "
+                             "octave as the bass boost grows, so the boost doesn't push the speakers below their range.");
+
+    calibrateButton.setColour (juce::TextButton::buttonColourId, theme::blue);
+    calibrateButton.setTooltip ("Plays pink noise on both speakers through the correction and voicing for 12 s. Read an "
+                                "SPL meter at the mix position (C-weighted, slow) while it plays, then enter the reading.");
+    calibrateButton.onClick = [this] { showResult (processor.getLoudness().startCalibration()); };
+    styleLabel (splLabel, "Meter read");
+    splEntry.setInputRestrictions (6, "0123456789.,");
+    splEntry.setTextToShowWhenEmpty ("dB(C)", theme::muted);
+    splEntry.setJustification (juce::Justification::centredLeft);
+    splEntry.onReturnKey = [this] { submitSpl(); };
+    setSplButton.onClick = [this] { submitSpl(); };
+    styleLabel (calibratorLabel, "Calibrator");
+    calibratorLevel.addItem ("94 dB", 1);
+    calibratorLevel.addItem ("114 dB", 2);
+    calibratorLevel.setSelectedId (processor.getLoudness().getInfo().calibratorSpl > 104.0 ? 2 : 1, juce::dontSendNotification);
+    micCalButton.setTooltip ("Optional: with a sound level calibrator on the mic, this measures the mic's sensitivity, "
+                             "so the calibration can suggest the SPL the mic heard.");
+    micCalButton.onClick = [this]
+    { showResult (processor.getLoudness().startMicCalibration (calibratorLevel.getSelectedId() == 2 ? 114.0 : 94.0)); };
+    recheckButton.setTooltip ("During the show: listens to ~12 s of the music through the mic and compares it with "
+                              "the calibration. If the amp gain or a fader after the plugin moved, the calibration "
+                              "follows. No test signal plays.");
+    recheckButton.onClick = [this] { showResult (processor.getLoudness().startRecheck()); };
+    for (auto* c : std::initializer_list<juce::Component*> { &calibrateButton, &splLabel, &splEntry, &setSplButton,
+                                                             &calibratorLabel, &calibratorLevel, &micCalButton, &recheckButton })
+        button (*c, loudnessControls);
+
     addAndMakeVisible (captureList);
     addAndMakeVisible (graph);
 
@@ -241,6 +324,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     showingNoiseRows = processor.isNoiseSelected();
     selectVoicingBand (0);
     processor.getEngine().addChangeListener (this);
+    processor.getLoudness().addChangeListener (this);
 
     setResizable (true, true);
     setResizeLimits (1060, 740, 2400, 1600);
@@ -255,13 +339,16 @@ AdaptiveRoomEQEditor::~AdaptiveRoomEQEditor()
     if (deviceManager != nullptr)
         deviceManager->removeChangeListener (this);
     processor.getEngine().removeChangeListener (this);
+    processor.getLoudness().removeChangeListener (this);
     stopTimer();
 }
 
 void AdaptiveRoomEQEditor::showTab (Tab tab)
 {
+    if (tab == Tab::loudness && processor.isStandalone())
+        tab = Tab::measure;
     currentTab = tab;
-    auto& button = tab == Tab::measure ? measureTab : tab == Tab::correct ? correctTab : voicingTab;
+    auto& button = tab == Tab::measure ? measureTab : tab == Tab::correct ? correctTab : tab == Tab::voicing ? voicingTab : loudnessTab;
     button.setToggleState (true, juce::dontSendNotification);
     updateTabVisibility();
 }
@@ -274,6 +361,8 @@ void AdaptiveRoomEQEditor::updateTabVisibility()
         c->setVisible (currentTab == Tab::correct);
     for (auto* c : voicingControls)
         c->setVisible (currentTab == Tab::voicing);
+    for (auto* c : loudnessControls)
+        c->setVisible (currentTab == Tab::loudness);
     if (currentTab == Tab::measure)
     {
         for (auto* c : std::initializer_list<juce::Component*> { &sweepLength, &sweepLengthLabel, &sweepsPerPosition, &sweepsLabel })
@@ -329,6 +418,8 @@ void AdaptiveRoomEQEditor::changeListenerCallback (juce::ChangeBroadcaster* sour
 {
     if (deviceManager != nullptr && source == deviceManager)
         refreshDeviceChannels();
+    else if (source == &processor.getLoudness())
+        updateLoudnessControls();
     else
         refreshFromEngine();
 }
@@ -401,9 +492,10 @@ void AdaptiveRoomEQEditor::timerCallback()
     auto& engine = processor.getEngine();
     const auto activity = engine.getActivity();
     const auto measuring = activity == MeasurementEngine::Activity::measuring;
+    const auto loudBusy = processor.getLoudness().getStep() != LoudnessController::Step::idle;
     measureButton.setEnabled (! measuring);
     programButton.setEnabled (! measuring && ! processor.isStandalone());
-    stopButton.setEnabled (measuring);
+    stopButton.setEnabled (measuring || loudBusy);
     micInput.setEnabled (! measuring && micInput.getNumItems() > 0);
     speakerOutput.setEnabled (! measuring && speakerOutput.getNumItems() > 0);
     applyButton.setEnabled (! measuring && engine.canApply());
@@ -432,11 +524,130 @@ void AdaptiveRoomEQEditor::timerCallback()
     bandGain.setEnabled (roomeq::hasGain (sel.type));
     bandQ.setEnabled (roomeq::hasQ (sel.type));
 
+    updateLoudnessControls();
+
     graph.refresh();
     repaint (headerArea());
     repaint (statusBounds);
-    if (currentTab == Tab::correct)
+    if (currentTab == Tab::correct || currentTab == Tab::loudness)
         repaint (infoBounds);
+}
+
+void AdaptiveRoomEQEditor::updateLoudnessControls()
+{
+    using Step = LoudnessController::Step;
+    auto& loud = processor.getLoudness();
+    const auto step = loud.getStep();
+    const auto measuring = processor.getEngine().getActivity() == MeasurementEngine::Activity::measuring;
+    const auto ready = step == Step::idle || step == Step::awaitingSpl;
+    const auto info = loud.getInfo();
+    calibrateButton.setEnabled (ready && ! measuring);
+    splEntry.setEnabled (step == Step::awaitingSpl);
+    setSplButton.setEnabled (step == Step::awaitingSpl);
+    micCalButton.setEnabled (ready && processor.isMicConnected());
+    calibratorLevel.setEnabled (ready);
+    recheckButton.setEnabled (step == Step::idle && ! measuring && info.canRecheck);
+
+    // A calibration just finished playing: put the mic's suggestion (if any) in the box.
+    if (step == Step::awaitingSpl && lastLoudnessStep != Step::awaitingSpl)
+    {
+        splEntry.setText (info.suggestedSpl ? juce::String (*info.suggestedSpl, 1) : juce::String(), juce::dontSendNotification);
+        if (splEntry.isShowing())
+            splEntry.grabKeyboardFocus();
+    }
+    else if (step != Step::awaitingSpl && lastLoudnessStep == Step::awaitingSpl)
+    {
+        splEntry.clear();
+    }
+    lastLoudnessStep = step;
+}
+
+void AdaptiveRoomEQEditor::submitSpl()
+{
+    const auto text = splEntry.getText().replaceCharacter (',', '.').trim();
+    const auto result = text.isEmpty() ? juce::Result::fail ("Enter the level your meter read, in dB(C)")
+                                       : processor.getLoudness().setMeasuredSpl (text.getDoubleValue());
+    showResult (result);
+    updateLoudnessControls();
+}
+
+juce::String AdaptiveRoomEQEditor::statusText() const
+{
+    using Step = LoudnessController::Step;
+    if (errorText.isNotEmpty())
+        return errorText;
+    auto& engine = processor.getEngine();
+    const auto& loud = processor.getLoudness();
+    const auto step = loud.getStep();
+    const auto measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
+    if (step == Step::calibrating && measuring)
+        return loud.getStatus() + "\n" + engine.getStatus();
+    if (step != Step::idle)
+        return loud.getStatus();
+    if (currentTab == Tab::loudness && engine.getActivity() == MeasurementEngine::Activity::idle && loud.getStatus().isNotEmpty())
+        return loud.getStatus();
+    return engine.getStatus();
+}
+
+juce::String AdaptiveRoomEQEditor::loudnessInfo() const
+{
+    using Step = LoudnessController::Step;
+    const auto& loud = processor.getLoudness();
+    const auto info = loud.getInfo();
+    const auto settings = processor.getLoudnessSettings();
+    const auto& st = processor.getLoudnessStatus();
+    const auto dot = juce::String::fromUTF8 (" \xc2\xb7 ");
+    juce::String text;
+
+    if (loud.getStep() == Step::awaitingSpl)
+    {
+        text << "The noise measured " << juce::String (info.measuredOutputDbfs, 1)
+             << " dBFS (C) at the plugin output. Enter what your meter read at the mix position";
+        if (info.suggestedSpl)
+            text << " (the calibrated mic heard " << juce::String (*info.suggestedSpl, 1) << " dB(C))";
+        text << ".\n";
+    }
+
+    if (! info.calibrated)
+    {
+        text << "Not calibrated yet, so the EQ stays flat. Calibrate: play the noise, read an SPL meter at the "
+                "mix position (C-weighted, slow) and enter the reading.";
+    }
+    else
+    {
+        if (! settings.on)
+            text << "Loudness compensation is off.\n";
+        else if (! st.hasLevel.load())
+            text << "Level: waiting for music.\n";
+        else
+        {
+            const auto used = static_cast<double> (st.splUsed.load());
+            const auto below = settings.config.referenceSpl - used;
+            text << "Level " << juce::String (st.splNow.load(), 1) << " dB(C), EQ at " << juce::String (used, 1)
+                 << (below > 0.05 ? " (" + juce::String (below, 1) + " below the reference).\n" : " (at the reference or above).\n");
+            text << "Boost: low " << signedDb (st.lowGainDb.load()) << " dB (" << theme::formatHz (st.lowFreq.load()) << ")"
+                 << dot << "high " << signedDb (st.highGainDb.load()) << " dB (" << theme::formatHz (st.highFreq.load()) << ")";
+            if (st.hpFreq.load() > 0.0f)
+                text << dot << "high-pass " << theme::formatHz (st.hpFreq.load());
+            text << ".\n";
+        }
+        if (settings.useMic && ! info.calibration.hasMic)
+            text << "Mic tracking needs a calibration with the mic connected; following the plugin output.\n";
+        text << "Calibrated " << juce::String (info.calibration.spl, 1) << " dB(C) = "
+             << juce::String (info.calibration.outputDbfs, 1) << " dBFS (C) out";
+        if (info.calibratedAt > 0)
+            text << ", " << juce::Time (info.calibratedAt).formatted ("%d %b %H:%M");
+        if (info.recheckedAt > 0)
+            text << "; re-checked " << juce::Time (info.recheckedAt).formatted ("%H:%M") << " ("
+                 << signedDb (info.recheckChangeDb) << " dB)";
+        text << ".";
+        if (! info.canRecheck)
+            text << " Re-check needs a calibration with the mic connected.";
+    }
+    if (info.hasMicOffset)
+        text << "\nMic: " << juce::String (info.calibratorSpl, 0) << " dB calibrator = "
+             << juce::String (info.calibratorSpl - info.micOffsetDb, 1) << " dBFS (C).";
+    return text;
 }
 
 juce::String AdaptiveRoomEQEditor::summaryLine() const
@@ -636,7 +847,21 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     auto bar = status.removeFromTop (8).toFloat();
     g.setColour (theme::grid);
     g.fillRoundedRectangle (bar, 3.0f);
-    if (activity == MeasurementEngine::Activity::measuring)
+    const auto& loud = processor.getLoudness();
+    const auto loudRecording = loud.getStep() == LoudnessController::Step::micCalibrating
+                               || loud.getStep() == LoudnessController::Step::rechecking;
+    if (loud.isAnalysing())
+    {
+        const auto phase = static_cast<float> (juce::Time::getMillisecondCounter() % 1200) / 1200.0f;
+        g.setColour (theme::gold.withAlpha (0.8f));
+        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * 0.25f).withX (bar.getX() + bar.getWidth() * 0.75f * phase), 3.0f);
+    }
+    else if (loudRecording)
+    {
+        g.setColour (theme::gold);
+        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, loud.getProgress())), 3.0f);
+    }
+    else if (activity == MeasurementEngine::Activity::measuring)
     {
         g.setColour (theme::blue);
         g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, engine.getProgress())), 3.0f);
@@ -650,8 +875,7 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     status.removeFromTop (8);
     g.setFont (juce::FontOptions (13.0f));
     g.setColour (errorText.isNotEmpty() ? theme::critical : theme::ink2);
-    g.drawFittedText (errorText.isNotEmpty() ? errorText : engine.getStatus(), status.withTrimmedRight (80),
-                      juce::Justification::topLeft, 4);
+    g.drawFittedText (statusText(), status.withTrimmedRight (80), juce::Justification::topLeft, 4);
 
     // Tab text: correction details, and a tip.
     if (currentTab == Tab::correct)
@@ -660,10 +884,22 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (12.5f));
         g.drawFittedText (correctionInfo(), infoBounds, juce::Justification::topLeft, 12, 0.9f);
     }
+    else if (currentTab == Tab::loudness)
+    {
+        g.setColour (theme::axis);
+        g.drawHorizontalLine (calibrationRuleY, static_cast<float> (controls.getX() + 12), static_cast<float> (controls.getRight() - 12));
+        g.setColour (theme::ink2);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawFittedText (loudnessInfo(), infoBounds, juce::Justification::topLeft, juce::jmax (1, infoBounds.getHeight() / 15), 0.9f);
+    }
     g.setColour (theme::muted);
     g.setFont (juce::FontOptions (12.0f));
-    const auto* tip = currentTab == Tab::measure ? placementTip : currentTab == Tab::correct ? correctTip : voicingTip;
-    g.drawFittedText (tip, tipBounds, juce::Justification::bottomLeft, 6);
+    const auto* tip = currentTab == Tab::measure   ? placementTip
+                      : currentTab == Tab::correct ? correctTip
+                      : currentTab == Tab::voicing ? voicingTip
+                                                   : loudnessTip;
+    if (! tipBounds.isEmpty())
+        g.drawFittedText (tip, tipBounds, juce::Justification::bottomLeft, 6);
 
     // Quick-mode / usable-range line under the graph.
     g.setColour (theme::ink2);
@@ -693,10 +929,11 @@ void AdaptiveRoomEQEditor::resized()
 
     // Tab bar.
     auto tabs = panel.removeFromTop (30);
-    const auto tabWidth = tabs.getWidth() / 3;
+    const auto tabWidth = tabs.getWidth() / (processor.isStandalone() ? 3 : 4);
     measureTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
     correctTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
-    voicingTab.setBounds (tabs.reduced (1, 0));
+    voicingTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
+    loudnessTab.setBounds (tabs.reduced (1, 0));
     panel.removeFromTop (14);
 
     // Status at the bottom, with Stop beside it.
@@ -789,10 +1026,59 @@ void AdaptiveRoomEQEditor::resized()
             row (bandQLabel, bandQ);
             break;
         }
+        case Tab::loudness:
+        {
+            // Tighter rows: this tab has the most controls.
+            const auto tightRow = [&] (juce::Label& label, juce::Component& control)
+            {
+                auto r = content.removeFromTop (26);
+                label.setBounds (r.removeFromLeft (120));
+                control.setBounds (r);
+                content.removeFromTop (6);
+            };
+            fullRow (loudOn, 22);
+            tightRow (loudRefLabel, loudRef);
+            tightRow (loudAmountLabel, loudAmount);
+            {
+                auto r = content.removeFromTop (26);
+                loudMaxLabel.setBounds (r.removeFromLeft (120));
+                loudMaxLow.setBounds (r.removeFromLeft (r.getWidth() / 2).withTrimmedRight (3));
+                loudMaxHigh.setBounds (r.withTrimmedLeft (3));
+                content.removeFromTop (6);
+            }
+            tightRow (loudSourceLabel, loudSource);
+            tightRow (loudSpeedLabel, loudSpeed);
+            fullRow (loudHighPass, 22);
+            calibrationRuleY = content.getY() + 1;
+            content.removeFromTop (10);
+            fullRow (calibrateButton, 30);
+            {
+                auto r = content.removeFromTop (26);
+                splLabel.setBounds (r.removeFromLeft (120));
+                setSplButton.setBounds (r.removeFromRight (60));
+                r.removeFromRight (6);
+                splEntry.setBounds (r);
+                content.removeFromTop (6);
+            }
+            {
+                auto r = content.removeFromTop (26);
+                calibratorLabel.setBounds (r.removeFromLeft (120));
+                micCalButton.setBounds (r.removeFromRight (104));
+                r.removeFromRight (6);
+                calibratorLevel.setBounds (r);
+                content.removeFromTop (8);
+            }
+            fullRow (recheckButton, 30);
+            break;
+        }
     }
 
-    // What's left: correction details (Correct tab) and the tab's tip.
-    tipBounds = content.removeFromBottom (84);
+    // What's left: correction / loudness details and the tab's tip (the Loudness
+    // tab keeps its details and drops the tip when the window is small).
+    if (currentTab == Tab::loudness)
+        tipBounds = content.getHeight() >= 190 ? content.removeFromBottom (64) : juce::Rectangle<int>();
+    else
+        tipBounds = content.removeFromBottom (84);
     infoBounds = content.withTrimmedTop (4);
 
     auto right = getLocalBounds().withTrimmedTop (headerHeight).reduced (margin).withTrimmedLeft (controlsWidth + margin);

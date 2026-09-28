@@ -5,10 +5,14 @@
 // and noise), measures several positions, a noisy one, a music capture and a
 // pink-noise capture, checks grades and delays; then fits, applies and
 // verifies a correction (the speakers must get exactly the predicted EQ, and
-// re-measuring through it must land near the target), checks undo / compare
-// and the state round trip, and renders each editor tab to PNG.
+// re-measuring through it must land near the target), checks undo / compare;
+// then loudness compensation: the mic calibrator, the level calibration in the
+// room, tracking the level of music, the shelves the speakers get, the
+// deadband, and the re-check after an amp gain change; then the state round
+// trip, and renders each editor tab to PNG.
 //
-//   AdaptiveRoomEQ_Harness [--out snapshot.png]   (also writes snapshot-correct.png, -voicing.png, -standalone.png)
+//   AdaptiveRoomEQ_Harness [--out snapshot.png]
+//   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -standalone.png)
 //
 // Exits non-zero if any check fails.
 
@@ -178,6 +182,7 @@ private:
 void pump (AdaptiveRoomEQProcessor& p)
 {
     p.getEngine().update();
+    p.getLoudness().update();
     juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
 }
 
@@ -218,16 +223,19 @@ void setParam (AdaptiveRoomEQProcessor& p, const juce::String& id, float value)
 }
 
 // The main path's response (program in, speakers out) to an impulse, after
-// letting any EQ glide settle.
-std::vector<double> impulseThrough (AdaptiveRoomEQProcessor& p, int length = 1 << 15)
+// letting any EQ glide settle (the loudness stage glides with a 0.25 s time constant).
+std::vector<double> impulseThrough (AdaptiveRoomEQProcessor& p, int length = 1 << 15,
+                                    const std::function<void()>& beforeImpulse = {})
 {
     juce::AudioBuffer<float> buffer (3, blockSize);
     juce::MidiBuffer midi;
-    for (int b = 0; b < 100; ++b)
+    for (int b = 0; b < 300; ++b)
     {
         buffer.clear();
         p.processBlock (buffer, midi);
     }
+    if (beforeImpulse)
+        beforeImpulse();
     std::vector<double> out;
     for (int pos = 0; pos < length; pos += blockSize)
     {
@@ -299,6 +307,86 @@ std::shared_ptr<const MeasurementEngine::Display> waitForDisplay (AdaptiveRoomEQ
     return p.getEngine().getDisplay();
 }
 
+juce::String signedText (double v)
+{
+    return (v >= 0.0 ? "+" : "") + juce::String (v, 2);
+}
+
+// Endless music-like program (a beat on tilted noise) at an adjustable gain.
+struct Music
+{
+    PortableRandom rng { 77 };
+    Biquad tilt = Biquad::peaking (200.0, 8.0, 0.5);
+    std::size_t n = 0;
+    double gain = 0.05;
+
+    float next()
+    {
+        const auto beat = std::fmod (static_cast<double> (n++) / fs, 0.5);
+        const auto env = 0.4 + 0.6 * std::exp (-beat / 0.15);
+        return static_cast<float> (gain * env * tilt.process (rng.normal()));
+    }
+};
+
+// Loudness runs: plays `music` (or silence) on both inputs for up to `seconds`,
+// the mic hearing channel 0 through the room and an amp gain after the plugin,
+// or `micSignal` instead of the room. Stops early once `until` is true.
+struct Show
+{
+    AdaptiveRoomEQProcessor& p;
+    SimulatedRoom& room;
+    double ampGainDb = 0.0;
+    std::function<float (std::size_t)> micSignal;
+    std::vector<double> lastOutput;   // channel 0, the last `keepSeconds`
+    double rightEnergy = 0.0, channelDiff = 0.0;
+    double keepSeconds = 6.0;
+    std::vector<float> speaker = std::vector<float> (blockSize, 0.0f);
+    std::size_t t = 0;
+
+    void play (Music* music, double seconds, const std::function<bool()>& until = {})
+    {
+        juce::AudioBuffer<float> buffer (3, blockSize);
+        juce::MidiBuffer midi;
+        const auto amp = static_cast<float> (std::pow (10.0, ampGainDb / 20.0));
+        const auto keep = static_cast<std::size_t> (keepSeconds * fs);
+        const auto blocks = static_cast<int> (seconds * fs / blockSize);
+        for (int block = 0; block < blocks; ++block)
+        {
+            for (int i = 0; i < blockSize; ++i, ++t)
+            {
+                const auto in = music != nullptr ? music->next() : 0.0f;
+                buffer.setSample (0, i, in);
+                buffer.setSample (1, i, in);
+                const auto heard = room.process (amp * speaker[static_cast<std::size_t> (i)]);   // hears last block
+                buffer.setSample (2, i, micSignal ? micSignal (t) : heard);
+            }
+            p.processBlock (buffer, midi);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                speaker[static_cast<std::size_t> (i)] = buffer.getSample (0, i);
+                lastOutput.push_back (buffer.getSample (0, i));
+                rightEnergy += static_cast<double> (buffer.getSample (1, i)) * buffer.getSample (1, i);
+                channelDiff = std::max (channelDiff, static_cast<double> (std::abs (buffer.getSample (1, i) - buffer.getSample (0, i))));
+            }
+            if (lastOutput.size() > 2 * keep)
+                lastOutput.erase (lastOutput.begin(), lastOutput.end() - static_cast<long> (keep));
+            if (block % 16 == 0)
+            {
+                pump (p);
+                if (until && until())
+                    return;
+            }
+        }
+    }
+
+    double outputLevelDbfs() const   // C-weighted, over the last keepSeconds
+    {
+        const auto keep = static_cast<std::size_t> (keepSeconds * fs);
+        const std::vector<double> tail (lastOutput.end() - static_cast<long> (std::min (keep, lastOutput.size())), lastOutput.end());
+        return roomeq::cWeightedLevelDbfs (tail, fs);
+    }
+};
+
 std::vector<float> musicLikeProgram (double seconds)
 {
     PortableRandom rng (42);
@@ -339,6 +427,7 @@ void standaloneChecks (const juce::String& snapshotPath)
     proc->setRateAndBufferSizeDetails (fs, blockSize);
     proc->prepareToPlay (fs, blockSize);
     check (proc->startProgram().failed(), "music capture refused (no program passes through the app)");
+    check (proc->getLoudness().startCalibration().failed(), "loudness calibration refused (plugin only)");
 
     const double distance = 7.0;
     SimulatedRoom room (distance, 11, 3e-4, 0.0);
@@ -613,6 +702,166 @@ int main (int argc, char** argv)
         pump (proc);
     entries = engine.getEntries();
 
+    std::cout << "Loudness compensation\n";
+    auto& loud = proc.getLoudness();
+    using Step = LoudnessController::Step;
+    const auto& status = proc.getLoudnessStatus();
+    const auto correctionAndVoicing = [&]
+    {
+        auto bands = engine.getApplied();
+        for (const auto& b : proc.getVoicingSections())
+            bands.push_back (b);
+        return bands;
+    };
+    // The deadband's held level keeps drifting slowly (30 s) towards the tracked one
+    // through the silence around the impulse, so the response must lie between the
+    // EQ the stage showed just before and just after it.
+    const auto loudnessPathError = [&]
+    {
+        std::vector<roomeq::Band> before;
+        const auto ir = impulseThrough (proc, 1 << 15, [&] { before = loudnessBands (status); });
+        auto cvBefore = correctionAndVoicing(), cvAfter = correctionAndVoicing();
+        for (const auto& b : before)
+            cvBefore.push_back (b);
+        for (const auto& b : loudnessBands (status))
+            cvAfter.push_back (b);
+        double worstError = 0.0;
+        for (double f : { 30.0, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 })
+        {
+            const auto x = dtftDb (ir, f);
+            const auto a = roomeq::responseDb (cvBefore, { f }, fs).front(), c = roomeq::responseDb (cvAfter, { f }, fs).front();
+            worstError = std::max ({ worstError, std::min (a, c) - x, x - std::max (a, c) });
+        }
+        return worstError;
+    };
+    const auto waitForStep = [&] (Show& show, Music* music, double seconds, Step until)
+    {
+        show.play (music, seconds, [&] { return loud.getStep() == until && ! loud.isAnalysing(); });
+        for (int i = 0; i < 400 && loud.isAnalysing(); ++i)
+            pump (proc);
+    };
+    pump (proc);
+    check (loud.hasPlan() && ! loud.getInfo().calibrated, "shelves planned; not calibrated yet");
+    check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing()) < 0.02, "uncalibrated: loudness adds nothing");
+    {
+        SimulatedRoom room (7.0, 21, 3e-4, 0.0);
+        Show show { proc, room, 0.0, {}, {} };
+
+        // Mic calibrator: a 1 kHz tone at 0.05 peak (-29.0 dBFS RMS) stands for 94 dB.
+        show.micSignal = [] (std::size_t n) { return static_cast<float> (0.05 * std::sin (juce::MathConstants<double>::twoPi * 1000.0 * static_cast<double> (n) / fs)); };
+        check (loud.startMicCalibration (94.0).wasOk(), "start the mic calibrator (94 dB)");
+        waitForStep (show, nullptr, 6.0, Step::idle);
+        auto info = loud.getInfo();
+        const auto toneDbfs = 20.0 * std::log10 (0.05 / std::sqrt (2.0));
+        check (info.hasMicOffset && std::abs ((94.0 - info.micOffsetDb) - toneDbfs) < 0.1,
+               "mic calibrated: 94 dB = " + juce::String (94.0 - info.micOffsetDb, 2) + " dBFS (C)");
+        show.micSignal = nullptr;
+
+        // Level calibration: noise on both speakers through the EQ; the mic hears the room.
+        check (loud.startCalibration().wasOk(), "start the level calibration");
+        check (engine.getActivity() == MeasurementEngine::Activity::measuring, "calibration noise playing");
+        check (loud.startRecheck().failed() && proc.startMeasurement().failed(), "nothing else starts meanwhile");
+        show.rightEnergy = show.channelDiff = 0.0;
+        show.play (nullptr, 3.0);
+        check (show.rightEnergy > 0.0 && show.channelDiff < 1e-6, "noise on both speakers, the same");
+        waitForStep (show, nullptr, 15.0, Step::awaitingSpl);
+        info = loud.getInfo();
+        check (loud.getStep() == Step::awaitingSpl, "noise measured; waiting for the meter reading");
+        check (info.measuredOutputDbfs > -40.0 && info.measuredOutputDbfs < -10.0,
+               "output level " + juce::String (info.measuredOutputDbfs, 1) + " dBFS (C)");
+        check (info.suggestedSpl.has_value(), "the calibrated mic suggests " + juce::String (info.suggestedSpl.value_or (0.0), 1) + " dB(C)");
+        check (loud.setMeasuredSpl (20.0).failed(), "an implausible reading is refused");
+        check (loud.setMeasuredSpl (95.0).wasOk(), "meter reading entered (95 dB(C))");
+        info = loud.getInfo();
+        check (info.calibrated && info.calibration.hasMic && info.canRecheck, "calibrated, with the mic: re-check available");
+        const auto calOutput = info.calibration.outputDbfs;
+        show.play (nullptr, 3.0, [&] { return engine.getActivity() == MeasurementEngine::Activity::idle; });
+        check (engine.getEntries().size() == entries.size(), "calibration isn't filed as a capture");
+
+        // Music about 12 dB below the reference.
+        Music music;
+        {
+            Music probe;
+            probe.gain = 1.0;
+            std::vector<double> x (static_cast<std::size_t> (8 * fs));
+            for (auto& v : x)
+                v = probe.next();
+            music.gain = std::pow (10.0, (calOutput - 12.0 - roomeq::cWeightedLevelDbfs (x, fs)) / 20.0);
+        }
+        setParam (proc, "loudOn", 0.0f);   // off: the output is the stage's input, so the level can be checked
+        show.play (&music, 14.0);
+        const auto expectedSpl = 95.0 + show.outputLevelDbfs() - calOutput;
+        check (std::abs (status.splNow.load() - expectedSpl) < 0.5,
+               "tracked level " + juce::String (status.splNow.load(), 2) + " dB(C) vs " + juce::String (expectedSpl, 2) + " from the output");
+        check (status.lowGainDb.load() <= 0.0f && status.highGainDb.load() <= 0.0f, "off: no boost");
+        setParam (proc, "loudOn", 1.0f);
+        show.play (&music, 2.0);
+        const auto plan = roomeq::planShelves (95.0, fs);
+        const auto want = roomeq::shelfGains (plan, status.splUsed.load(), proc.getLoudnessSettings().config);
+        check (status.lowGainDb.load() > 4.0 && std::abs (status.lowGainDb.load() - want.first) < 0.01
+                   && std::abs (status.highGainDb.load() - want.second) < 0.01,
+               "about 12 dB below the reference: low " + juce::String (status.lowGainDb.load(), 2) + " dB, high "
+                   + juce::String (status.highGainDb.load(), 2) + " dB (as planned)");
+        auto worstEq = loudnessPathError();
+        check (worstEq < 0.01, "speakers get correction + voicing + loudness shelves (worst " + juce::String (worstEq, 3) + " dB)");
+
+        // Deadband: +1 dB barely moves the EQ; -5 dB moves it. (The impulse above
+        // counted as a quiet moment of music, so let the level settle again first.)
+        show.play (&music, 6.0);
+        const auto used0 = status.splUsed.load(), now0 = status.splNow.load();
+        music.gain *= std::pow (10.0, 1.0 / 20.0);
+        show.play (&music, 6.0);
+        check (std::abs (status.splNow.load() - (now0 + 1.0f)) < 0.5f && std::abs (status.splUsed.load() - used0) < 0.4f,
+               "1 dB louder: level " + juce::String (status.splNow.load() - now0, 2) + " dB, EQ moved "
+                   + juce::String (status.splUsed.load() - used0, 2) + " dB");
+        music.gain *= std::pow (10.0, -6.0 / 20.0);
+        show.play (&music, 20.0);
+        check (status.splUsed.load() < used0 - 1.5f && status.splUsed.load() - status.splNow.load() <= 2.01f,
+               "5 dB quieter: EQ follows " + juce::String (status.splUsed.load() - used0, 2) + " dB, within 2 dB of the level");
+        music.gain *= std::pow (10.0, 5.0 / 20.0);
+
+        // High-pass follows the boost.
+        setParam (proc, "loudHighPass", 1.0f);
+        show.play (&music, 12.0);
+        const auto base = loud.getHighpassBase();
+        const auto hp = static_cast<double> (status.hpFreq.load());
+        check (hp > base * 1.05 && hp <= base * std::sqrt (2.0) + 0.01,
+               "protective high-pass at " + juce::String (hp, 1) + " Hz (roll-off " + juce::String (base, 1) + " Hz)");
+        worstEq = loudnessPathError();
+        check (worstEq < 0.01, "and the speakers get it (worst " + juce::String (worstEq, 3) + " dB)");
+        setParam (proc, "loudHighPass", 0.0f);
+
+        // Measurements step it aside.
+        check (proc.startSweep().wasOk(), "start a sweep");
+        show.play (&music, 1.0);
+        check (status.lowGainDb.load() <= 0.0f && status.highGainDb.load() <= 0.0f, "loudness is flat while measuring");
+        engine.cancel();
+        show.play (&music, 2.0, [&] { return engine.getActivity() == MeasurementEngine::Activity::idle; });
+
+        // The amp gets 4 dB louder after the plugin: re-check finds it from the music.
+        show.ampGainDb = 4.0;
+        show.play (&music, 8.0);
+        const auto before = status.splNow.load();
+        check (loud.startRecheck().wasOk(), "start the re-check (music playing)");
+        waitForStep (show, &music, 20.0, Step::idle);
+        info = loud.getInfo();
+        check (std::abs (info.recheckChangeDb - 4.0) < 0.6 && std::abs (info.calibration.outputDbfs - (calOutput - info.recheckChangeDb)) < 1e-9,
+               "re-check found the amp change (" + signedText (info.recheckChangeDb) + " dB) and moved the calibration");
+        show.play (&music, 8.0);
+        check (std::abs (status.splNow.load() - before - static_cast<float> (info.recheckChangeDb)) < 0.5f,
+               "tracked level includes it (" + juce::String (status.splNow.load() - before, 2) + " dB)");
+        const auto moved = info.calibration.outputDbfs;
+        check (loud.startRecheck().wasOk(), "re-check again");
+        waitForStep (show, &music, 20.0, Step::idle);
+        check (juce::exactlyEqual (loud.getInfo().calibration.outputDbfs, moved) && loud.getStatus().contains ("hasn't changed"),
+               "nothing changed: calibration kept (" + loud.getStatus() + ")");
+
+        setParam (proc, "loudOn", 0.0f);
+        check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing()) < 0.02, "loudness off: flat");
+        setParam (proc, "loudOn", 1.0f);
+        show.play (&music, 3.0);   // boosting again, for the screenshot
+    }
+
     std::cout << "State round trip\n";
     juce::MemoryBlock state;
     proc.getStateInformation (state);
@@ -640,6 +889,11 @@ int main (int argc, char** argv)
                    && restored.getEngine().getAppliedId() == engine.getAppliedId() && restored.getEngine().hasPrevious(),
                "applied and previous corrections restored");
         check (restored.getCustomTarget() == proc.getCustomTarget(), "custom target restored");
+        const auto was = proc.getLoudness().getInfo(), now = restored.getLoudness().getInfo();
+        check (now.calibrated && juce::exactlyEqual (now.calibration.outputDbfs, was.calibration.outputDbfs)
+                   && juce::exactlyEqual (now.calibration.spl, was.calibration.spl) && now.canRecheck && now.hasMicOffset
+                   && juce::exactlyEqual (now.micOffsetDb, was.micOffsetDb),
+               "loudness calibration restored");
         restored.setRateAndBufferSizeDetails (fs, blockSize);
         restored.prepareToPlay (fs, blockSize);
         auto restoredEq = restored.getEngine().getApplied();
@@ -665,6 +919,11 @@ int main (int argc, char** argv)
         ours->selectVoicingBand (1);
         ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
         writeSnapshot (*editor, stem + "-voicing.png");
+        ours->showTab (AdaptiveRoomEQEditor::Tab::loudness);
+        writeSnapshot (*editor, stem + "-loudness.png");
+        editor->setSize (1060, 740);   // the smallest size: everything still fits
+        writeSnapshot (*editor, stem + "-loudness-small.png");
+        editor->setSize (1200, 820);
 
         std::cout << "Editing on the graph\n";
         ResponseGraph* graph = nullptr;

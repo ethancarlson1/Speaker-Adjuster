@@ -2,10 +2,11 @@
 
 A VST3/AU plugin (plus a standalone app) that measures a PA in the room, corrects it, and keeps the tonal balance consistent as the volume drops and the room fills. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** Phases 1 and 2 are implemented.
+**Status:** Phases 1–3 are implemented.
 - **Measure:** positions measured with log sweeps or pink noise (or from program material), each capture graded, and every position, the power average and the target shown.
 - **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
 - **Voicing:** an 8-band voicing EQ on top of the correction.
+- **Loudness:** level calibration, level tracking and ISO 226 loudness compensation, so the balance heard at the reference level holds as the show gets quieter.
 
 So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
 
@@ -61,6 +62,37 @@ Eight bands (bell, low/high shelf, 12 or 24 dB/octave high/low-pass) after the c
 - double-click to switch it on or off.
 
 All voicing and correction settings are automatable parameters. Measurements, the applied and previous corrections, and the custom target are saved with the host session.
+
+## Loudness compensation (Loudness tab)
+
+At lower levels we hear less bass and treble (the ISO 226 equal-loudness contours). This stage, after the correction and voicing, raises them as the level drops below the **Reference**, by the difference between the contours at the current level and at the reference. It uses two smooth shelves. Above the reference it does nothing.
+
+It needs the volume turned down **before** the plugin (in the DAW, or on the console feeding it), so the plugin can tell the level from its own output.
+
+**Calibrate once per setup** (plugin only; the standalone app has no program to compensate):
+1. Set **Level** on the Measure tab so the noise will be comfortably loud.
+2. Press **Calibrate level**. Pink noise plays on both speakers for 12 s, through the correction and voicing.
+3. While it plays, read an SPL meter at the mix position (C-weighted, slow) and enter the reading under **Meter read**.
+
+The plugin stores the output level that gave that SPL. With the mic connected, it also stores what the mic heard, for mic tracking and **Re-check**.
+
+**Optional: a calibrated mic.** Put a sound level calibrator (94 or 114 dB) on the mic and press **Calibrate mic**. From then on, a level calibration fills in the SPL the mic heard. That's correct if the mic is at the mix position.
+
+**Settings:**
+- **Reference** (95 dB C): the level where the mix sounds right with no compensation.
+- **Amount** (100%): how much of the ISO 226 difference to apply.
+- **Max boost** (low 8 dB, high 4 dB): the most each shelf ever adds. Low boost never exceeds 12 dB, whatever the setting.
+- **Level from**:
+  - **Plugin output** (default): steady and deaf to the crowd.
+  - **Mic**: the level the mic actually hears, counted only while music plays. It needs a calibration made with the mic connected.
+- **Speed** (5 s): how quickly the EQ follows a drop in level. A rise is followed within about a second, so a sudden loud passage never gets a quiet-level bass boost. Pauses between songs are held.
+- **Protective high-pass** (off): a 24 dB/octave high-pass at the PA's measured low-end roll-off. It rises by up to half an octave as the bass boost grows, so the boost doesn't drive the speakers below their range.
+
+**Small changes are ignored.** The EQ follows a change of more than 2 dB straight away. Anything smaller only moves it by a slow drift, over about 30 s. So the EQ doesn't hunt around with the music.
+
+**Re-check level from the music** is for when the gain after the plugin (amp, console fader) changed since calibration. It listens to ~12 s of the show through the mic, with no test signal, and compares the output-to-mic transfer with the calibration, band by band. If the system is louder or quieter by 0.5 dB or more, the calibration follows. If too little of the music reached the mic clearly (crowd, quiet passage), it says so and changes nothing.
+
+The EQ strip shows the compensation at the current level in gold. The tab shows the level, the boosts, and when it was calibrated and re-checked. The calibration is saved with the session.
 
 ## Trying it out
 
@@ -122,14 +154,20 @@ Phase 2's "done when" test:
 - Press **Verify** at two or three of the same spots. The violet Verified curve should sit within a few dB of the target across the corrected range. The Correct tab shows the RMS difference; the simulated room lands under 1 dB.
 - Play music and flip **Hear previous** / **Correction on** to listen for artifacts: there should be none, just the tonal change.
 
+Phase 3's "done when" test:
+- Calibrate (meter at the mix position), and set **Reference** to the level the system sounds right at.
+- Play speech, then music, at the reference. Then turn down 10–15 dB before the plugin.
+- A/B **Loudness compensation on** at the lower level. With it on, the balance should sound like it did at the reference: the bass shouldn't thin out, and speech shouldn't lose its presence. The tab shows the boosts it's applying.
+- Change the amp gain a few dB during music and press **Re-check level**: it should report the change.
+
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction and voicing EQ (state-variable filters that glide), background analysis and fitting, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), level tracking, calibration, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
-| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder and the EQ |
+| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ and the loudness stage |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
 | `tools/plugin_harness.cpp` | Headless end-to-end run of the real processor against a simulated room; renders the UI to PNG |
 | `.github/workflows/ci.yml` | Builds on macOS, Windows and Linux; runs every test layer and pluginval |
@@ -165,7 +203,8 @@ The harness drives the real processor against a simulated room. It checks:
 - the speakers get exactly the predicted correction and voicing;
 - re-measuring through the correction lands near the target;
 - undo, hearing the previous correction, custom targets and the state round trip all work;
-- dragging handles and target points on the graph works.
+- dragging handles and target points on the graph works;
+- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music.
 
 It also renders each tab to PNG.
 
@@ -177,8 +216,10 @@ It also renders each tab to PNG.
   - Pick the channels with the app's own **Mic input** and **Speaker output** menus. They list every channel individually, whereas JUCE's settings dialog only offers stereo pairs.
   - The app only ever outputs the test signal and never sends the mic to the speakers, so it turns off JUCE's default input mute.
   - Measurements play the signal straight out; **Verify** plays it through the correction and voicing EQ.
-  - **Measure from music** is plugin-only, because no program passes through the app.
+  - **Measure from music** and loudness compensation are plugin-only, because no program passes through the app.
   - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
+
+**Latency:** none. Every EQ stage is a minimum-phase IIR filter processed in place, with no lookahead, so the plugin reports 0 samples. The round trip is set by the interface and host buffer size.
 
 ## Licensing note
 

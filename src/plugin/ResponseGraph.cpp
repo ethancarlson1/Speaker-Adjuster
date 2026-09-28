@@ -74,7 +74,10 @@ void ResponseGraph::refresh()
     const auto eq = processor.getEqSettings();
     const auto& engine = processor.getEngine();
     if (! sameEq (eq, lastEq) || engine.getPlaying() != lastApplied || display != lastDisplay
-        || processor.getTarget() != lastTarget || engine.isComparingPrevious() != lastComparing)
+        || processor.getTarget() != lastTarget || engine.isComparingPrevious() != lastComparing
+        || loudnessBands (processor.getLoudnessStatus()) != lastLoudness
+        || processor.getLoudnessSettings().on != lastLoudnessOn
+        || processor.getLoudness().getInfo().calibrated != lastLoudnessCalibrated)
     {
         updateCurves();
         repaint();
@@ -113,6 +116,15 @@ void ResponseGraph::updateCurves()
     curves.proposal = proposal != nullptr ? roomeq::responseDb (scaledBy (proposal->bands, lastEq.amount), curves.grid, fs)
                                           : std::vector<double> (curves.grid.size(), 0.0);
     curves.voicing = roomeq::responseDb (processor.getVoicingSections(), curves.grid, fs);
+
+    // Loudness: what the stage applies at the current level (plugin only).
+    lastLoudness = loudnessBands (processor.getLoudnessStatus());
+    lastLoudnessOn = processor.getLoudnessSettings().on;
+    lastLoudnessCalibrated = processor.getLoudness().getInfo().calibrated;
+    curves.showLoudness = ! processor.isStandalone();
+    curves.loudnessOn = lastLoudnessOn;
+    curves.loudnessCalibrated = lastLoudnessCalibrated;
+    curves.loudness = roomeq::responseDb (lastLoudness, curves.grid, fs);
 
     predicted.clear();
     targetDb.clear();
@@ -426,6 +438,10 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area) cons
     if (curves.showProposal)
         legend.push_back ({ "Proposed (not applied)", theme::aqua.withAlpha (0.7f), true });
     legend.push_back ({ curves.voicingOn ? "Voicing EQ" : "Voicing EQ (off)", theme::magenta, ! curves.voicingOn });
+    const auto loudnessActive = curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated;
+    if (curves.showLoudness)
+        legend.push_back ({ ! curves.loudnessOn ? "Loudness (off)" : curves.loudnessCalibrated ? "Loudness now" : "Loudness (not calibrated)",
+                            theme::gold, ! loudnessActive });
     drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
 
     juce::Graphics::ScopedSaveState clip (g);
@@ -440,6 +456,11 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area) cons
     g.strokePath (curve (grid, curves.applied, area, true), juce::PathStrokeType (2.2f));
     g.setColour (theme::magenta.withAlpha (curves.voicingOn ? 1.0f : 0.4f));
     g.strokePath (curve (grid, curves.voicing, area, true), juce::PathStrokeType (2.0f));
+    if (loudnessActive)
+    {
+        g.setColour (theme::gold);
+        g.strokePath (curve (grid, curves.loudness, area, true), juce::PathStrokeType (2.0f));
+    }
 
     g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
     for (int b = 0; b < roomeq::numVoicingBands; ++b)
@@ -501,6 +522,8 @@ void ResponseGraph::drawHover (juce::Graphics& g) const
     }
     text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1)
          << " dB";
+    if (curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated)
+        text << ", loudness " << juce::String (curves.loudness[i], 1) << " dB";
 
     g.setFont (juce::FontOptions (12.0f));
     const auto w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 16.0f;

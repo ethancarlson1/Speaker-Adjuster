@@ -20,9 +20,12 @@ constexpr double silentDbfs = -90.0;   // C-weighted level below which nothing w
 
 bool same (double a, double b) noexcept { return std::equal_to<double>() (a, b); }
 
-juce::String db (double v, int decimals = 1)
+juce::String db (double v)
 {
-    return (v > 0.0 ? "+" : "") + juce::String (v, decimals);
+    const auto r = std::round (v * 10.0) / 10.0;   // no "-0.0"
+    if (std::abs (r) < 0.05)
+        return "0.0";
+    return (r > 0.0 ? "+" : "") + juce::String (r, 1);
 }
 
 juce::MemoryBlock pack (const std::vector<double>& values)
@@ -149,6 +152,8 @@ juce::Result LoudnessController::startMicCalibration (double splOfCalibrator)
         return juce::Result::fail ("Wait for the current step to finish, or stop it");
     if (! std::isfinite (splOfCalibrator) || splOfCalibrator < 80.0 || splOfCalibrator > 130.0)
         return juce::Result::fail ("The calibrator level should be 94 or 114 dB");
+    if (engine.getActivity() == MeasurementEngine::Activity::measuring)
+        return juce::Result::fail ("Wait for the measurement or calibration noise to finish");
     requestedCalibratorSpl = splOfCalibrator;
     resumeAwaiting = step == Step::awaitingSpl;
     if (auto r = startTap (Step::micCalibrating, 0.5, micCalibrationSeconds, true); r.failed())
@@ -288,6 +293,11 @@ void LoudnessController::update()
         else if (step == Step::rechecking && measuring)
         {
             stopReason = "Re-check stopped: a measurement started";
+            stage.cancelTap();
+        }
+        else if (step == Step::micCalibrating && measuring)
+        {
+            stopReason = "Mic calibration stopped: a measurement started";
             stage.cancelTap();
         }
     }

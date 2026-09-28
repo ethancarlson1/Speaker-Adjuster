@@ -73,7 +73,7 @@ public:
         std::atomic<float> splUsed { 0.0f };      // the deadband level the shelves follow
         std::atomic<float> lowGainDb { 0.0f }, highGainDb { 0.0f };
         std::atomic<float> hpFreq { 0.0f };       // 0 when the high-pass is off
-        std::atomic<float> lowFreq { 0.0f }, lowQ { 0.0f }, highFreq { 0.0f };
+        std::atomic<float> lowFreq { 0.0f }, lowQ { 0.0f }, highFreq { 0.0f }, highQ { 0.0f };
     };
     const Status& getStatus() const { return status; }
 
@@ -102,3 +102,6 @@ private:
 
     Status status;
 };
+
+// The stage's current EQ as bands (for the graph and tests), from its status.
+std::vector<roomeq::Band> loudnessBands (const LoudnessStage::Status& status);

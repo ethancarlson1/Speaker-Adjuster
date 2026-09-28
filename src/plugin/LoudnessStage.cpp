@@ -121,6 +121,7 @@ void LoudnessStage::updateTargets (const LoudnessSettings& settings, bool suspen
     status.lowFreq = static_cast<float> (model.plan.lowFreq);
     status.lowQ = static_cast<float> (model.plan.lowQ);
     status.highFreq = static_cast<float> (model.plan.highFreq);
+    status.highQ = static_cast<float> (model.plan.highQ);
     haveTargets = true;
 }
 
@@ -209,4 +210,20 @@ void LoudnessStage::recordTap (float* const* channels, int numChannels, const fl
         activeTap.store (nullptr, std::memory_order_release);
         t->finished.store (true, std::memory_order_release);
     }
+}
+
+std::vector<roomeq::Band> loudnessBands (const LoudnessStage::Status& s)
+{
+    std::vector<roomeq::Band> out;
+    const auto low = static_cast<double> (s.lowGainDb.load());
+    const auto high = static_cast<double> (s.highGainDb.load());
+    if (low > 0.0 || high > 0.0)
+    {
+        out.push_back ({ roomeq::BandKind::lowShelf, s.lowFreq.load(), low, s.lowQ.load() });
+        out.push_back ({ roomeq::BandKind::highShelf, s.highFreq.load(), high, s.highQ.load() });
+    }
+    if (const auto hp = static_cast<double> (s.hpFreq.load()); hp > 0.0)
+        for (const auto& b : roomeq::trackingHighpass (hp, 0.0, {}))   // no rise: hp is already where it sits
+            out.push_back (b);
+    return out;
 }

@@ -9,9 +9,9 @@
 
 #include <array>
 
-// Left: three tabs (Measure, Correct, Voicing) over a status area that is
-// always visible. Right: the capture list with grades, and the graph
-// (response on top, the two EQ stages below).
+// Left: tabs (Measure, Correct, Voicing, Loudness; the standalone app has no
+// Loudness tab) over a status area that is always visible. Right: the capture
+// list with grades, and the graph (response on top, the EQ stages below).
 class AdaptiveRoomEQEditor final : public juce::AudioProcessorEditor,
                                    private juce::Timer,
                                    private juce::ChangeListener
@@ -27,7 +27,8 @@ public:
     {
         measure = 0,
         correct,
-        voicing
+        voicing,
+        loudness
     };
     void showTab (Tab tab);
     void selectVoicingBand (int band);
@@ -54,6 +55,10 @@ private:
     void updateTabVisibility();
     juce::String summaryLine() const;
     juce::String correctionInfo() const;
+    juce::String loudnessInfo() const;
+    juce::String statusText() const;
+    void submitSpl();
+    void updateLoudnessControls();
 
     juce::Rectangle<int> headerArea() const;
     juce::Rectangle<int> controlsArea() const;
@@ -62,10 +67,11 @@ private:
     AdaptiveRoomEQProcessor& processor;
 
     // Tabs.
-    juce::TextButton measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" };
+    juce::TextButton measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" }, loudnessTab { "Loudness" };
     Tab currentTab = Tab::measure;
-    std::vector<juce::Component*> measureControls, correctControls, voicingControls;
+    std::vector<juce::Component*> measureControls, correctControls, voicingControls, loudnessControls;
     juce::Rectangle<int> statusBounds, tipBounds, infoBounds;
+    int calibrationRuleY = 0;
 
     // Measure tab.
     juce::ComboBox signal, sweepLength, sweepsPerPosition, noiseLength, sweepSpeaker, smoothing;
@@ -116,6 +122,24 @@ private:
     std::unique_ptr<ComboAttachment> bandTypeAttachment;
     std::unique_ptr<SliderAttachment> bandFreqAttachment, bandGainAttachment, bandQAttachment;
     int selectedBand = 0;
+
+    // Loudness tab.
+    juce::ToggleButton loudOn { "Loudness compensation on" }, loudHighPass { "Protective high-pass (follows the boost)" };
+    juce::Slider loudRef { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
+        loudAmount { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
+        loudMaxLow { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
+        loudMaxHigh { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
+        loudSpeed { juce::Slider::LinearBar, juce::Slider::TextBoxRight };
+    juce::ComboBox loudSource, calibratorLevel;
+    juce::Label loudRefLabel, loudAmountLabel, loudMaxLabel, loudSourceLabel, loudSpeedLabel, splLabel, calibratorLabel;
+    juce::TextEditor splEntry;
+    juce::TextButton calibrateButton { "Calibrate level: play noise on both speakers" }, setSplButton { "Set" },
+        micCalButton { "Calibrate mic" }, recheckButton { "Re-check level from the music" };
+    std::unique_ptr<ButtonAttachment> loudOnAttachment, loudHighPassAttachment;
+    std::unique_ptr<ComboAttachment> loudSourceAttachment;
+    std::unique_ptr<SliderAttachment> loudRefAttachment, loudAmountAttachment, loudMaxLowAttachment, loudMaxHighAttachment,
+        loudSpeedAttachment;
+    LoudnessController::Step lastLoudnessStep = LoudnessController::Step::idle;
 
     CaptureList captureList;
     ResponseGraph graph { processor };

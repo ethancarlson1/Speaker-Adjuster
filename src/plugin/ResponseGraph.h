@@ -10,7 +10,8 @@ class AdaptiveRoomEQProcessor;
 // The response graph. Top: each position (level-aligned), the power average,
 // the target, the predicted result with correction and voicing, and the
 // verified result (measured through the EQ). Bottom strip: the correction
-// (applied and proposed) and the voicing EQ, with a draggable handle per
+// (applied and proposed), the voicing EQ and the loudness compensation at the
+// current level, with a draggable handle per
 // voicing band (drag: frequency and gain, wheel: Q, double-click: on/off).
 // With the custom target selected, its points can be dragged too
 // (double-click adds or removes a point). Hovering shows a readout.
@@ -41,9 +42,10 @@ private:
     struct Curves
     {
         std::vector<double> grid;
-        std::vector<double> applied, proposal, voicing;   // dB
+        std::vector<double> applied, proposal, voicing, loudness;   // dB
         bool showProposal = false;
         bool correctionOn = true, voicingOn = true;
+        bool showLoudness = false, loudnessOn = true, loudnessCalibrated = false;
     };
 
     juce::Rectangle<float> responseArea() const;
@@ -92,6 +94,8 @@ private:
     std::shared_ptr<const MeasurementEngine::Display> lastDisplay;
     roomeq::TargetCurve lastTarget;
     bool lastComparing = false;
+    std::vector<roomeq::Band> lastLoudness;
+    bool lastLoudnessOn = true, lastLoudnessCalibrated = false;
 
     int selectedBand = 0;
     int draggingBand = -1;
