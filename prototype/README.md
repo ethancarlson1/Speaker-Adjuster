@@ -1,12 +1,13 @@
 # DSP prototype
 
-A Python (NumPy/SciPy) reference implementation of the measurement engine (Phase 1) and the correction fit (Phase 2), plus an offline room simulator for testing them without a PA. The C++ port is checked against this.
+A Python (NumPy/SciPy) reference implementation of the measurement engine (Phase 1), the correction fit (Phase 2) and loudness compensation (Phase 3), plus an offline room simulator for testing them without a PA. The C++ port is checked against this.
 
 ```sh
 pip install -r requirements.txt
 pytest                      # ~1 min
 python make_plots.py        # Phase 1 review plots (plots/01-06)
 python make_phase2_plots.py # Phase 2 review plots (plots/07-11)
+python make_phase3_plots.py # Phase 3 review plots (plots/12-14)
 ```
 
 **C++ cross-check:** `tests/test_cpp_port.py` runs the C++ port (`roomeq_cli`, built from `src/roomeq`) on the same simulated recordings. It requires every delay, band SNR/level/spread, grade, reason string, offset and curve to match this prototype within 1e-6 dB. Point `ROOMEQ_CLI` at the built binary to run it (CI always does); without it those tests are skipped.
@@ -25,6 +26,8 @@ python make_phase2_plots.py # Phase 2 review plots (plots/07-11)
 | `filters.py` | RBJ biquads (bell, shelves, high/low-pass) and their exact digital responses |
 | `targets.py` | Target curves (flat, house, speech, user-drawn) as points with PCHIP interpolation in log frequency |
 | `correction.py` | Phase 2: fit range, null detection, and the bounded greedy + Levenberg–Marquardt band fit |
+| `iso226.py` | ISO 226:2003 equal-loudness contours |
+| `loudness.py` | Phase 3: C-weighting, calibration, level tracking, and the contour-difference compensation as shelves with limits and a tracking high-pass |
 | `roomsim.py` | Simulator: PA model with mild distortion → pyroomacoustics room → mic, plus load-in noise (pink, rumble, crowd, bangs) and synthetic walk-in music |
 
 ## How a capture is analysed
@@ -57,3 +60,15 @@ python make_phase2_plots.py # Phase 2 review plots (plots/07-11)
 7. **Quick mode:** the limits are raised to cap/strength, then every gain is scaled by the strength, so with one good position the applied correction is half strength and within ±3 dB.
 
 Re-measuring the simulated club through the fitted filters lands within 0.3–0.4 dB RMS of each preset target (worst 1.3 dB) over the corrected range.
+
+## How loudness compensation works (Phase 3)
+
+1. **Calibration:** pink noise plays on both speakers. The C-weighted level at the loudness stage's input (after correction and voicing) is paired with the SPL at the mix position: typed in from a meter (dB C, slow) or read by a calibrated mic. The mic's own level is noted at the same time, so an uncalibrated measurement mic can track SPL later.
+2. **Tracking:** 400 ms C-weighted momentary levels.
+   - The estimate rises with a 1 s time constant, so the boost backs off quickly when it gets louder. It falls with the **speed** setting (5 s), so the boost grows slowly when it gets quieter.
+   - Silence, and anything more than 20 dB below the estimate, counts as a pause and holds the estimate. A drop that lasts longer than 8 s is real and is followed.
+   - Mic tracking only updates while the plugin's output shows program playing.
+3. **Target:** the ISO 226 contour difference between the current SPL and the reference, `[Lp(f, now) − now] − [Lp(f, ref) − ref]`, zero at or above the reference.
+4. **Shelves:** that difference keeps its shape as the level drops and just scales, so a low shelf and a high shelf are fitted once per reference level (frequency and Q). A table then gives their gains for every dB below the reference. They stay within 0.8 dB of the ISO curve from 30 Hz to 16 kHz for drops up to 20 dB.
+5. **Limits:** amount, max low boost (8 dB), max high boost (4 dB), and a fixed 12 dB low-boost ceiling.
+6. **Protective high-pass (optional):** 24 dB/octave at the PA's measured roll-off, rising up to half an octave as the low boost reaches its maximum.
