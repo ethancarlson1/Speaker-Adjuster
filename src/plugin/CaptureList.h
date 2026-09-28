@@ -23,7 +23,8 @@ public:
 
     explicit CaptureList (Callbacks callbacks);
 
-    void setEntries (std::vector<MeasurementEngine::Entry> newEntries, bool measuring);
+    // appliedId: verify captures taken with another correction are marked as older.
+    void setEntries (std::vector<MeasurementEngine::Entry> newEntries, bool measuring, int appliedId = 0);
     int getSelectedId() const;
     void resized() override;
     void paint (juce::Graphics&) override;
@@ -40,4 +41,5 @@ private:
     juce::ListBox list { "Captures", this };
     std::vector<MeasurementEngine::Entry> entries;
     bool measuring = false;
+    int appliedId = 0;
 };

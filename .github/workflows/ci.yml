@@ -94,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: harness-snapshot-${{ matrix.name }}
-          path: harness-${{ matrix.name }}.png
+          path: harness-${{ matrix.name }}*.png
 
       # upload-artifact drops file permissions, which would leave the macOS
       # binaries non-executable. ditto zips keep permissions and bundle metadata.

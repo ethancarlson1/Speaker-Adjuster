@@ -250,6 +250,11 @@ std::shared_ptr<const MeasurementEngine::Display> MeasurementEngine::getDisplay(
     return display;
 }
 
+bool MeasurementEngine::isDisplayCurrent() const
+{
+    return analysesPending == 0 && ! recorder.isBusy() && displayGeneration == summaryGeneration;
+}
+
 void MeasurementEngine::replaceCapture (int id, const std::function<void (roomeq::Capture&)>& change)
 {
     {
@@ -326,7 +331,9 @@ void MeasurementEngine::undoApply()
     std::swap (applied, previous);
     std::swap (appliedId, previousId);
     comparing = false;
-    status = "Swapped back to the previous correction";
+    status = (applied.empty() ? juce::String ("Undo: no correction now")
+                              : "Undo: back to the " + juce::String (static_cast<int> (applied.size())) + "-band correction")
+             + " (Undo again to swap back)";
     playingChanged();
     requestSummary();
 }
@@ -411,8 +418,12 @@ void MeasurementEngine::requestSummary()
     }
     const auto settings = lastSettings.value_or (CorrectionSettings {});
     const auto generation = ++summaryGeneration;
+    mailbox->latestRequested = generation;
     pool.addJob ([mb = mailbox, snapshot, verifySnapshot, ids, fraction = smoothingFraction, generation, g = grid, settings]
     {
+        // A newer request is already queued (e.g. while a target point is dragged): let that one run instead.
+        if (generation != mb->latestRequested.load())
+            return;
         auto s = roomeq::summarizeSession (snapshot, fraction, g);
         std::shared_ptr<const Display> shared;
         if (s)
@@ -483,6 +494,7 @@ void MeasurementEngine::update()
         results.swap (mailbox->results);
         std::swap (summaryReady, mailbox->summaryReady);
         newDisplay = mailbox->display;
+        displayGeneration = mailbox->summaryGeneration;
     }
 
     for (auto& r : results)

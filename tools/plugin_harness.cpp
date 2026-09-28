@@ -1,11 +1,14 @@
-// Headless end-to-end check of the plugin, plus a UI screenshot.
+// Headless end-to-end check of the plugin, plus UI screenshots.
 //
 // Instantiates the processor, runs processBlock against a simulated room (the
 // mic hears the speaker output through filters, reflections, a small reverb
-// and noise), measures several positions, a noisy one and a music capture,
-// checks grades / delays / state round-trip, then renders the editor to PNG.
+// and noise), measures several positions, a noisy one, a music capture and a
+// pink-noise capture, checks grades and delays; then fits, applies and
+// verifies a correction (the speakers must get exactly the predicted EQ, and
+// re-measuring through it must land near the target), checks undo / compare
+// and the state round trip, and renders each editor tab to PNG.
 //
-//   AdaptiveRoomEQ_Harness [--out snapshot.png]
+//   AdaptiveRoomEQ_Harness [--out snapshot.png]   (also writes snapshot-correct.png, -voicing.png, -standalone.png)
 //
 // Exits non-zero if any check fails.
 
@@ -14,6 +17,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <complex>
 #include <iostream>
 #include <random>
 
@@ -176,6 +180,94 @@ void runMeasurement (AdaptiveRoomEQProcessor& p, SimulatedRoom& room, const std:
         pump (p);
 }
 
+void setParam (AdaptiveRoomEQProcessor& p, const juce::String& id, float value)
+{
+    auto* param = p.getParameters().getParameter (id);
+    param->setValueNotifyingHost (param->convertTo0to1 (value));
+}
+
+// The main path's response (program in, speakers out) to an impulse, after
+// letting any EQ glide settle.
+std::vector<double> impulseThrough (AdaptiveRoomEQProcessor& p, int length = 1 << 15)
+{
+    juce::AudioBuffer<float> buffer (3, blockSize);
+    juce::MidiBuffer midi;
+    for (int b = 0; b < 100; ++b)
+    {
+        buffer.clear();
+        p.processBlock (buffer, midi);
+    }
+    std::vector<double> out;
+    for (int pos = 0; pos < length; pos += blockSize)
+    {
+        buffer.clear();
+        if (pos == 0)
+        {
+            buffer.setSample (0, 0, 1.0f);
+            buffer.setSample (1, 0, 1.0f);
+        }
+        p.processBlock (buffer, midi);
+        for (int i = 0; i < blockSize; ++i)
+            out.push_back (buffer.getSample (0, i));
+    }
+    return out;
+}
+
+double dtftDb (const std::vector<double>& x, double f)
+{
+    std::complex<double> acc {}, z { 1.0, 0.0 };
+    const auto step = std::polar (1.0, -juce::MathConstants<double>::twoPi * f / fs);
+    for (auto v : x)
+    {
+        acc += v * z;
+        z *= step;
+    }
+    return 20.0 * std::log10 (std::abs (acc));
+}
+
+double worstMismatchDb (const std::vector<double>& ir, const std::vector<roomeq::Band>& expected)
+{
+    double worst = 0.0;
+    for (double f : { 30.0, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 })
+        worst = std::max (worst, std::abs (dtftDb (ir, f) - roomeq::responseDb (expected, { f }, fs).front()));
+    return worst;
+}
+
+// RMS of (curve - target) over the fit range, outside nulls, on the display grid.
+double rmsFromTarget (const MeasurementEngine::Display& d, const std::vector<double>& curve)
+{
+    const auto& r = *d.proposal;
+    const auto& g = d.summary.grid;
+    double sumSq = 0.0;
+    int n = 0;
+    for (std::size_t i = 0; i < g.size(); ++i)
+    {
+        if (g[i] < r.fitRange.first || g[i] > r.fitRange.second || ! std::isfinite (curve[i]))
+            continue;
+        std::size_t k = 0;
+        for (std::size_t j = 1; j < r.grid.size(); ++j)
+            if (std::abs (std::log (r.grid[j] / g[i])) < std::abs (std::log (r.grid[k] / g[i])))
+                k = j;
+        if (r.nullMask[k])
+            continue;
+        sumSq += (curve[i] - d.targetDb[i]) * (curve[i] - d.targetDb[i]);
+        ++n;
+    }
+    return n > 0 ? std::sqrt (sumSq / n) : 1e9;
+}
+
+std::shared_ptr<const MeasurementEngine::Display> waitForDisplay (AdaptiveRoomEQProcessor& p,
+                                                                  const std::function<bool (const MeasurementEngine::Display&)>& ready)
+{
+    for (int i = 0; i < 2000; ++i)
+    {
+        pump (p);
+        if (auto d = p.getEngine().getDisplay(); d != nullptr && p.getEngine().isDisplayCurrent() && ready (*d))
+            return d;
+    }
+    return p.getEngine().getDisplay();
+}
+
 std::vector<float> musicLikeProgram (double seconds)
 {
     std::mt19937 rng (42);
@@ -246,6 +338,38 @@ void standaloneChecks (const juce::String& snapshotPath)
         const auto expected = 1000.0 * (distance / 343.0 * fs + 288 + blockSize) / fs;
         check (std::abs (entries[0].capture->delaysMs.front() - expected) < 0.5,
                "loop delay within 0.5 ms of the simulated " + juce::String (expected, 2) + " ms");
+    }
+
+    // Verify through a (quick-mode) correction: the app plays the sweep through the EQ.
+    for (int i = 0; i < 400 && ! (proc->getEngine().getDisplay() && proc->getEngine().getDisplay()->proposal
+                                 && proc->getEngine().isDisplayCurrent()); ++i)
+        pump (*proc);
+    proc->getEngine().applyProposal();
+    check (! proc->getEngine().getApplied().empty(), "standalone: quick-mode correction applied");
+    {
+        SimulatedRoom again (distance, 12, 3e-4, 0.0);
+        std::fill (speaker.begin(), speaker.end(), 0.0f);
+        check (proc->startVerify().wasOk(), "standalone: start verify");
+        for (int block = 0; block < 100000 && proc->getEngine().getActivity() != MeasurementEngine::Activity::idle; ++block)
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                buffer.setSample (0, i, again.process (speaker[static_cast<std::size_t> (i)]));
+                buffer.setSample (1, i, 0.0f);
+            }
+            proc->processBlock (buffer, midi);
+            for (int i = 0; i < blockSize; ++i)
+                speaker[static_cast<std::size_t> (i)] = buffer.getSample (0, i);
+            if (block % 64 == 0)
+                pump (*proc);
+        }
+        for (int i = 0; i < 400 && ! proc->getEngine().isDisplayCurrent(); ++i)
+            pump (*proc);
+        const auto all = proc->getEngine().getEntries();
+        check (all.size() == 2 && all.back().verify && all.back().capture->grade.overall == roomeq::Grade::pass,
+               "standalone: verify capture graded pass");
+        const auto d = proc->getEngine().getDisplay();
+        check (d != nullptr && d->verifiedCount == 1, "standalone: verified curve shown");
     }
 
     // Idle: a loud mic must never reach the speakers.
@@ -351,14 +475,122 @@ int main (int argc, char** argv)
         check (display->summary.nGood >= 4 && ! display->summary.policy.maxCorrectionDb.has_value(),
                "enough good positions for full strength (" + juce::String (display->summary.nGood) + ")");
 
+    std::cout << "Correction\n";
+    auto& engine = proc.getEngine();
+    auto d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.proposal.has_value(); });
+    check (d != nullptr && d->proposal.has_value(), "proposed correction fitted in the background");
+    std::vector<roomeq::Band> proposed;
+    if (d != nullptr && d->proposal)
+    {
+        const auto& r = *d->proposal;
+        proposed = r.bands;
+        const auto [lo, hi] = std::minmax_element (r.correctionDb.begin(), r.correctionDb.end());
+        check (! r.bands.empty() && r.bands.size() <= 10, juce::String (static_cast<int> (r.bands.size())) + " bands");
+        check (*hi <= 3.1 && *lo >= -12.1, "within +3 / -12 dB (" + juce::String (*lo, 1) + " to " + juce::String (*hi, 1) + ")");
+        check (r.rmsErrorDb < 1.5, "predicted " + juce::String (r.rmsErrorDb, 2) + " dB RMS from the target");
+        check (juce::exactlyEqual (d->fitFs, 48000.0), "fitted at the plugin's sample rate");
+        std::cout << "    fit range " << r.fitRange.first << " - " << r.fitRange.second << " Hz\n";
+        for (const auto& b : r.bands)
+            std::cout << "    " << roomeq::bandKindName (b.kind) << " " << b.freq << " Hz " << b.gainDb << " dB Q " << b.q << "\n";
+    }
+
+    check (worstMismatchDb (impulseThrough (proc), {}) < 0.001, "audio passes unchanged before Apply");
+    check (engine.canApply(), "Apply available");
+    engine.applyProposal();
+    check (! engine.canApply() && engine.getApplied() == proposed && engine.getAppliedId() > 0, "proposal applied");
+
+    // Band 3 as a +4 dB bell at 1 kHz; the speakers must get correction + voicing exactly as the graph predicts.
+    setParam (proc, "v3Type", 0.0f);
+    setParam (proc, "v3Freq", 1000.0f);
+    setParam (proc, "v3Gain", 4.0f);
+    setParam (proc, "v3Q", 1.4f);
+    setParam (proc, "v3On", 1.0f);
+    auto expected = engine.getApplied();
+    for (const auto& b : proc.getVoicingSections())
+        expected.push_back (b);
+    auto worst = worstMismatchDb (impulseThrough (proc), expected);
+    check (worst < 0.02, "speakers get correction + voicing as predicted (worst " + juce::String (worst, 3) + " dB)");
+    setParam (proc, "correctionAmount", 50.0f);
+    expected.clear();
+    for (const auto& b : engine.getApplied())
+        expected.push_back (b.scaled (0.5));
+    for (const auto& b : proc.getVoicingSections())
+        expected.push_back (b);
+    worst = worstMismatchDb (impulseThrough (proc), expected);
+    check (worst < 0.02, "50% amount halves the correction (worst " + juce::String (worst, 3) + " dB)");
+    setParam (proc, "correctionAmount", 100.0f);
+    setParam (proc, "correctionOn", 0.0f);
+    setParam (proc, "voicingOn", 0.0f);
+    check (worstMismatchDb (impulseThrough (proc), {}) < 0.001, "both stages bypassed: unchanged");
+    setParam (proc, "correctionOn", 1.0f);
+    setParam (proc, "voicingOn", 1.0f);
+    setParam (proc, "v3On", 0.0f);
+
+    std::cout << "Verify\n";
+    for (int i = 0; i < 3; ++i)
+    {
+        SimulatedRoom room (positions[i].distance, positions[i].seed + 20, positions[i].noise, 0.0);
+        check (proc.startVerify().wasOk(), "start verify at " + juce::String (positions[i].distance, 1) + " m");
+        runMeasurement (proc, room);
+    }
+    entries = engine.getEntries();
+    const auto verifyCount = std::count_if (entries.begin(), entries.end(), [] (const auto& e) { return e.verify; });
+    check (verifyCount == 3 && entries.back().capture->name == "V3", "three verify captures, V1-V3");
+    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 3; });
+    check (d != nullptr && d->proposal && d->verifiedCount == 3, "verified average from the three verify captures");
+    if (d != nullptr && d->proposal && ! d->verifiedDb.empty())
+    {
+        const auto before = rmsFromTarget (*d, d->summary.averageDb);
+        const auto after = rmsFromTarget (*d, d->verifiedDb);
+        check (after < 1.5 && after < 0.6 * before, "re-measured through the correction: " + juce::String (before, 2) + " -> "
+                                                        + juce::String (after, 2) + " dB RMS from target");
+        check (d->proposal->bands == engine.getApplied(), "verify captures don't change the proposal");
+    }
+
+    std::cout << "Compare and undo\n";
+    engine.setComparingPrevious (true);
+    check (engine.isComparingPrevious() && engine.getPlaying().empty(), "hear previous plays the previous (none)");
+    check (worstMismatchDb (impulseThrough (proc), {}) < 0.001, "and the speakers get it");
+    engine.setComparingPrevious (false);
+    check (engine.getPlaying() == proposed, "back to the applied correction");
+    engine.undoApply();
+    check (engine.getApplied().empty() && engine.getPrevious() == proposed, "undo swaps back to the previous");
+    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 0; });
+    check (d != nullptr && d->verifiedDb.empty(), "verify captures belong to the correction they measured");
+    engine.undoApply();
+    check (engine.getApplied() == proposed, "undo again restores it");
+    d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.verifiedCount == 3; });
+    check (d != nullptr && d->verifiedCount == 3, "and its verify captures count again");
+
+    std::cout << "Targets\n";
+    proc.setCustomTarget ({ "Tilt", { { 100.0, 2.0 }, { 10000.0, -4.0 } } });
+    setParam (proc, "target", static_cast<float> (AdaptiveRoomEQProcessor::targetCustom));
+    d = waitForDisplay (proc, [&] (const MeasurementEngine::Display& x) { return x.proposal && x.proposal->bands != proposed; });
+    check (d != nullptr && d->proposal && d->proposal->bands != proposed, "custom target refits the proposal");
+    check (engine.canApply(), "and it can be applied");
+    setParam (proc, "target", 0.0f);
+    d = waitForDisplay (proc, [&] (const MeasurementEngine::Display& x) { return x.proposal && x.proposal->bands == proposed; });
+    check (d != nullptr && d->proposal && d->proposal->bands == proposed, "back to flat: the same proposal (deterministic)");
+
+    // Leave a little voicing on for the screenshots.
+    setParam (proc, "v2On", 1.0f);
+    setParam (proc, "v2Gain", 2.0f);
+    setParam (proc, "v6On", 1.0f);
+    setParam (proc, "v6Gain", -1.5f);
+    for (int i = 0; i < 20; ++i)
+        pump (proc);
+    entries = engine.getEntries();
+
     std::cout << "State round trip\n";
     juce::MemoryBlock state;
     proc.getStateInformation (state);
     {
         AdaptiveRoomEQProcessor restored;
+        const auto started = juce::Time::getMillisecondCounterHiRes();
         restored.setStateInformation (state.getData(), static_cast<int> (state.getSize()));
-        for (int i = 0; i < 40; ++i)
-            pump (restored);
+        waitForDisplay (restored, [] (const MeasurementEngine::Display& x) { return x.proposal.has_value(); });
+        std::cout << "    summary and fit after restore: " << juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - started)
+                  << " ms\n";
         const auto again = restored.getEngine().getEntries();
         check (again.size() == entries.size(), "captures restored");
         auto same = again.size() == entries.size();
@@ -368,16 +600,96 @@ int main (int argc, char** argv)
                    && again[i].capture->excluded == (i == 4);
         check (same, "names, reasons and excluded flags restored");
         check (restored.getEngine().getDisplay() != nullptr, "average recomputed after restore");
+        auto verifySame = true;
+        for (std::size_t i = 0; verifySame && i < again.size() && i < entries.size(); ++i)
+            verifySame = again[i].verify == entries[i].verify && again[i].correctionId == entries[i].correctionId;
+        check (verifySame, "verify captures restored");
+        check (restored.getEngine().getApplied() == engine.getApplied()
+                   && restored.getEngine().getAppliedId() == engine.getAppliedId() && restored.getEngine().hasPrevious(),
+               "applied and previous corrections restored");
+        check (restored.getCustomTarget() == proc.getCustomTarget(), "custom target restored");
+        restored.setRateAndBufferSizeDetails (fs, blockSize);
+        restored.prepareToPlay (fs, blockSize);
+        auto restoredEq = restored.getEngine().getApplied();
+        for (const auto& b : restored.getVoicingSections())
+            restoredEq.push_back (b);
+        check (restoredEq.size() > engine.getApplied().size()
+                   && worstMismatchDb (impulseThrough (restored), restoredEq) < 0.02,
+               "restored plugin plays the same correction and voicing");
         std::cout << "    state size " << state.getSize() / 1024 << " KB\n";
     }
 
     std::cout << "Rendering the editor\n";
     {
         std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
-        editor->setSize (1160, 760);
+        auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
+        editor->setSize (1200, 820);
         for (int i = 0; i < 20; ++i)
             pump (proc);
+        const auto stem = outPath.upToLastOccurrenceOf (".", false, false);
         writeSnapshot (*editor, outPath);
+        ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
+        writeSnapshot (*editor, stem + "-correct.png");
+        ours->selectVoicingBand (1);
+        ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
+        writeSnapshot (*editor, stem + "-voicing.png");
+
+        std::cout << "Editing on the graph\n";
+        ResponseGraph* graph = nullptr;
+        for (auto* c : editor->getChildren())
+            if (auto* gr = dynamic_cast<ResponseGraph*> (c))
+                graph = gr;
+        check (graph != nullptr, "graph found");
+        if (graph != nullptr)
+        {
+            auto source = juce::Desktop::getInstance().getMainMouseSource();
+            const auto event = [&] (juce::Point<float> at, juce::Point<float> down, int clicks, bool dragged)
+            {
+                const auto now = juce::Time::getCurrentTime();
+                return juce::MouseEvent (source, at, {}, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, graph, graph, now, down, now, clicks, dragged);
+            };
+            const auto drag = [&] (juce::Point<float> from, juce::Point<float> to)
+            {
+                graph->mouseDown (event (from, from, 1, false));
+                graph->mouseDrag (event ((from + to) / 2.0f, from, 1, true));
+                graph->mouseDrag (event (to, from, 1, true));
+                graph->mouseUp (event (to, from, 1, true));
+            };
+
+            // Band 5 (a bell at 1.5 kHz): drag it right and up.
+            setParam (proc, "v5On", 1.0f);
+            graph->refresh();
+            const auto h = graph->getVoicingHandlePosition (4);
+            drag (h, h + juce::Point<float> (60.0f, -25.0f));
+            const auto v = proc.getEqSettings().voicing[4];
+            check (v.freq > 1600.0 && v.gainDb > 1.0, "dragging a voicing handle sets frequency (" + juce::String (v.freq, 0)
+                                                           + " Hz) and gain (" + juce::String (v.gainDb, 1) + " dB)");
+            graph->mouseDoubleClick (event (graph->getVoicingHandlePosition (4), graph->getVoicingHandlePosition (4), 2, false));
+            check (! proc.getEqSettings().voicing[4].on, "double-click switches the band off");
+
+            // Custom target: drag its second point down 3 dB-ish; double-click adds a point.
+            proc.setCustomTarget ({ "Custom", { { 50.0, 3.0 }, { 1000.0, 0.0 }, { 10000.0, -2.0 } } });
+            setParam (proc, "target", static_cast<float> (AdaptiveRoomEQProcessor::targetCustom));
+            waitForDisplay (proc, [] (const MeasurementEngine::Display&) { return true; });
+            graph->setData (proc.getEngine().getDisplay(), -1);
+            const auto p1 = graph->getTargetPointPosition (1);
+            drag (p1, p1 + juce::Point<float> (0.0f, 30.0f));
+            const auto moved = proc.getCustomTarget();
+            check (moved.points.size() == 3 && moved.points[1].second < -1.0 && std::abs (moved.points[1].first - 1000.0) < 50.0,
+                   "dragging a target point moves it (" + juce::String (moved.points[1].second, 1) + " dB)");
+            const auto emptySpot = graph->getTargetPointPosition (1) + juce::Point<float> (120.0f, 0.0f);
+            graph->mouseDoubleClick (event (emptySpot, emptySpot, 2, false));
+            check (proc.getCustomTarget().points.size() == 4, "double-click adds a target point");
+
+            // Save it, load it back.
+            check (proc.saveCustomTarget ("Harness test target").wasOk(), "custom target saved");
+            const auto file = AdaptiveRoomEQProcessor::getTargetsFolder().getChildFile ("Harness test target.json");
+            const auto saved = proc.getCustomTarget();
+            proc.setCustomTarget ({ "Custom", { { 1000.0, 0.0 } } });
+            check (proc.loadTarget (file).wasOk() && proc.getCustomTarget().points == saved.points, "and loaded back");
+            file.deleteFile();
+            setParam (proc, "target", 0.0f);
+        }
     }
 
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");

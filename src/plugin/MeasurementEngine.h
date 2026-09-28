@@ -9,6 +9,7 @@
 #include <juce_events/juce_events.h>
 #include <juce_data_structures/juce_data_structures.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -96,6 +97,7 @@ public:
     void setSmoothingSource (std::function<int()> source) { smoothingSource = std::move (source); }
     void setCorrectionSettingsSource (std::function<CorrectionSettings()> source) { settingsSource = std::move (source); }
     std::shared_ptr<const Display> getDisplay() const;
+    bool isDisplayCurrent() const;   // no analysis pending and the display reflects the latest change
 
     // Correction. Apply keeps the one it replaces as "previous".
     bool canApply() const;                       // a proposal exists and differs from the applied one
@@ -140,6 +142,7 @@ private:
         std::shared_ptr<const Display> display;
         int summaryGeneration = 0;
         bool summaryReady = false;
+        std::atomic<int> latestRequested { 0 };   // queued summaries older than this are skipped
     };
 
     void timerCallback() override { update(); }
@@ -165,6 +168,7 @@ private:
     std::function<CorrectionSettings()> settingsSource;
     std::optional<CorrectionSettings> lastSettings;
     int summaryGeneration = 0;
+    int displayGeneration = 0;
     int analysesPending = 0;
     juce::String pendingName, status;
     bool pendingVerify = false;

@@ -36,9 +36,14 @@ public:
     {
         id = entry.id;
         capture = entry.capture;
+        verify = entry.verify;
+        stale = entry.verify && entry.correctionId != owner.appliedId;
         selected = isSelected;
         name.setText (juce::String::fromUTF8 (capture->name.c_str()), juce::dontSendNotification);
         include.setToggleState (! capture->excluded, juce::dontSendNotification);
+        include.setButtonText (verify ? "In verified" : "In average");
+        include.setTooltip (verify ? "Untick to leave this position out of the verified average"
+                                   : "Untick to leave this position out of the average");
         redo.setEnabled (! measuring);
         repaint();
     }
@@ -51,7 +56,7 @@ public:
         if (capture == nullptr)
             return;
 
-        const auto dim = capture->excluded ? 0.45f : 1.0f;
+        const auto dim = capture->excluded || stale ? 0.45f : 1.0f;
         const auto grade = capture->grade.overall;
         const auto badge = juce::Rectangle<float> (12.0f, 7.0f, 104.0f, 22.0f);
         g.setColour (theme::gradeColour (grade).withAlpha (0.25f * dim));
@@ -63,7 +68,9 @@ public:
         g.drawText (theme::gradeText (grade), badge, juce::Justification::centred);
 
         juce::String detail = capture->kind == "program" ? "music" : capture->kind == "noise" ? "pink noise" : "sweep";
-        if (! capture->delaysMs.empty())
+        if (verify)
+            detail = "verify " + detail;
+        else if (! capture->delaysMs.empty())
             detail << "  " << juce::String (capture->delaysMs.front(), 1) << " ms";
         g.setColour (theme::muted);
         g.setFont (juce::FontOptions (12.0f));
@@ -74,8 +81,12 @@ public:
             lines.add (juce::String::fromUTF8 (r.c_str()));
         for (const auto& n : capture->grade.notes)
             lines.add (juce::String::fromUTF8 (n.c_str()));
-        if (capture->excluded)
-            lines.insert (0, "Not in the average.");
+        if (stale)
+            lines.insert (0, "Measured with an earlier correction.");
+        else if (capture->excluded)
+            lines.insert (0, verify ? "Not in the verified average." : "Not in the average.");
+        else if (verify)
+            lines.insert (0, "Through the EQ.");
         g.setColour (theme::ink2.withAlpha (dim));
         g.setFont (juce::FontOptions (12.5f));
         g.drawFittedText (lines.joinIntoString (juce::String::fromUTF8 (" \xc2\xb7 ")), reasonsArea(), juce::Justification::topLeft, 2, 0.9f);
@@ -105,7 +116,7 @@ private:
     juce::TextButton redo, remove;
     int id = -1;
     std::shared_ptr<const roomeq::Capture> capture;
-    bool selected = false;
+    bool selected = false, verify = false, stale = false;
 };
 
 CaptureList::CaptureList (Callbacks cb) : callbacks (std::move (cb))
@@ -116,11 +127,12 @@ CaptureList::CaptureList (Callbacks cb) : callbacks (std::move (cb))
     addAndMakeVisible (list);
 }
 
-void CaptureList::setEntries (std::vector<MeasurementEngine::Entry> newEntries, bool isMeasuring)
+void CaptureList::setEntries (std::vector<MeasurementEngine::Entry> newEntries, bool isMeasuring, int newAppliedId)
 {
     const auto previouslySelected = getSelectedId();
     entries = std::move (newEntries);
     measuring = isMeasuring;
+    appliedId = newAppliedId;
     list.updateContent();
     for (std::size_t i = 0; i < entries.size(); ++i)
         if (entries[i].id == previouslySelected)

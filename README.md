@@ -2,12 +2,17 @@
 
 A VST3/AU plugin (plus a standalone app) that measures a PA in the room, corrects it, and keeps the tonal balance consistent as the volume drops and the room fills. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** Phase 1 (measurement tool) is implemented. The plugin measures positions with log sweeps or pink noise (or from program material), grades each capture, and shows every position, the power average and the target. Audio passes through unchanged except while a measurement signal plays. The Phase 2 correction fit is prototyped in Python (`prototype/`, plots 07–11) and not yet in the plugin. Phase 1 has only been checked against simulated rooms; the next step is a real PA and a comparison with Smaart or REW.
+**Status:** Phases 1 and 2 are implemented.
+- **Measure:** positions measured with log sweeps or pink noise (or from program material), each capture graded, and every position, the power average and the target shown.
+- **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
+- **Voicing:** an 8-band voicing EQ on top of the correction.
 
-## Measuring a room
+So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
+
+## Measuring a room (Measure tab)
 
 1. Route the measurement mic to the plugin's **sidechain input**. In the standalone app, pick it in **Mic input** instead.
-2. Pick the speaker to measure. In the plugin that's **Speaker** (Left or Right), and the other side stays silent. In the standalone app it's **Speaker output**, any single interface output. The Phase 2 correction will be applied to both sides.
+2. Pick the speaker to measure. In the plugin that's **Speaker** (Left or Right), and the other side stays silent. In the standalone app it's **Speaker output**, any single interface output. The correction is applied to both sides.
 3. Pick the **Signal**:
    - **Sweep** (default): a log sine sweep. Each position plays 1–3 sweeps (2, 5 or 10 s) and averages them. It is quick, has the best signal-to-noise ratio, and keeps harmonic distortion out of the result.
    - **Pink noise**: 10, 20 or 30 s of pink noise, analysed against the exact noise that was played (dual-FFT). It needs longer for the same accuracy and doesn't separate out distortion, but a single bang or cough averages out instead of spoiling the capture. 20 s is a good default.
@@ -16,11 +21,46 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 4. Set **Level** so the mic meter peaks well below 0 dBFS. The default is −12 dBFS. It's a peak level for both signals, so pink noise (about 9.5 dB crest factor) plays about 6–7 dB quieter on average than a sweep at the same setting.
 5. Press **Measure position** at 3–5 spots across the audience area, at different distances and off-axis. Avoid symmetric spots on the centre line.
 6. Each capture is graded **pass / marginal / redo** with the reason (e.g. "low-end noise too high below 180 Hz"). You can rename a capture (double-click), take it out of the average, redo it, or delete it.
-7. The graph shows each position (level-aligned), the power average, and the flat target over the PA's usable range. With only 1–2 good positions, quick mode smooths more heavily and limits how strong the later correction will be.
+7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
 
-**Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible (dual-FFT against the plugin input). Both speakers play during it.
+Measurements always play straight to the speaker, bypassing the correction and voicing EQ, so the fit always sees the PA's own response.
 
-Measurements are saved with the host session.
+**Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible. It's a dual-FFT against the plugin's output, so it also measures the PA's own response while a correction is on. Both speakers play during it.
+
+## Correcting (Correct tab)
+
+1. Pick a **Target**:
+   - **Flat**.
+   - **House:** +4 dB below ~80 Hz easing to 0 by 250 Hz, and −1 dB/octave above 2 kHz (−3 dB at 16 kHz).
+   - **Speech:** −6 dB at 75 Hz, +2 dB at 2–4 kHz, and −3 dB at 16 kHz.
+   - **Custom:** drag its points on the graph; double-click to add or remove one. The **Targets…** menu saves it as a file, loads saved ones, or starts one from a preset.
+
+   The target is placed on the average by its 250 Hz–4 kHz level, so the correction reshapes the ends rather than moving the overall level.
+2. The proposed correction updates as you measure. The graph shows it:
+   - dashed in the EQ strip until applied;
+   - as the **Predicted** curve in the top panel.
+
+   It's deliberately conservative:
+   - Up to 10 bands, cuts up to **Max cut** (12 dB) and boosts up to **Max boost** (3 dB).
+   - Boosts are at least 1 octave wide. Cuts are at least 1/3 octave wide below ~300 Hz and 2/3 octave above.
+   - Nothing is corrected outside the PA's −6 dB points or the **Correct from / up to** range.
+   - Nothing is ever boosted into a null: a dip more than 6 dB below the trend, or a range where the positions disagree by more than 6 dB. Those are cut if needed but never filled.
+3. **Apply correction** puts the proposal on the audio path, gliding in over ~20 ms, and keeps the one it replaces:
+   - **Hear previous** switches to the previous correction while it's on.
+   - **Undo** swaps back (press it again to swap forward).
+   - **Amount** scales the applied correction, and **Correction on** bypasses it.
+4. **Verify: measure through the EQ** measures a position with the signal played through the correction and voicing, like the audience hears it. Verify captures (V1, V2…) never change the proposal. Their average is the violet **Verified** curve, and the panel shows how far it is from the target.
+
+**Quick mode:** with one good position the applied correction is half strength and within ±3 dB; with two, 75% and ±6 dB. Full strength needs three.
+
+## Voicing EQ (Voicing tab)
+
+Eight bands (bell, low/high shelf, 12 or 24 dB/octave high/low-pass) after the correction: the engineer's taste layer. Measuring never changes it. Edit a band in the tab, or on the graph:
+- drag its numbered handle in the EQ strip (sideways for frequency, up and down for gain);
+- use the mouse wheel for Q;
+- double-click to switch it on or off.
+
+All voicing and correction settings are automatable parameters. Measurements, the applied and previous corrections, and the custom target are saved with the host session.
 
 ## Trying it out
 
@@ -71,20 +111,25 @@ In Logic, choose the mic's input or track from the AU's **Side Chain** menu. The
 
 ### 5. On a real PA
 
-This is Phase 1's "done when" test.
+Phase 1's "done when" test:
 - Start with **Level** around −30 dBFS and the amps turned down. Bring it up until captures grade PASS, with the mic meter well below 0 dBFS.
 - Measure 3 positions and look at the average.
 - Then measure the same spots with REW or Smaart (same mic, 1/6-octave smoothing, RMS/power average with SPL alignment) and compare. They should agree within a couple of dB.
 - Measure a second time with the plugin to check it's repeatable.
+
+Phase 2's "done when" test:
+- Measure 3–5 positions, pick a target, and press **Apply correction**.
+- Press **Verify** at two or three of the same spots. The violet Verified curve should sit within a few dB of the target across the corrected range. The Correct tab shows the RMS difference; the simulated room lands under 1 dB.
+- Play music and flip **Hear previous** / **Correction on** to listen for artifacts: there should be none, just the tonal change.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, background analysis engine, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction and voicing EQ (state-variable filters that glide), background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
-| `tests/cpp/` | C++ unit tests (doctest) for the core and the real-time recorder |
+| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder and the EQ |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
 | `tools/plugin_harness.cpp` | Headless end-to-end run of the real processor against a simulated room; renders the UI to PNG |
 | `.github/workflows/ci.yml` | Builds on macOS, Windows and Linux; runs every test layer and pluginval |
@@ -114,7 +159,15 @@ cd prototype && ROOMEQ_CLI=../build/roomeq_cli pytest               # Python tes
 ./build/AdaptiveRoomEQ_Harness_artefacts/Release/AdaptiveRoomEQ_Harness --out ui.png   # end to end
 ```
 
-The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, grade, reason string and curve must agree to within 1e-6 dB.
+The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, grade, reason string and curve must agree to within 1e-6 dB. The fitted correction must agree to within 0.05 dB; locally it's within 2e-6 dB.
+
+The harness drives the real processor against a simulated room. It checks:
+- the speakers get exactly the predicted correction and voicing;
+- re-measuring through the correction lands near the target;
+- undo, hearing the previous correction, custom targets and the state round trip all work;
+- dragging handles and target points on the graph works.
+
+It also renders each tab to PNG.
 
 ## Routing notes
 
@@ -123,6 +176,7 @@ The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the P
   - Choose the audio device, sample rate and buffer size in **Options → Audio/MIDI Settings**.
   - Pick the channels with the app's own **Mic input** and **Speaker output** menus. They list every channel individually, whereas JUCE's settings dialog only offers stereo pairs.
   - The app only ever outputs the test signal and never sends the mic to the speakers, so it turns off JUCE's default input mute.
+  - Measurements play the signal straight out; **Verify** plays it through the correction and voicing EQ.
   - **Measure from music** is plugin-only, because no program passes through the app.
   - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
 

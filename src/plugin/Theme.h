@@ -19,6 +19,9 @@ inline const juce::Colour grid { 0xff2c2c2a };
 inline const juce::Colour axis { 0xff383835 };
 inline const juce::Colour blue { 0xff3987e5 };      // average
 inline const juce::Colour orange { 0xffd95926 };    // selected position
+inline const juce::Colour aqua { 0xff21b8a6 };      // with correction: predicted response, correction curve
+inline const juce::Colour violet { 0xffa47ae6 };    // verified (measured through the EQ)
+inline const juce::Colour magenta { 0xffe0609e };   // voicing EQ
 inline const juce::Colour good { 0xff0ca30c };
 inline const juce::Colour warning { 0xfffab219 };
 inline const juce::Colour critical { 0xffd03b3b };

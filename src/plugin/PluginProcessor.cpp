@@ -162,8 +162,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
                                                                 logRange (20.0f, 20000.0f), static_cast<float> (d.freq), hz));
         group->addChild (std::make_unique<AudioParameterFloat> (ParamIds::voicing (i, "Gain"), name + "gain",
                                                                 NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, db));
-        group->addChild (std::make_unique<AudioParameterFloat> (ParamIds::voicing (i, "Q"), name + "Q", logRange (0.3f, 8.0f),
-                                                                static_cast<float> (d.q)));
+        group->addChild (std::make_unique<AudioParameterFloat> (
+            ParamIds::voicing (i, "Q"), name + "Q", logRange (0.3f, 8.0f), static_cast<float> (d.q),
+            AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 2); })));
         layout.add (std::move (group));
     }
     return layout;
