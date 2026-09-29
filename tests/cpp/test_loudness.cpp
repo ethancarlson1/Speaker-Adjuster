@@ -97,28 +97,84 @@ TEST_CASE ("shelf plan follows the ISO 226 difference; limits and ceiling")
     CHECK (hp[0].freq == doctest::Approx (45.0 * std::sqrt (2.0)));
 }
 
-TEST_CASE ("tracker: steady level, pauses hold, long drops followed, rises fast")
+double secondsUntilWithin (const std::vector<double>& est, double target, double db)
 {
-    LoudnessConfig cfg;
-    LevelTracker t;
-    t.prepare (fs, cfg);
-    auto est = run (t, noiseAt (10.0, -20.0, 1));
-    CHECK (est.back() >= -20.1);
-    CHECK (est.back() < -19.6);
+    const auto it = std::find_if (est.begin(), est.end(), [&] (double v) { return std::abs (v - target) < db; });
+    return it == est.end() ? 1e9 : static_cast<double> (it - est.begin()) * 512.0 / fs;
+}
 
+TEST_CASE ("tracker: steady level, pauses hold, long drops followed")
+{
+    LoudnessConfig slow, fast;
+    fast.speedS = 5.0;
+    for (const auto& cfg : { slow, fast })
+    {
+        LevelTracker t;
+        t.prepare (fs, cfg);
+        CHECK (run (t, noiseAt (20.0, -20.0, 1)).back() == doctest::Approx (-20.0).epsilon (0.005));
+        CHECK_FALSE (t.isJumping());
+    }
+
+    LevelTracker t;
+    t.prepare (fs, fast);
+    run (t, noiseAt (10.0, -20.0, 1));
     const std::vector<float> silence (static_cast<std::size_t> (6 * fs), 0.0f);
     const auto before = t.estimate();
     run (t, silence);
     CHECK (std::abs (t.estimate() - before) < 0.2);   // only the window straddling the start of the pause moves it
     run (t, noiseAt (40.0, -45.0, 2));
     CHECK (t.estimate() == doctest::Approx (-45.0).epsilon (0.025));
+}
 
-    LevelTracker u;
-    u.prepare (fs, cfg);
-    run (u, noiseAt (10.0, -20.0, 3));
-    const auto up = run (u, noiseAt (6.0, -14.0, 4));
-    const auto first = std::find_if (up.begin(), up.end(), [] (double v) { return std::abs (v + 14.0) < 1.0; }) - up.begin();
-    CHECK (static_cast<double> (first) * 512.0 / fs < 2.5);
+TEST_CASE ("tracker: averaged over Speed both ways; a big jump up is followed within seconds")
+{
+    LoudnessConfig cfg;   // 30 s
+    {
+        // 4 s verses and choruses 6 dB apart: the EQ's level barely moves.
+        LevelTracker t;
+        t.prepare (fs, cfg);
+        run (t, noiseAt (20.0, -16.5, 3));
+        std::vector<double> est;
+        for (int k = 0; k < 24; ++k)
+            for (auto v : run (t, noiseAt (4.0, k % 2 != 0 ? -20.0 : -14.0, 10 + static_cast<unsigned> (k))))
+                est.push_back (v);
+        const auto tail = std::vector<double> (est.begin() + static_cast<long> (30 * fs / 512), est.end());
+        CHECK (*std::max_element (tail.begin(), tail.end()) - *std::min_element (tail.begin(), tail.end()) < 1.0);
+        CHECK_FALSE (t.isJumping());
+    }
+    {
+        // 4 dB up (under the guard) takes the long average; 6 dB down too.
+        LevelTracker t;
+        t.prepare (fs, cfg);
+        run (t, noiseAt (20.0, -20.0, 4));
+        const auto up = secondsUntilWithin (run (t, noiseAt (60.0, -16.0, 5)), -16.0, 1.0);
+        CHECK (up > 20.0);
+        CHECK (up < 50.0);
+        const auto down = secondsUntilWithin (run (t, noiseAt (90.0, -22.0, 6)), -22.0, 1.0);
+        CHECK (down > 40.0);
+        CHECK (down < 70.0);
+    }
+    {
+        // A loud song after a ballad: 12 dB up is followed within seconds.
+        LevelTracker t;
+        t.prepare (fs, cfg);
+        run (t, noiseAt (60.0, -30.0, 7));
+        const auto up = run (t, noiseAt (40.0, -18.0, 8));
+        CHECK (secondsUntilWithin (up, -18.0, 3.0) < 5.0);
+        CHECK (secondsUntilWithin (up, -18.0, 1.0) < 40.0);
+        CHECK_FALSE (t.isJumping());
+    }
+    {
+        // A loud moment in a song (8 dB up for 2 s) doesn't trip it.
+        LevelTracker t;
+        t.prepare (fs, cfg);
+        run (t, noiseAt (30.0, -30.0, 9));
+        auto x = noiseAt (2.0, -22.0, 10);
+        const auto after = noiseAt (10.0, -30.0, 11);
+        x.insert (x.end(), after.begin(), after.end());
+        const auto est = run (t, x);
+        CHECK (*std::max_element (est.begin(), est.end()) < -28.5);
+    }
 }
 
 TEST_CASE ("deadband: small wobbles barely move it, a real change lands")

@@ -282,30 +282,34 @@ def test_level_tracker_and_deadband_match_python(tmp_path):
 
     fs, block = 48000, 512
     rng = np.random.default_rng(51)
-    # Program with a pause, a long quiet stretch and a push back up; the mic hears it
-    # 12 dB down plus a crowd.
+    # Program with a pause, a long quiet stretch and a jump back up (the big-jump
+    # guard); the mic hears it 12 dB down plus a crowd.
     parts = [roomsim.synthetic_program(20.0, fs, rng, -18.0), np.zeros(6 * fs),
-             roomsim.synthetic_program(30.0, fs, rng, -32.0), roomsim.synthetic_program(15.0, fs, rng, -24.0)]
+             roomsim.synthetic_program(40.0, fs, rng, -34.0), roomsim.synthetic_program(15.0, fs, rng, -18.0)]
     out = np.concatenate(parts).astype(np.float32).astype(float)       # the plugin tracks float samples
     mic = (0.25 * out + roomsim.make_noise(len(out), fs, roomsim.NoiseSpec(pink_dbfs=None, babble_dbfs=-50.0), rng))
     mic = mic.astype(np.float32).astype(float)
-    cpp = run_cli("track", "--fs", fs, "--in", save(tmp_path, "out", out), "--mic", save(tmp_path, "mic", mic))
+    paths = save(tmp_path, "out", out), save(tmp_path, "mic", mic)
 
-    cfg = loudness.LoudnessConfig()
-    out_tr, mic_tr, db = loudness.LevelTracker(fs, cfg), loudness.LevelTracker(fs, cfg), loudness.Deadband(cfg)
-    est, held, mic_est = [], [], []
-    for i in range(0, len(out) - block + 1, block):
-        out_tr.process(out[i:i + block])
-        mic_tr.process(mic[i:i + block], follow=out_tr)
-        if out_tr.count < block:                           # a window completed in this block
-            est.append(np.nan if out_tr.estimate is None else out_tr.estimate)
-            h = db.update(out_tr.estimate)
-            held.append(np.nan if h is None else h)
-            mic_est.append(np.nan if mic_tr.estimate is None else mic_tr.estimate)
-    assert len(cpp["estimates"]) == len(est) > 150
-    assert_curve(cpp["estimates"], np.array(est), "tracker")
-    assert_curve(cpp["held"], np.array(held), "deadband")
-    assert_curve(cpp["mic"], np.array(mic_est), "mic tracker")
+    for speed in (loudness.LoudnessConfig().speed_s, 5.0):     # the default (30 s) and the fastest setting
+        cpp = run_cli("track", "--fs", fs, "--in", paths[0], "--mic", paths[1], "--speed", speed)
+        cfg = loudness.LoudnessConfig(speed_s=speed)
+        out_tr, mic_tr, db = loudness.LevelTracker(fs, cfg), loudness.LevelTracker(fs, cfg), loudness.Deadband(cfg)
+        est, held, mic_est, jumped = [], [], [], False
+        for i in range(0, len(out) - block + 1, block):
+            out_tr.process(out[i:i + block])
+            mic_tr.process(mic[i:i + block], follow=out_tr)
+            jumped = jumped or out_tr.jumping
+            if out_tr.count < block:                           # a window completed in this block
+                est.append(np.nan if out_tr.estimate is None else out_tr.estimate)
+                h = db.update(out_tr.estimate)
+                held.append(np.nan if h is None else h)
+                mic_est.append(np.nan if mic_tr.estimate is None else mic_tr.estimate)
+        assert jumped                                          # the push back up trips the big-jump guard
+        assert len(cpp["estimates"]) == len(est) > 150
+        assert_curve(cpp["estimates"], np.array(est), f"tracker ({speed:g} s)")
+        assert_curve(cpp["held"], np.array(held), f"deadband ({speed:g} s)")
+        assert_curve(cpp["mic"], np.array(mic_est), f"mic tracker ({speed:g} s)")
 
 
 def test_transfer_bands_match_python(sim, tmp_path):

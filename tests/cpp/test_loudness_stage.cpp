@@ -130,6 +130,7 @@ TEST_CASE ("loudness stage: at or above the reference it stays flat; the high-pa
 {
     LoudnessStage stage;
     LoudnessSettings s;
+    s.config.speedS = 5.0;   // the fastest Speed: the 22 dB drop below is followed within the 40 s
     s.config.hpTrack = true;
     s.hpBaseHz = 45.0;
     stage.setModel (calibratedModel());

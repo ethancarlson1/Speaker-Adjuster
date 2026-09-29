@@ -6,6 +6,7 @@ from roomeq import filters, iso226, loudness, roomsim
 from roomeq.loudness import Calibration, LevelTracker, LoudnessConfig
 
 CFG = LoudnessConfig()
+FAST = LoudnessConfig(speed_s=5.0)      # the fastest Speed setting
 
 
 # ---------------------------------------------------------------------------
@@ -113,18 +114,15 @@ def test_calibration_maps_output_level_to_spl():
 
 
 def test_steady_level_is_read_closely():
-    # Rising faster than falling leans towards the peaks of the 400 ms level:
-    # a fraction of a dB high, which errs towards less boost.
-    tr = LevelTracker(48000, CFG)
-    est = run(tr, pink(10, -20.0))
-    assert -20.0 <= est[-1] < -19.6
-    symmetric = LevelTracker(48000, LoudnessConfig(attack_s=CFG.speed_s))
-    assert run(symmetric, pink(10, -20.0))[-1] == pytest.approx(-20.0, abs=0.05)
+    for cfg in (CFG, FAST):
+        tr = LevelTracker(48000, cfg)
+        assert run(tr, pink(20, -20.0))[-1] == pytest.approx(-20.0, abs=0.1)
+        assert not tr.jumping
 
 
 def test_pauses_hold_and_long_drops_are_followed():
     fs = 48000
-    tr = LevelTracker(fs, CFG)
+    tr = LevelTracker(fs, FAST)
     run(tr, pink(10, -20.0))
     run(tr, 1e-6 * np.random.default_rng(2).standard_normal(6 * fs))             # silence between songs
     held = tr.estimate
@@ -135,16 +133,54 @@ def test_pauses_hold_and_long_drops_are_followed():
     assert tr.estimate == pytest.approx(-45.0, abs=1.0)
 
 
-def test_rises_fast_falls_slowly():
-    fs, block = 48000, 512
+def first_within(est, target, db, fs=48000, block=512):
+    near = np.abs(est - target) < db
+    return np.argmax(near) * block / fs if near.any() else np.inf
+
+
+def test_a_songs_dynamics_barely_move_it():
+    # 4 s verses and choruses 6 dB apart, for 90 s: the long average sits between them.
+    fs = 48000
+    song = np.concatenate([pink(4, -20.0 if k % 2 else -14.0, seed=20 + k) for k in range(24)])
     tr = LevelTracker(fs, CFG)
-    run(tr, pink(10, -20.0))
-    up = run(tr, pink(6, -14.0, seed=5))
-    first_within_1db = np.argmax(np.abs(up - (-14.0)) < 1.0) * block / fs
-    assert first_within_1db < 2.5                                                   # boost backs off quickly
-    down = run(tr, pink(40, -26.0, seed=6))
-    first_within_1db = np.argmax(np.abs(down - (-26.0)) < 1.0) * block / fs
-    assert 8.0 < first_within_1db < 16.0                                            # and grows back slowly
+    run(tr, pink(20, -16.5, seed=19))
+    est = run(tr, song)
+    assert np.ptp(est[int(30 * fs / 512):]) < 1.0
+    assert not tr.jumping
+    fast = LevelTracker(fs, FAST)                                                   # 5 s follows them more
+    run(fast, pink(20, -16.5, seed=19))
+    assert np.ptp(run(fast, song)[int(30 * fs / 512):]) > 2.0
+
+
+def test_louder_and_quieter_follow_the_speed():
+    fs = 48000
+    tr = LevelTracker(fs, CFG)
+    run(tr, pink(20, -20.0))
+    up = run(tr, pink(60, -16.0, seed=5))                                           # 4 dB up: under the jump guard
+    assert not tr.jumping
+    assert 20.0 < first_within(up, -16.0, 1.0) < 50.0
+    down = run(tr, pink(90, -22.0, seed=6))                                         # 6 dB down, in dB over 30 s
+    assert 40.0 < first_within(down, -22.0, 1.0) < 70.0
+    fast = LevelTracker(fs, FAST)
+    run(fast, pink(20, -16.0))
+    down = run(fast, pink(40, -22.0, seed=6))
+    assert 6.0 < first_within(down, -22.0, 1.0) < 14.0                              # 5 s: as quick as before
+
+
+def test_a_big_jump_up_is_followed_within_seconds():
+    # A loud song after a ballad: the boost for the quiet level mustn't sit on it.
+    fs = 48000
+    tr = LevelTracker(fs, CFG)
+    run(tr, pink(60, -30.0))
+    up = run(tr, pink(40, -18.0, seed=5))                                           # 12 dB up
+    assert first_within(up, -18.0, 3.0) < 5.0
+    assert first_within(up, -18.0, 1.0) < 40.0
+    assert not tr.jumping                                                           # back on the long average
+    # A loud moment inside a song (8 dB up for 2 s) doesn't trip it.
+    hit = LevelTracker(fs, CFG)
+    run(hit, pink(30, -30.0))
+    est = run(hit, np.concatenate([pink(2, -22.0, seed=7), pink(10, -30.0, seed=8)]))
+    assert np.max(est) < -28.5          # the long average moves ~1.3 dB (inside the deadband); tripped, it'd reach ~-22
 
 
 def test_mic_tracking_ignores_the_crowd_in_pauses():
@@ -166,10 +202,10 @@ def test_mic_tracking_ignores_the_crowd_in_pauses():
 
 def test_deadband_ignores_the_music_but_lands_on_a_real_change():
     fs, block = 48000, 512
-    tr, db = LevelTracker(fs, CFG), loudness.Deadband(CFG)
-    # 60 s whose level swells +-1.5 dB every 8 s, then a 6 dB pull-down.
+    tr, db = LevelTracker(fs, FAST), loudness.Deadband(FAST)
+    # 60 s whose level swells +-2.5 dB every 8 s, then a 6 dB pull-down.
     t = np.arange(60 * fs) / fs
-    swell = pink(60, -20.0, seed=11) * 10 ** (1.5 * np.sin(2 * np.pi * t / 8.0) / 20)
+    swell = pink(60, -20.0, seed=11) * 10 ** (2.5 * np.sin(2 * np.pi * t / 8.0) / 20)
     held, estimates = [], []
     for x in (swell, pink(90, -26.0, seed=12)):
         for i in range(0, len(x) - block + 1, block):

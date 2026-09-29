@@ -1076,8 +1076,10 @@ int main (int argc, char** argv)
                 v = probe.next();
             music.gain = std::pow (10.0, (calOutput - 12.0 - roomeq::cWeightedLevelDbfs (x, fs)) / 20.0);
         }
+        // The stage's wiring is checked at the fastest Speed (5 s); the default (30 s) comes after.
         // Off: the output is the stage's input, so the level can be checked. (Long enough for the
-        // level to come all the way down from the loud pink noise earlier: it falls with a 5 s time constant.)
+        // level to come all the way down from the loud pink noise earlier.)
+        setParam (proc, "loudSpeed", 5.0f);
         setParam (proc, "loudOn", 0.0f);
         show.play (&music, 28.0);
         const auto expectedSpl = 95.0 + show.outputLevelDbfs() - calOutput;
@@ -1193,6 +1195,38 @@ int main (int argc, char** argv)
         check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing(), makeupFor (correctionAndVoicing())) < 0.02,
                "loudness off: flat");
         setParam (proc, "loudOn", 1.0f);
+
+        // The default Speed, 30 s: a song's dynamics barely move the EQ, but a loud
+        // song after a quiet one is followed within seconds.
+        auto* speed = proc.getParameters().getParameter ("loudSpeed");
+        check (std::abs (speed->convertFrom0to1 (speed->getDefaultValue()) - 30.0f) < 0.01f
+                   && std::abs (speed->convertFrom0to1 (0.0f) - 5.0f) < 0.01f && std::abs (speed->convertFrom0to1 (1.0f) - 60.0f) < 0.01f,
+               "Level speed defaults to 30 s, from 5 s to 1 min");
+        setParam (proc, "loudSpeed", 30.0f);
+        const auto songGain = music.gain;
+        float lowest = 1e9f, highest = -1e9f, trackedLow = 1e9f, trackedHigh = -1e9f;
+        for (int k = 0; k < 32; ++k)   // 4 s verses and choruses, 6 dB apart; the second minute is measured
+        {
+            music.gain = songGain * std::pow (10.0, (k % 2 == 0 ? 3.0 : -3.0) / 20.0);
+            show.play (&music, 4.0);
+            if (k < 16)
+                continue;
+            lowest = std::min (lowest, status.splUsed.load());
+            highest = std::max (highest, status.splUsed.load());
+            trackedLow = std::min (trackedLow, status.splNow.load());
+            trackedHigh = std::max (trackedHigh, status.splNow.load());
+        }
+        check (highest - lowest < 0.5f && trackedHigh - trackedLow < 1.5f,
+               "a song with 6 dB dynamics: the tracked level moves " + juce::String (trackedHigh - trackedLow, 2) + " dB, the EQ "
+                   + juce::String (highest - lowest, 2) + " dB");
+        music.gain = songGain * std::pow (10.0, -12.0 / 20.0);   // a ballad...
+        show.play (&music, 90.0);
+        const auto ballad = status.splNow.load();
+        music.gain = songGain;                                   // ...then the band comes back in
+        show.play (&music, 6.0);
+        check (status.splNow.load() > ballad + 9.0f,
+               "a loud song after a ballad is followed within seconds (+" + juce::String (status.splNow.load() - ballad, 1)
+                   + " dB of 12 in 6 s)");
         show.play (&music, 3.0);   // boosting again, for the screenshot
     }
 

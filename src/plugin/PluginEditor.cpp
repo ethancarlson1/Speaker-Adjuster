@@ -341,8 +341,10 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     loudSource.setTooltip ("Plugin output: the level is worked out from what the plugin sends (steady, ignores the crowd). "
                            "Mic: from the measurement mic (needs a calibration with the mic connected; only counts "
                            "while the music plays).");
-    loudSpeed.setTooltip ("How quickly the EQ follows a lower level. Louder is followed within about a second; "
-                          "pauses between songs are held. Changes under 2 dB are mostly ignored.");
+    loudSpeed.setTooltip ("How long the level is averaged over before the EQ follows it, louder or quieter (5 s to "
+                          "1 min), so a song's dynamics don't move it. A loud song after a quiet one (6 dB or more, "
+                          "lasting a few seconds) is followed within seconds. Pauses between songs are held; changes "
+                          "under 2 dB are mostly ignored.");
     loudHighPass.setTooltip ("A 24 dB/octave high-pass at the PA's measured low-end roll-off, rising up to half an "
                              "octave as the bass boost grows, so the boost doesn't push the speakers below their range.");
 

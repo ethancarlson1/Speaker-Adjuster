@@ -193,7 +193,7 @@ void LevelTracker::reset() noexcept
     count = 0;
     acc = 0.0;
     has = active = false;
-    value = 0.0;
+    value = recent = jumpLeft = 0.0;
     gatedFor = 0.0;
 }
 
@@ -232,7 +232,7 @@ bool LevelTracker::update (double momentary, bool gates) noexcept
         return false;                                            // silence: hold
     if (! has)
     {
-        value = momentary;
+        value = recent = momentary;
         has = true;
         return true;
     }
@@ -246,9 +246,18 @@ bool LevelTracker::update (double momentary, bool gates) noexcept
     {
         gatedFor = 0.0;
     }
+    // The long average's guard: a big jump up that lasts (a loud song after a
+    // quiet one) is followed fast, so a quiet level's boost never sits on it.
+    const auto r = 1.0 - std::exp (-dt / config.jumpRecentS);
+    recent = 10.0 * std::log10 ((1.0 - r) * std::pow (10.0, recent / 10.0) + r * std::pow (10.0, momentary / 10.0));
+    if (recent - value >= config.jumpDb)
+        jumpLeft = config.jumpFollowS;
+    const auto jumping = jumpLeft > 0.0;
+    jumpLeft = std::max (0.0, jumpLeft - dt);
     if (momentary > value)
     {
-        const auto a = 1.0 - std::exp (-dt / config.attackS);
+        // Rising: energy average (Leq-like) over `speed`, or fast after a big jump.
+        const auto a = 1.0 - std::exp (-dt / (jumping ? config.attackS : config.speedS));
         value = 10.0 * std::log10 ((1.0 - a) * std::pow (10.0, value / 10.0) + a * std::pow (10.0, momentary / 10.0));
     }
     else

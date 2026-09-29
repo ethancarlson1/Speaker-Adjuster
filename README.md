@@ -129,7 +129,7 @@ The plugin stores the output level that gave that SPL. With the mic connected, i
 - **Level from**:
   - **Plugin output** (default): steady and deaf to the crowd.
   - **Mic**: the level the mic actually hears, counted only while music plays. It needs a calibration made with the mic connected.
-- **Speed** (5 s): how quickly the EQ follows a drop in level. A rise is followed within about a second, so a sudden loud passage never gets a quiet-level bass boost. Pauses between songs are held.
+- **Speed** (30 s, from 5 s to 1 min): how long the level is averaged over before the EQ follows it, louder or quieter, so a song's dynamics don't move it. In a simulated song with 20 s verses and choruses 8 dB apart, the level the EQ follows moves about 0.5 dB at 30 s, against about 5 dB with the old 1 s rise and 5 s fall. A loud song after a quiet one is followed within seconds (a 3 s average 6 dB or more above the long one), so a quiet-level bass boost never sits on loud music. Pauses between songs are held.
 - **Protective high-pass** (off): a 24 dB/octave high-pass at the PA's measured low-end roll-off. It rises by up to half an octave as the bass boost grows, so the boost doesn't drive the speakers below their range.
 
 **Small changes are ignored.** The EQ follows a change of more than 2 dB straight away. Anything smaller only moves it by a slow drift, over about 30 s. So the EQ doesn't hunt around with the music.
@@ -271,7 +271,7 @@ The harness drives the real processor against a simulated room. It checks:
 - measurements bypass the correction: with correction, voicing, loudness shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
 - the mic level advice: waiting while nothing plays, too quiet and hot mics brought into the zone by following it, clipping, and no signal;
 - selecting a capture (a position or a verify capture) highlights its curve;
-- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music;
+- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 

@@ -12,10 +12,14 @@ SPL and the reference SPL is applied as a low shelf and a high shelf.
   gains against dB below reference). Gains glide; nothing is refitted live.
 - Limits: amount, max low boost, max high boost, and a fixed low-boost
   ceiling nothing can exceed.
-- Tracking: 400 ms C-weighted momentary level; the estimate rises as a ~1 s
-  energy average (boost backs off quickly when it gets louder) and falls in
-  dB with `speed` as the time constant (boost grows slowly when it gets
-  quieter). Silence, and
+- Tracking: 400 ms C-weighted momentary level, averaged over `speed` (30 s by
+  default) both ways: rising as an energy average (Leq-like), falling in dB,
+  so a song's dynamics barely move the EQ. A big jump that lasts (a loud song
+  after a quiet one: a 3 s average 6 dB or more above the long one) is
+  followed within seconds instead, at the old ~1 s energy rate, for 4 s after
+  that stops being true, so the boost for a quiet level never sits on loud
+  music.
+  Silence, and
   anything more than 20 dB below the estimate, is a pause and holds the
   estimate - but a drop that lasts longer than `pause_hold_s` is real and is
   followed.
@@ -50,8 +54,11 @@ class LoudnessConfig:
     max_low_db: float = 8.0
     max_high_db: float = 4.0
     low_ceiling_db: float = 12.0      # fixed: never more low boost than this
-    speed_s: float = 5.0              # falling-level time constant
-    attack_s: float = 1.0             # rising-level time constant
+    speed_s: float = 30.0             # level averaging time constant, both ways
+    attack_s: float = 1.0             # a big jump up is followed this fast...
+    jump_db: float = 6.0              # ...once the recent level is this far above the average...
+    jump_recent_s: float = 3.0        # ...("recent": an energy average over this long)...
+    jump_follow_s: float = 4.0        # ...and for this long after
     window_s: float = 0.4             # momentary level window
     abs_gate_dbfs: float = -70.0      # below this (C-weighted) it's silence
     rel_gate_db: float = 20.0         # this far below the estimate it's a pause...
@@ -211,8 +218,14 @@ class LevelTracker:
         self.acc = 0.0
         self.count = 0
         self.estimate: float | None = None      # dBFS, None until the first non-silent window
+        self.recent: float | None = None        # dBFS, the short average the jump guard watches
+        self.jump_left = 0.0                    # seconds of following a big jump up still to go
         self.gated_for = 0.0                    # seconds continuously below the relative gate
         self.last_active = False                # did the last window count (program playing)?
+
+    @property
+    def jumping(self) -> bool:
+        return self.jump_left > 0.0
 
     def process(self, block: np.ndarray, follow: "LevelTracker | None" = None) -> None:
         """Feed a block. With `follow`, a window only counts when the followed
@@ -241,7 +254,7 @@ class LevelTracker:
         if gates and momentary < cfg.abs_gate_dbfs:
             return False                                         # silence: hold
         if self.estimate is None:
-            self.estimate = momentary
+            self.estimate = self.recent = momentary
             return True
         if gates and momentary < self.estimate - cfg.rel_gate_db:
             self.gated_for += dt
@@ -249,9 +262,15 @@ class LevelTracker:
                 return False                                     # a pause between songs: hold
         else:
             self.gated_for = 0.0
+        r = 1 - np.exp(-dt / cfg.jump_recent_s)
+        self.recent = 10 * np.log10((1 - r) * 10 ** (self.recent / 10) + r * 10 ** (momentary / 10))
+        if self.recent - self.estimate >= cfg.jump_db:
+            self.jump_left = cfg.jump_follow_s
+        jumping = self.jump_left > 0.0
+        self.jump_left = max(0.0, self.jump_left - dt)
         if momentary > self.estimate:
-            # Rising: energy average (Leq-like), fast, so the boost backs off quickly.
-            a = 1 - np.exp(-dt / cfg.attack_s)
+            # Rising: energy average (Leq-like) over `speed`, or fast after a big jump.
+            a = 1 - np.exp(-dt / (cfg.attack_s if jumping else cfg.speed_s))
             self.estimate = 10 * np.log10((1 - a) * 10 ** (self.estimate / 10) + a * 10 ** (momentary / 10))
         else:
             # Falling: in dB, with `speed` as the time constant (a 12 dB drop settles

@@ -225,8 +225,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
     loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudMaxHigh, "Max high boost",
                                                            NormalisableRange<float> (0.0f, 8.0f, 0.5f), 4.0f, db));
     loud->addChild (std::make_unique<AudioParameterFloat> (
-        ParamIds::loudSpeed, "Level speed", logRange (1.0f, 20.0f), 5.0f,
-        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " s"; })));
+        ParamIds::loudSpeed, "Level speed", logRange (5.0f, 60.0f), 30.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " s"; })));
     loud->addChild (std::make_unique<AudioParameterChoice> (ParamIds::loudSource, "Level from",
                                                            StringArray { "Plugin output", "Mic" }, 0));
     loud->addChild (std::make_unique<AudioParameterBool> (ParamIds::loudHighPass, "Protective high-pass", false));
@@ -271,7 +271,7 @@ LoudnessSettings AdaptiveRoomEQProcessor::getLoudnessSettings() const noexcept
     c.amount = juce::jlimit (0.0, 1.0, static_cast<double> (p.amount->load()) / 100.0);
     c.maxLowDb = p.maxLow->load();
     c.maxHighDb = p.maxHigh->load();
-    c.speedS = juce::jlimit (1.0, 20.0, static_cast<double> (p.speed->load()));
+    c.speedS = juce::jlimit (5.0, 60.0, static_cast<double> (p.speed->load()));
     c.hpTrack = p.highPass->load() > 0.5f;
     return s;
 }

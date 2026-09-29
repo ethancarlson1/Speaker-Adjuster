@@ -22,8 +22,11 @@ struct LoudnessConfig
     double maxLowDb = 8.0;
     double maxHighDb = 4.0;
     double lowCeilingDb = 12.0;     // fixed: never more low boost than this
-    double speedS = 5.0;            // falling-level time constant (in dB)
-    double attackS = 1.0;           // rising-level time constant (energy average)
+    double speedS = 30.0;           // level averaging time constant, both ways
+    double attackS = 1.0;           // a big jump up is followed this fast (energy average)...
+    double jumpDb = 6.0;            // ...once the recent level is this far above the average...
+    double jumpRecentS = 3.0;       // ...("recent": an energy average over this long)...
+    double jumpFollowS = 4.0;       // ...and for this long after
     double windowS = 0.4;           // momentary level window
     double absGateDbfs = -70.0;     // below this (C-weighted) it's silence
     double relGateDb = 20.0;        // this far below the estimate it's a pause...
@@ -87,6 +90,7 @@ public:
     bool hasEstimate() const noexcept { return has; }
     double estimate() const noexcept { return value; }
     bool lastActive() const noexcept { return active; }
+    bool isJumping() const noexcept { return jumpLeft > 0.0; }   // following a big jump up
 
 private:
     bool update (double momentary, bool gates) noexcept;
@@ -100,6 +104,8 @@ private:
     double acc = 0.0;
     bool has = false, active = false;
     double value = 0.0;
+    double recent = 0.0;            // the short average the jump guard watches
+    double jumpLeft = 0.0;          // seconds of following a big jump up still to go
     double gatedFor = 0.0;
 };
 
