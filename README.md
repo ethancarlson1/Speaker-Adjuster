@@ -28,6 +28,14 @@ Measurements always play straight to the speaker, bypassing the correction and v
 
 **Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible. It's a dual-FFT against the plugin's output, so it also measures the PA's own response while a correction is on. Both speakers play during it.
 
+**Two clocks.** Pink noise and music compare the output and the mic phase for phase over 20–30 s. If the output and the mic are on different clocks, the delay between them slides during the capture. That happens with two interfaces, or a macOS aggregate device.
+
+Uncorrected, a drift of just 10 ppm (0.001%) makes the high frequencies cancel. The capture fails as "high-frequency noise too high above ~700 Hz", and the top end reads low. Sweeps aren't affected: each is analysed on its own over a few seconds.
+
+So these captures measure the delay in 3 s blocks along the recording and fit a line through them. A drift of 0.2 ppm or more is resampled out before the analysis. The capture then says "output and mic clocks differ by 18.3 ppm (corrected)".
+
+If the delay jumps around instead of sliding steadily (dropouts in an aggregate device), it says so and suggests using one interface. The loudness calibration and **Re-check** get the same correction. One interface for mic and output is still better: it also keeps the loop delay short.
+
 ## Correcting (Correct tab)
 
 1. Pick a **Target**:
@@ -218,13 +226,15 @@ The harness drives the real processor against a simulated room. It checks:
 - re-measuring through the correction lands near the target;
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;
-- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music.
+- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music;
+- two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
-It also renders each tab to PNG.
+It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.
 
 ## Routing notes
 
 - **Plugin:** stereo main in/out carries the program to the PA. The mono **Measurement Mic** sidechain carries the mic. If a host only offers stereo sidechains, the first channel is used.
+- **One interface if you can:** with the mic on one device and the PA feed on another (or a macOS aggregate device), their clocks drift. Pink noise and music correct for that (see [Two clocks](#measuring-a-room-measure-tab)), but the loop delay gets long, and an aggregate device that drops samples can't be corrected.
 - **Standalone app:** a measurement tool with one input (the mic) and one output (the speaker being swept).
   - Choose the audio device, sample rate and buffer size in **Options → Audio/MIDI Settings**.
   - Pick the channels with the app's own **Mic input** and **Speaker output** menus. They list every channel individually, whereas JUCE's settings dialog only offers stereo pairs.

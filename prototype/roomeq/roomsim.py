@@ -175,12 +175,22 @@ class SimulatedRoom:
         return ss.resample_poly(up, 1, 4)[:len(x)]
 
     def play(self, x: np.ndarray, pos: int, noise: NoiseSpec = NoiseSpec(),
-             rng: np.random.Generator | None = None) -> np.ndarray:
-        """What the measurement mic records while the plugin outputs `x`."""
+             rng: np.random.Generator | None = None, drift_ppm: float = 0.0) -> np.ndarray:
+        """What the measurement mic records while the plugin outputs `x`.
+
+        drift_ppm: the mic's clock runs this much fast (+) or slow (-) against
+        the output's, as with two interfaces or an aggregate device.
+        """
         rng = rng if rng is not None else np.random.default_rng()
         y = ss.sosfilt(self.sos, self.distort(x))
         y = ss.fftconvolve(y, self.rirs[pos])[:len(x)]
         y = np.concatenate([np.zeros(self.latency), y])[:len(x)]
+        if drift_ppm:
+            # Stretch a zero-padded copy whose length makes the drift a whole number
+            # of samples (exact for whole-number ppm), band-limited (FFT resampling).
+            L = -(-len(y) // 1_000_000) * 1_000_000
+            padded = np.concatenate([y, np.zeros(L - len(y))])
+            y = ss.resample(padded, L + int(round(L * drift_ppm * 1e-6)))[:len(x)]
         return y + make_noise(len(x), self.fs, noise, rng)
 
 

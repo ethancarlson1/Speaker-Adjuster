@@ -118,6 +118,37 @@ def test_session_matches_python(sim, tmp_path):
     assert s["target_db"] == pytest.approx(py_sum.target_db, abs=TOL_DB)
 
 
+def test_captures_across_two_clocks_match_python(sim, tmp_path):
+    """Music and pink noise with the mic's clock off (an aggregate device): the
+    measured drift, the correction, the grades and the notes all agree."""
+    rng = np.random.default_rng(34)
+    rec = sim.play(sweep.build_playback(CFG), 0, roomsim.NoiseSpec(), rng)
+    music = roomsim.synthetic_program(20.0, CFG.fs, rng)
+    pink = rng.standard_normal(20 * CFG.fs) * 0.05
+    cases = [("M", music, sim.play(music, 2, roomsim.NoiseSpec(), rng, drift_ppm=18.0)),
+             ("N", pink, sim.play(pink, 1, roomsim.NoiseSpec(), rng, drift_ppm=-31.0)),
+             ("S", pink, sim.play(pink, 3, roomsim.NoiseSpec(), rng))]
+    args = ["--position", f"P1={save(tmp_path, 'p1', rec)}"]
+    py = []
+    for name, x, y in cases:
+        args += ["--program", f"{name}={save(tmp_path, name + 'x', x)}:{save(tmp_path, name + 'y', y)}"]
+        py.append(capture.analyze_program_capture(name, x, y, CFG.fs))
+    result = run_cli("analyze", "--fs", CFG.fs, "--duration", CFG.duration, "--smoothing", 6, *args)
+
+    assert result["captures"][0]["drift_ppm"] is None                  # sweeps don't measure it
+    for cpp, p in zip(result["captures"][1:], py):
+        assert cpp["drift_ppm"] == pytest.approx(p.drift_ppm, abs=1e-6), p.name
+        assert np.allclose(cpp["delays_ms"], p.delays_ms, atol=1e-9), p.name
+        assert cpp["overall"] == p.grade.overall.label, p.name
+        assert cpp["reasons"] == p.grade.reasons and cpp["notes"] == p.grade.notes, p.name
+        for cb, pb in zip(cpp["bands"], p.grade.bands):
+            assert abs(cb["snr_db"] - pb.snr_db) < TOL_DB and abs(cb["level_db"] - pb.level_db) < TOL_DB, (p.name, pb.name)
+    m, n, still = py
+    assert m.drift_ppm == pytest.approx(18.0, abs=0.2) and n.drift_ppm == pytest.approx(-31.0, abs=0.2)
+    assert still.drift_ppm == 0.0 and not any("clocks" in note for note in still.grade.notes)
+    assert "output and mic clocks differ by 31.0 ppm (corrected)" in n.grade.notes
+
+
 def test_quick_mode_and_all_excluded(sim, tmp_path):
     rng = np.random.default_rng(32)
     rec = sim.play(sweep.build_playback(CFG), 0, roomsim.NoiseSpec(), rng)

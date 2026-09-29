@@ -9,10 +9,11 @@
 // then loudness compensation: the mic calibrator, the level calibration in the
 // room, tracking the level of music, the shelves the speakers get, the
 // deadband, and the re-check after an amp gain change; then the state round
-// trip, and renders each editor tab to PNG.
+// trip; pink noise and music across two clocks (a mic 20 ppm fast); the
+// standalone app; and renders each editor tab to PNG.
 //
 //   AdaptiveRoomEQ_Harness [--out snapshot.png]
-//   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -standalone.png)
+//   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -drift.png, -standalone.png)
 //
 // Exits non-zero if any check fails.
 
@@ -191,7 +192,8 @@ void pump (AdaptiveRoomEQProcessor& p)
 // Runs audio blocks until the current measurement is recorded, then waits for
 // its analysis without playing on (so the audio that follows is the same
 // however long the background analysis takes).
-void runMeasurement (AdaptiveRoomEQProcessor& p, SimulatedRoom& room, const std::vector<float>* program = nullptr)
+template <typename Room>
+void runMeasurement (AdaptiveRoomEQProcessor& p, Room& room, const std::vector<float>* program = nullptr)
 {
     juce::AudioBuffer<float> buffer (3, blockSize);   // main L/R in-place + mic sidechain
     juce::MidiBuffer midi;
@@ -476,6 +478,72 @@ void writeSnapshot (juce::Component& c, const juce::String& path)
 
 // The standalone app: mono mic in, stereo out, and the mic shares channel 0
 // with the first output (as JUCE's AudioProcessorPlayer lays the buffer out).
+// The room heard through a mic whose sample clock runs `fastPpm` fast against
+// the output's (an aggregate device): mic sample n is the room at n / (1 + fastPpm),
+// band-limited, so the delay grows. Fast clocks only, so it never needs a
+// sample the room hasn't made yet.
+struct DriftingMic
+{
+    SimulatedRoom& room;
+    double fastPpm;
+    std::vector<double> heard {};
+    std::size_t n = 0;
+
+    float process (float speaker)
+    {
+        heard.push_back (room.process (speaker));
+        const auto at = static_cast<double> (n++) / (1.0 + fastPpm * 1e-6) - 40.0;   // 40 samples back: room for the taps
+        return static_cast<float> (roomeq::interpolateAt (heard, at));
+    }
+};
+
+// Pink noise and music measured across two clocks: the drift is measured and
+// corrected, the captures pass, and they say so.
+void clockDriftChecks (const juce::String& snapshotPath)
+{
+    std::cout << "Two clocks (an aggregate device)\n";
+    AdaptiveRoomEQProcessor proc;
+    proc.enableAllBuses();
+    proc.setRateAndBufferSizeDetails (fs, blockSize);
+    proc.prepareToPlay (fs, blockSize);
+    auto& engine = proc.getEngine();
+    constexpr double ppm = 20.0;
+
+    setParam (proc, "measureSignal", 1.0f);   // pink noise, 20 s
+    {
+        SimulatedRoom room (7.2, 11, 3e-4, 0.0);
+        DriftingMic mic { room, ppm };
+        check (proc.startMeasurement().wasOk(), "start pink noise, mic clock 20 ppm fast");
+        runMeasurement (proc, mic);
+    }
+    {
+        SimulatedRoom room (6.0, 9, 3e-4, 0.0);
+        DriftingMic mic { room, ppm };
+        const auto program = musicLikeProgram (AdaptiveRoomEQProcessor::programSeconds + 1.0);
+        check (proc.startProgram().wasOk(), "start music capture, mic clock 20 ppm fast");
+        runMeasurement (proc, mic, &program);
+    }
+    const auto entries = engine.getEntries();
+    check (entries.size() == 2, "two captures");
+    for (const auto& e : entries)
+    {
+        const auto& c = *e.capture;
+        const auto note = std::find_if (c.grade.notes.begin(), c.grade.notes.end(),
+                                        [] (const std::string& t) { return t.rfind ("output and mic clocks differ by", 0) == 0; });
+        std::cout << "    " << c.name << " [" << c.kind << "] " << roomeq::gradeLabel (c.grade.overall) << "  drift " << c.driftPpm << " ppm\n";
+        check (c.grade.overall == roomeq::Grade::pass, juce::String (c.name) + " graded pass across two clocks");
+        check (std::abs (c.driftPpm - ppm) < 0.2 && note != c.grade.notes.end(),
+               juce::String (c.name) + " measured the drift (" + juce::String (c.driftPpm, 2) + " ppm) and says so");
+    }
+    for (int i = 0; i < 40; ++i)
+        pump (proc);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+    editor->setSize (1200, 820);
+    for (int i = 0; i < 20; ++i)
+        pump (proc);
+    writeSnapshot (*editor, snapshotPath);
+}
+
 void standaloneChecks (const juce::String& snapshotPath)
 {
     std::cout << "Standalone app mode\n";
@@ -1076,6 +1144,7 @@ int main (int argc, char** argv)
         }
     }
 
+    clockDriftChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-drift.png");
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 
     std::cout << (failures == 0 ? "All checks passed\n" : juce::String (failures) + " check(s) failed\n");

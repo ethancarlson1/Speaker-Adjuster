@@ -34,6 +34,7 @@ class Capture:
     delays_ms: list[float] = field(default_factory=list)
     ir: np.ndarray | None = None     # windowed, aligned, averaged IR (sweeps only)
     excluded: bool = False
+    drift_ppm: float = float("nan")  # program captures: output/mic clock difference that was corrected (0 if none)
 
 
 def in_band(freqs: np.ndarray, f1: float, f2: float) -> np.ndarray:
@@ -119,7 +120,8 @@ def analyze_program_capture(name: str, reference: np.ndarray, mic: np.ndarray, f
 
     The dual-FFT frame is longer than the sweep window (to hold LF reverb);
     results are rebinned onto the sweep captures' grid so the two can be
-    averaged together bin for bin.
+    averaged together bin for bin. Clock drift between the output and the mic
+    is measured and corrected first (see dualfft); the notes say so.
     """
     est = dualfft.transfer_function(reference, mic, fs, dual_cfg)
     freqs = np.fft.rfftfreq(response_nfft(cfg.window, fs), 1 / fs)
@@ -127,5 +129,6 @@ def analyze_program_capture(name: str, reference: np.ndarray, mic: np.ndarray, f
     noise = rebin_power(est.freqs, dualfft.noise_power_h_domain(est), freqs)
     weight = (rebin_power(est.freqs, dualfft.excitation_gate(est), freqs) > 0.5) * in_band(freqs, 20.0, 20000.0)
     grade = grade_capture(freqs, power, noise, None, cfg.grading, f_max=min(20000.0, fs / 2))
+    grade.notes += dualfft.drift_notes(est.drift)
     return Capture(name=name, kind="program", fs=fs, freqs=freqs, power=power, noise_power=noise,
-                   weight=weight, grade=grade, delays_ms=[1000 * est.delay / fs])
+                   weight=weight, grade=grade, delays_ms=[1000 * est.delay / fs], drift_ppm=est.drift.ppm)

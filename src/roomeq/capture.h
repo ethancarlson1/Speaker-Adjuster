@@ -8,6 +8,7 @@
 #include "roomeq/spectrum.h"
 #include "roomeq/sweep.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,7 @@ struct Capture
     std::vector<double> delaysMs;
     std::vector<double> ir;                   // windowed, aligned, averaged IR (sweeps only)
     bool excluded = false;
+    double driftPpm = std::numeric_limits<double>::quiet_NaN();   // program: output/mic clock difference corrected (0 if none)
 };
 
 std::vector<double> inBand (const std::vector<double>& freqs, double f1, double f2);

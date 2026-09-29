@@ -136,7 +136,8 @@ Capture analyzeProgramCapture (const std::string& name, const std::vector<double
 {
     // The dual-FFT frame is longer than the sweep window (to hold LF reverb);
     // results are rebinned onto the sweep grid so the two average bin for bin.
-    // Coherence drives the grade but does not weight the magnitude.
+    // Coherence drives the grade but does not weight the magnitude. Clock drift
+    // between the output and the mic is measured and corrected first; the notes say so.
     const auto est = transferFunction (reference, mic, fs, dualCfg);
     Capture c;
     c.name = name;
@@ -156,7 +157,10 @@ Capture analyzeProgramCapture (const std::string& name, const std::vector<double
         c.weight[k] = gate[k] > 0.5 ? band[k] : 0.0;
 
     c.grade = gradeCapture (c.freqs, c.power, c.noisePower, nullptr, cfg.grading, std::min (20000.0, fs / 2.0));
+    for (auto& note : driftNotes (est.drift))
+        c.grade.notes.push_back (std::move (note));
     c.delaysMs.push_back (1000.0 * static_cast<double> (est.delay) / fs);
+    c.driftPpm = est.drift.ppm;
     return c;
 }
 } // namespace roomeq
