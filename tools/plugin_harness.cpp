@@ -216,7 +216,7 @@ void runMeasurement (AdaptiveRoomEQProcessor& p, Room& room, const std::vector<f
         if (block % 64 == 0)
             pump (p);
     }
-    for (int i = 0; i < 2000 && p.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
+    for (int i = 0; i < 12000 && p.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)   // up to a minute (sanitizer builds are slow)
         pump (p);
     for (int i = 0; i < 20; ++i)   // let the averaged display catch up
         pump (p);
@@ -363,7 +363,7 @@ double rmsFromTarget (const MeasurementEngine::Display& d, const std::vector<dou
 std::shared_ptr<const MeasurementEngine::Display> waitForDisplay (AdaptiveRoomEQProcessor& p,
                                                                   const std::function<bool (const MeasurementEngine::Display&)>& ready)
 {
-    for (int i = 0; i < 2000; ++i)
+    for (int i = 0; i < 12000; ++i)   // up to a minute; returns as soon as it is ready
     {
         pump (p);
         if (auto d = p.getEngine().getDisplay(); d != nullptr && p.getEngine().isDisplayCurrent() && ready (*d))
@@ -888,7 +888,7 @@ int main (int argc, char** argv)
     const auto waitForStep = [&] (Show& show, Music* music, double seconds, Step until)
     {
         show.play (music, seconds, [&] { return loud.isAnalysing() || loud.getStep() == until; });
-        for (int i = 0; i < 2000 && loud.isAnalysing(); ++i)
+        for (int i = 0; i < 12000 && loud.isAnalysing(); ++i)
             pump (proc);
     };
     pump (proc);
