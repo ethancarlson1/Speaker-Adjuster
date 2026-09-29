@@ -5,6 +5,8 @@
 #include "plugin/LoudnessController.h"
 #include "plugin/LoudnessStage.h"
 #include "plugin/MeasurementEngine.h"
+#include "plugin/ShowController.h"
+#include "plugin/TapRecorder.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -93,6 +95,11 @@ public:
 
     LoudnessSettings getLoudnessSettings() const noexcept;        // what the loudness stage uses now
     LoudnessController& getLoudness() { return loudnessControl; }
+    ShowController& getShow() { return showControl; }
+
+    // The editor's compact show layout; saved with the session (not a parameter).
+    bool isShowView() const noexcept { return showView.load(); }
+    void setShowView (bool shouldShow) noexcept { showView = shouldShow; }
     const LoudnessStage::Status& getLoudnessStatus() const { return loudness.getStatus(); }
 
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }
@@ -114,6 +121,9 @@ private:
     EqStages eq;
     LoudnessStage loudness;
     LoudnessController loudnessControl { loudness, engine };
+    TapRecorder showTap;                          // the final output and the mic, for show tracking
+    ShowController showControl { showTap };
+    std::atomic<bool> showView { false };
 
     // Parameter values the audio thread reads each block.
     struct VoicingParams

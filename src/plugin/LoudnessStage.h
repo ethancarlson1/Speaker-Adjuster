@@ -16,6 +16,7 @@
 
 #include "plugin/EqStages.h"
 #include "plugin/LatestValue.h"
+#include "plugin/TapRecorder.h"
 #include "roomeq/loudness.h"
 
 #include <atomic>
@@ -40,16 +41,6 @@ struct LoudnessModel
     bool calibrated = false;
 };
 
-struct TapRequest
-{
-    std::vector<float> output, mic;   // sized by the message thread
-    std::size_t skip = 0;             // samples to let pass before recording
-    std::size_t position = 0;         // audio-thread cursor (skip counted first)
-    std::atomic<bool> cancelRequested { false };
-    std::atomic<bool> finished { false };
-    bool cancelled = false;           // valid once finished
-};
-
 class LoudnessStage
 {
 public:
@@ -58,12 +49,12 @@ public:
 
     // Message thread (lock-free).
     void setModel (const LoudnessModel& newModel) noexcept { pendingModel.write (newModel); }
-    bool startTap (std::unique_ptr<TapRequest> request);
-    void cancelTap();
-    bool isTapBusy() const { return tap != nullptr; }
-    std::unique_ptr<TapRequest> collectTap();
-    void abortTapWhileStopped();      // prepareToPlay / releaseResources only
-    float getTapProgress() const;
+    bool startTap (std::unique_ptr<TapRequest> request) { return tap.start (std::move (request)); }
+    void cancelTap() { tap.cancel(); }
+    bool isTapBusy() const { return tap.isBusy(); }
+    std::unique_ptr<TapRequest> collectTap() { return tap.collect(); }
+    void abortTapWhileStopped() { tap.abortWhileStopped(); }   // prepareToPlay / releaseResources only
+    float getTapProgress() const { return tap.getProgress(); }
 
     // What the stage is doing, for the UI (any thread).
     struct Status
@@ -83,7 +74,6 @@ public:
 
 private:
     void updateTargets (const LoudnessSettings& settings, bool suspend) noexcept;
-    void recordTap (float* const* channels, int numChannels, const float* mic, int numSamples) noexcept;
 
     double fs = 48000.0;
     LatestValue<LoudnessModel> pendingModel;
@@ -97,8 +87,7 @@ private:
     bool haveTargets = false;
     double lowGain = 0.0, highGain = 0.0;
 
-    std::unique_ptr<TapRequest> tap;                // owned by the message thread
-    std::atomic<TapRequest*> activeTap { nullptr }; // written by the audio thread while set
+    TapRecorder tap;
 
     Status status;
 };

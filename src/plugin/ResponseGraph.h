@@ -22,6 +22,11 @@ public:
 
     void setData (std::shared_ptr<const MeasurementEngine::Display> display, int selectedId);
     void refresh();                                   // polled: repaints if the EQ or target changed
+
+    // Show view: the top panel shows the change since the soundcheck reference
+    // (a bar per third octave) instead of the measurements.
+    void setShowMode (bool shouldShow);
+    bool isShowMode() const { return showMode; }
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
 
@@ -71,6 +76,7 @@ private:
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawEq (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawShowChange (juce::Graphics&, juce::Rectangle<float> area) const;
     int selectedIndex() const;                          // among the fit positions, or -1
     const std::vector<double>* selectedCurve() const;   // the selected capture's curve (position or verify), or null
     juce::String selectedName() const;
@@ -104,6 +110,8 @@ private:
     std::vector<roomeq::Band> lastLoudness;
     bool lastLoudnessOn = true, lastLoudnessCalibrated = false;
 
+    bool showMode = false;
+    int lastShowBlocks = -1;
     int selectedBand = 0;
     int draggingBand = -1;
     int draggingPoint = -1;

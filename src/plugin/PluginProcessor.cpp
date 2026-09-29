@@ -137,6 +137,15 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
         env.available = ! standalone;
         return env;
     });
+    showControl.setEnvironmentSource ([this]
+    {
+        ShowController::Environment env;
+        env.fs = getSampleRate();
+        env.micSignal = hasMicSignal();
+        env.measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
+        env.available = ! standalone;
+        return env;
+    });
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::createParameterLayout()
@@ -289,12 +298,14 @@ void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     recorder.abortWhileStopped();
     eq.prepare (sampleRate, getEqSettings());
     loudness.prepare (sampleRate, samplesPerBlock, getLoudnessSettings());
+    showTap.abortWhileStopped();
 }
 
 void AdaptiveRoomEQProcessor::releaseResources()
 {
     recorder.abortWhileStopped();
     loudness.abortTapWhileStopped();
+    showTap.abortWhileStopped();
 }
 
 bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -384,7 +395,10 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // Loudness compensation (the standalone app has no program to compensate).
     // Flat and not tracking while a measurement or calibration plays.
     if (! standalone)
+    {
         loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), recorder.isActive());
+        showTap.record (channels, numChannels, mic, numSamples);   // after all the EQ: the room's own response
+    }
 
     updatePeak (outputPeak, mainOut.getMagnitude (0, numSamples));
 }
@@ -602,6 +616,8 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.appendChild (parameters.copyState(), nullptr);
     root.appendChild (engine.toValueTree(), nullptr);
     root.appendChild (loudnessControl.toValueTree(), nullptr);
+    root.appendChild (showControl.toValueTree(), nullptr);
+    root.setProperty ("showView", showView.load(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
     ct.setProperty ("name", juce::String::fromUTF8 (custom.name.c_str()), nullptr);
@@ -634,6 +650,8 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     }
     engine.fromValueTree (root.getChildWithName (MeasurementEngine::treeType));
     loudnessControl.fromValueTree (root.getChildWithName (LoudnessController::treeType));
+    showControl.fromValueTree (root.getChildWithName (ShowController::treeType));
+    showView = static_cast<bool> (root.getProperty ("showView", false));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

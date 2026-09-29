@@ -2,11 +2,12 @@
 
 A VST3/AU plugin (plus a standalone app) that measures a PA in the room, corrects it, and keeps the tonal balance consistent as the volume drops and the room fills. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** Phases 1–3 are implemented.
+**Status:** Phases 1–3 are implemented, plus Phase 4's show tracking (its reference snapshot and live change warning).
 - **Measure:** positions measured with log sweeps or pink noise (or from program material), each capture graded, and every position, the power average and the target shown.
 - **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
 - **Voicing:** an 8-band voicing EQ on top of the correction.
 - **Loudness:** level calibration, level tracking and ISO 226 loudness compensation, so the balance heard at the reference level holds as the show gets quieter.
+- **Show:** a compact show view, and a warning when the room's response moves from what it was at soundcheck.
 
 So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
 
@@ -23,6 +24,9 @@ So far all of this has only been checked against simulated rooms. The next step 
 5. Press **Measure position** at 3–5 spots across the audience area, at different distances and off-axis. Avoid symmetric spots on the centre line.
 6. Each capture is graded **pass / marginal / redo** with the reason (e.g. "low-end noise too high below 180 Hz"). You can rename a capture (double-click), take it out of the average, redo it, or delete it.
 7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
+8. Click a capture to highlight its curve: it's drawn on top, thicker, with the others dimmed and its name in the legend. Verify captures can be highlighted too. Click it again to clear the highlight.
+
+**Nothing plays unless the mic can hear.** Before a sweep, pink noise, a verify, a music capture, the mic calibrator or a re-check starts, the plugin checks that the mic input carried signal (above −100 dBFS) in the last second. If it's dead (not routed, muted, no phantom power), a popup says so and nothing plays.
 
 Measurements always play straight to the speaker, bypassing the correction and voicing EQ, so the fit always sees the PA's own response.
 
@@ -116,6 +120,23 @@ The plugin stores the output level that gave that SPL. With the mic connected, i
 
 The EQ strip shows the compensation at the current level in gold. The tab shows the level, the boosts, and when it was calibrated and re-checked. The calibration is saved with the session.
 
+## Show view and show tracking
+
+**Show view** (the header button, plugin only) is a compact layout for the show. The left panel has show tracking, the bypasses (**Correction**, **Voicing EQ**, **Loudness**, **Match output level**), the loudness readout and **Re-check level**. The capture list goes, and the graph's top panel shows the change since soundcheck; the EQ strip stays. Click it again for the setup view. The choice is saved with the session.
+
+**Show tracking** warns you when the room's response moves away from what it was at soundcheck:
+1. At the end of soundcheck, with music or pink noise playing at a normal level, press **Store reference** (show view). It records 30 s through the mic and keeps the output-to-mic response per third octave, 63 Hz–8 kHz.
+2. During the show the plugin keeps measuring the same response from the music, 10 s at a time. It compares the last 2 minutes with the reference, band by band, using only the bands the mic heard clearly.
+3. A change common to every band is a level change after the plugin (an amp or a fader). It's shown on its own, and flagged if it reaches 3 dB; **Re-check level** brings the loudness calibration up to date with it. What's left is the tonal change.
+4. If a band's tonal change reaches **3 dB**, a banner appears on the graph side in both views, e.g. "Since soundcheck: +5.2 dB at 125–250 Hz". It turns red at 6 dB and clears once the change falls below 2 dB. Click the banner for the band-by-band details.
+
+Things that aren't the room don't count:
+- The measurement is taken after all of the plugin's EQ, so correction, voicing and loudness changes aren't mistaken for the room.
+- Crowd noise isn't coherent with the music, so it makes bands count less rather than moving them.
+- Blocks during a measurement or calibration (a test signal instead of the show), or with a dead mic, are skipped.
+
+The reference is saved with the session. **Clear** forgets it and stops tracking. Proposing a correction for the change (the rest of Phase 4) comes later.
+
 ## Trying it out
 
 ### 1. Get a build
@@ -187,7 +208,7 @@ Phase 3's "done when" test:
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, background analysis and fitting, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, show tracking, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
 | `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ and the loudness stage |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
@@ -226,7 +247,10 @@ The harness drives the real processor against a simulated room. It checks:
 - re-measuring through the correction lands near the target;
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;
+- a dead mic input refuses every test signal and nothing plays;
+- selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music;
+- show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, and a block with a sweep in it dropped;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
 It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.

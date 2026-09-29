@@ -9,9 +9,30 @@
 
 #include <array>
 
-// Left: tabs (Measure, Correct, Voicing, Loudness; the standalone app has no
-// Loudness tab) over a status area that is always visible. Right: the capture
-// list with grades, and the graph (response on top, the EQ stages below).
+// The show-tracking warning: a strip across the top of the graph side, yellow
+// for a change of 3 dB or more since soundcheck, red for 6 dB or more. Click
+// it for the band-by-band details. Hidden when nothing's flagged.
+class ShowBanner final : public juce::Component
+{
+public:
+    std::function<void()> onClick;
+    void set (int newSeverity, const juce::String& newText);
+    int getSeverity() const { return severity; }
+    const juce::String& getText() const { return text; }
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    int severity = 0;
+    juce::String text;
+};
+
+// Setup view: tabs (Measure, Correct, Voicing, Loudness; the standalone app has
+// no Loudness tab) over a status area that is always visible; on the right the
+// capture list with grades, and the graph (response on top, EQ stages below).
+// Show view (the header's button, plugin only): the left panel holds show
+// tracking and the bypasses, the capture list goes, and the graph's top panel
+// shows the change since soundcheck. The warning banner shows in both.
 class AdaptiveRoomEQEditor final : public juce::AudioProcessorEditor,
                                    private juce::Timer,
                                    private juce::ChangeListener
@@ -32,6 +53,9 @@ public:
     };
     void showTab (Tab tab);
     void selectVoicingBand (int band);
+    void setShowView (bool on);
+    bool isShowView() const { return showViewOn; }
+    const ShowBanner& getBanner() const { return banner; }
 
 private:
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
@@ -60,12 +84,29 @@ private:
     juce::String statusText() const;
     void submitSpl();
     void updateLoudnessControls();
+    void updateBanner();
+    void showBannerDetails();
+    juce::String showTrackingText() const;
+    juce::String showLoudnessText() const;
 
     juce::Rectangle<int> headerArea() const;
     juce::Rectangle<int> controlsArea() const;
     juce::Rectangle<int> summaryArea() const;
 
     AdaptiveRoomEQProcessor& processor;
+
+    // Show view and the warning banner.
+    juce::TextButton showViewButton { "Show view" };
+    ShowBanner banner;
+    bool showViewOn = false;
+    std::vector<juce::Component*> showControls;
+    juce::TextButton storeRefButton { "Store reference" }, clearRefButton { "Clear" }, showRecheckButton { "Re-check level" };
+    juce::ToggleButton showCorrectionOn { "Correction on" }, showVoicingOn { "Voicing EQ on" }, showLoudOn { "Loudness on" },
+        showLevelMatch { "Match output level" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showCorrectionAttachment, showVoicingAttachment,
+        showLoudAttachment, showLevelMatchAttachment;
+    juce::Rectangle<int> showTextBounds, showLoudBounds;
+    int showRuleY = 0;
 
     // Tabs.
     juce::TextButton measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" }, loudnessTab { "Loudness" };

@@ -83,6 +83,25 @@ void ResponseGraph::refresh()
         updateCurves();
         repaint();
     }
+    if (showMode)
+    {
+        const auto info = processor.getShow().getInfo();
+        const auto blocks = info.hasReference ? info.blocksHeard + 1000 * info.blocksDropped : -2;
+        if (blocks != lastShowBlocks)
+        {
+            lastShowBlocks = blocks;
+            repaint();
+        }
+    }
+}
+
+void ResponseGraph::setShowMode (bool shouldShow)
+{
+    if (showMode != shouldShow)
+    {
+        showMode = shouldShow;
+        repaint();
+    }
 }
 
 void ResponseGraph::setSelectedVoicingBand (int band)
@@ -178,7 +197,7 @@ juce::String ResponseGraph::selectedName() const
 
 bool ResponseGraph::customTargetEditable() const
 {
-    return display != nullptr && processor.getTargetChoice() == AdaptiveRoomEQProcessor::targetCustom
+    return ! showMode && display != nullptr && processor.getTargetChoice() == AdaptiveRoomEQProcessor::targetCustom
            && std::isfinite (targetOffset);
 }
 
@@ -582,6 +601,12 @@ void ResponseGraph::paint (juce::Graphics& g)
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
 
     const auto response = responseArea();
+    if (showMode)
+    {
+        drawShowChange (g, response);
+        drawEq (g, eqArea());
+        return;
+    }
     if (display == nullptr)
     {
         drawFrequencyAxis (g, response, false);
@@ -598,6 +623,90 @@ void ResponseGraph::paint (juce::Graphics& g)
     }
     drawEq (g, eqArea());
     drawHover (g);
+}
+
+void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> area) const
+{
+    drawFrequencyAxis (g, area, false);
+    constexpr double range = 12.0;
+    const auto yFor = [&] (double db)
+    {
+        return area.getY() + static_cast<float> ((range - db) / (2.0 * range)) * area.getHeight();
+    };
+    g.setFont (juce::FontOptions (11.0f));
+    for (int db = -12; db <= 12; db += 6)
+    {
+        const auto y = yFor (db);
+        g.setColour (db == 0 ? theme::axis : theme::grid);
+        g.drawHorizontalLine (juce::roundToInt (y), area.getX(), area.getRight());
+        g.setColour (theme::muted);
+        g.drawText ((db > 0 ? "+" : "") + juce::String (db), juce::Rectangle<float> (0.0f, y - 8.0f, area.getX() - 6.0f, 16.0f),
+                    juce::Justification::centredRight);
+    }
+    g.setColour (theme::axis);
+    g.drawRect (area, 1.0f);
+
+    const auto info = processor.getShow().getInfo();
+    const auto& st = info.state;
+    drawLegend (g, { area.getX(), 8.0f }, { { "Change since soundcheck (tonal)", theme::blue, false },
+                                            { "Flagged", theme::warning, false },
+                                            { "3 dB", theme::warning.withAlpha (0.6f), true } });
+    if (info.hasReference && std::isfinite (st.levelDb))
+    {
+        const auto r = std::round (st.levelDb * 10.0) / 10.0;
+        const auto level = std::abs (r) < 0.05 ? juce::String ("0.0")
+                                                : (r > 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
+        g.setColour (st.levelFlag != 0 ? theme::warning : theme::ink2);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText ("Level after the plugin: " + level + " dB", juce::Rectangle<float> (area.getRight() - 260.0f, 4.0f, 256.0f, 20.0f),
+                    juce::Justification::centredRight);
+    }
+
+    juce::Graphics::ScopedSaveState clip (g);
+    g.reduceClipRegion (area.toNearestInt());
+    for (const auto db : { -3.0, 3.0 })
+    {
+        juce::Path line;
+        line.startNewSubPath (area.getX(), yFor (db));
+        line.lineTo (area.getRight(), yFor (db));
+        g.setColour (theme::warning.withAlpha (0.6f));
+        strokeDashed (g, line, 1.2f, 5.0f, 4.0f);
+    }
+
+    g.setFont (juce::FontOptions (14.0f));
+    if (! info.hasReference)
+    {
+        g.setColour (theme::ink2);
+        g.drawFittedText ("No soundcheck reference yet. With music or pink noise playing, press Store reference.",
+                          area.reduced (20.0f).toNearestInt(), juce::Justification::centred, 2);
+        return;
+    }
+    const auto& bands = roomeq::recheckBands();
+    auto any = false;
+    for (std::size_t b = 0; b < bands.size() && b < st.deltaDb.size(); ++b)
+    {
+        const auto x0 = xFor (bands[b] * std::exp2 (-1.0 / 6.0), area), x1 = xFor (bands[b] * std::exp2 (1.0 / 6.0), area);
+        const auto w = (x1 - x0) * 0.7f, cx = 0.5f * (x0 + x1);
+        const auto d = st.deltaDb[b];
+        if (! std::isfinite (d))
+        {
+            g.setColour (theme::muted.withAlpha (0.5f));
+            g.fillRect (juce::Rectangle<float> (cx - w / 2.0f, yFor (0.0) - 1.0f, w, 2.0f));
+            continue;
+        }
+        any = true;
+        const auto clamped = juce::jlimit (-range, range, d);
+        const auto top = std::min (yFor (clamped), yFor (0.0)), bottom = std::max (yFor (clamped), yFor (0.0));
+        const auto flagged = b < st.flags.size() && st.flags[b] != 0;
+        g.setColour (flagged ? (std::abs (d) >= 6.0 ? theme::critical : theme::warning) : theme::blue.withAlpha (0.75f));
+        g.fillRoundedRectangle (juce::Rectangle<float> (cx - w / 2.0f, top, w, std::max (1.5f, bottom - top)), 2.0f);
+    }
+    if (! any)
+    {
+        g.setColour (theme::ink2);
+        g.drawFittedText ("Listening: the first result needs about a minute of music the mic hears clearly.",
+                          area.reduced (20.0f).toNearestInt(), juce::Justification::centred, 2);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -186,6 +186,7 @@ void pump (AdaptiveRoomEQProcessor& p)
 {
     p.getEngine().update();
     p.getLoudness().update();
+    p.getShow().update();
     juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
 }
 
@@ -429,6 +430,7 @@ struct Show
     SimulatedRoom& room;
     double ampGainDb = 0.0;
     std::function<float (std::size_t)> micSignal;
+    std::function<double (double)> roomChange;   // e.g. the low mids building up as the room fills
     std::vector<double> lastOutput;   // channel 0, the last `keepSeconds`
     double rightEnergy = 0.0, channelDiff = 0.0;
     double keepSeconds = 6.0;
@@ -449,7 +451,9 @@ struct Show
                 const auto in = music != nullptr ? music->next() : 0.0f;
                 buffer.setSample (0, i, in);
                 buffer.setSample (1, i, in);
-                const auto heard = room.process (amp * speaker[static_cast<std::size_t> (i)]);   // hears last block
+                auto heard = room.process (amp * speaker[static_cast<std::size_t> (i)]);   // hears last block
+                if (roomChange)
+                    heard = static_cast<float> (roomChange (heard));
                 buffer.setSample (2, i, micSignal ? micSignal (t) : heard);
             }
             p.processBlock (buffer, midi);
@@ -951,7 +955,7 @@ int main (int argc, char** argv)
            "uncalibrated: loudness adds nothing");
     {
         SimulatedRoom room (7.0, 21, 3e-4, 0.0);
-        Show show { proc, room, 0.0, {}, {} };
+        Show show { proc, room, 0.0, {}, {}, {} };
 
         // Mic calibrator: a 1 kHz tone at 0.05 peak (-29.0 dBFS RMS) stands for 94 dB.
         show.micSignal = [] (std::size_t n) { return static_cast<float> (0.05 * std::sin (juce::MathConstants<double>::twoPi * 1000.0 * static_cast<double> (n) / fs)); };
@@ -1072,6 +1076,63 @@ int main (int argc, char** argv)
         show.play (&music, 3.0);   // boosting again, for the screenshot
     }
 
+    std::cout << "Show tracking\n";
+    {
+        auto& tracking = proc.getShow();
+        using ShowStep = ShowController::Step;
+        const auto drain = [&]
+        {
+            for (int i = 0; i < 12000 && tracking.pendingAnalyses() > 0; ++i)
+                pump (proc);
+            pump (proc);
+        };
+        SimulatedRoom room (8.0, 31, 1e-3, 0.0);   // a noisier room: the crowd
+        Show show { proc, room, 0.0, {}, {}, {} };
+        Music music;
+        music.gain = 0.03;
+        show.play (&music, 2.0);
+        check (tracking.storeReference().wasOk(), "store the soundcheck reference (music playing)");
+        show.play (&music, 35.0, [&] { return tracking.getStep() != ShowStep::storing; });
+        drain();
+        auto info = tracking.getInfo();
+        check (info.hasReference && info.referenceBands >= 18,
+               "reference stored (" + juce::String (info.referenceBands) + " of 22 bands heard clearly)");
+
+        show.play (&music, 150.0);
+        drain();
+        info = tracking.getInfo();
+        double largest = 0.0;
+        for (auto dv : info.state.deltaDb)
+            if (std::isfinite (dv))
+                largest = std::max (largest, std::abs (dv));
+        check (info.blocksHeard >= 13 && info.state.severity == 0 && largest < 2.0,
+               "2.5 minutes of the same room: no warning (largest change " + juce::String (largest, 2) + " dB)");
+
+        // The low mids build up by 6 dB (a peaking filter on what the mic hears).
+        auto bump = Biquad::peaking (180.0, 6.0, 1.0);
+        show.roomChange = [bump] (double x) mutable { return bump.process (x); };
+        show.play (&music, 150.0);
+        drain();
+        info = tracking.getInfo();
+        const auto& names = roomeq::showBandNames();
+        juce::StringArray flagged;
+        for (std::size_t b = 0; b < info.state.flags.size(); ++b)
+            if (info.state.flags[b] != 0)
+                flagged.add (names[b]);
+        const auto message = juce::String::fromUTF8 (info.state.message.c_str());
+        check (info.state.severity >= 1 && flagged.contains ("200") && ! flagged.contains ("1k") && ! flagged.contains ("4k"),
+               "the build-up is flagged at " + flagged.joinIntoString (", ") + " Hz: " + message);
+
+        // A measurement mid-show: that block is dropped, not counted as the room.
+        const auto dropped = info.blocksDropped;
+        check (proc.startSweep().wasOk(), "a sweep during the show");
+        show.play (&music, 3.0);
+        engine.cancel();
+        show.play (&music, 15.0);
+        drain();
+        check (tracking.getInfo().blocksDropped > dropped, "the block it overlapped is dropped");
+    }
+
     std::cout << "State round trip\n";
     juce::MemoryBlock state;
     proc.getStateInformation (state);
@@ -1104,6 +1165,9 @@ int main (int argc, char** argv)
                    && juce::exactlyEqual (now.calibration.spl, was.calibration.spl) && now.canRecheck && now.hasMicOffset
                    && juce::exactlyEqual (now.micOffsetDb, was.micOffsetDb),
                "loudness calibration restored");
+        check (restored.getShow().getInfo().hasReference
+                   && restored.getShow().getInfo().referenceBands == proc.getShow().getInfo().referenceBands,
+               "show reference restored");
         restored.setRateAndBufferSizeDetails (fs, blockSize);
         restored.prepareToPlay (fs, blockSize);
         auto restoredEq = restored.getEngine().getApplied();
@@ -1131,6 +1195,13 @@ int main (int argc, char** argv)
         writeSnapshot (*editor, stem + "-voicing.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::loudness);
         writeSnapshot (*editor, stem + "-loudness.png");
+        ours->setShowView (true);
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        check (ours->isShowView() && proc.isShowView() && ours->getBanner().getSeverity() >= 1 && ours->getBanner().isVisible(),
+               "show view, with the warning banner up");
+        writeSnapshot (*editor, stem + "-show.png");
+        ours->setShowView (false);
         editor->setSize (1060, 740);   // the smallest size: everything still fits
         writeSnapshot (*editor, stem + "-loudness-small.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
