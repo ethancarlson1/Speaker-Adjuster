@@ -63,6 +63,8 @@ public:
         double fitFs = 48000.0;
         std::vector<double> verifiedDb;              // verify average, aligned to the fit average (empty if none)
         int verifiedCount = 0;
+        std::vector<int> verifyIds;                  // every verify capture, for highlighting one...
+        std::vector<std::vector<double>> verifyDb;   // ...its curve, aligned to the fit average
     };
 
     enum class Activity

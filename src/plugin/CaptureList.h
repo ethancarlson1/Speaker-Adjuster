@@ -8,6 +8,8 @@
 
 // The list of captured positions: grade badge, name (double-click to rename),
 // type and loop delay, the grading reasons, and include / redo / delete.
+// Clicking a row (its name too) selects it and highlights its curve on the
+// graph; clicking the selected row again clears the selection.
 class CaptureList final : public juce::Component,
                           private juce::ListBoxModel
 {
@@ -36,10 +38,13 @@ private:
     void paintListBoxItem (int, juce::Graphics&, int, int, bool) override {}
     juce::Component* refreshComponentForRow (int row, bool selected, juce::Component* existing) override;
     void selectedRowsChanged (int lastRowSelected) override;
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override;
+    void selectRow (int row);                 // from a click on a row's name
 
     Callbacks callbacks;
     juce::ListBox list { "Captures", this };
     std::vector<MeasurementEngine::Entry> entries;
     bool measuring = false;
     int appliedId = 0;
+    bool justSelected = false;                // this click selected the row (so it doesn't also clear it)
 };

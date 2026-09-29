@@ -421,8 +421,8 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
 
 void MeasurementEngine::requestSummary()
 {
-    std::vector<std::shared_ptr<const roomeq::Capture>> snapshot, verifySnapshot;
-    std::vector<int> ids;
+    std::vector<std::shared_ptr<const roomeq::Capture>> snapshot, verifySnapshot, allVerify;
+    std::vector<int> ids, verifyIds;
     {
         const std::lock_guard<std::mutex> guard (stateLock);
         for (const auto& e : entries)
@@ -431,6 +431,8 @@ void MeasurementEngine::requestSummary()
             {
                 if (e.correctionId == appliedId)
                     verifySnapshot.push_back (e.capture);
+                allVerify.push_back (e.capture);
+                verifyIds.push_back (e.id);
                 continue;
             }
             snapshot.push_back (e.capture);
@@ -440,7 +442,8 @@ void MeasurementEngine::requestSummary()
     const auto settings = lastSettings.value_or (CorrectionSettings {});
     const auto generation = ++summaryGeneration;
     mailbox->latestRequested = generation;
-    pool.addJob ([mb = mailbox, snapshot, verifySnapshot, ids, fraction = smoothingFraction, generation, g = grid, settings]
+    pool.addJob ([mb = mailbox, snapshot, verifySnapshot, allVerify, ids, verifyIds, fraction = smoothingFraction, generation,
+                  g = grid, settings]
     {
         // A newer request is already queued (e.g. while a target point is dragged): let that one run instead.
         if (generation != mb->latestRequested.load())
@@ -470,6 +473,26 @@ void MeasurementEngine::requestSummary()
                 for (auto& x : d->verifiedDb)
                     x += std::isfinite (shift) ? shift : 0.0;
                 d->verifiedCount = v->nGood;
+            }
+
+            // Each verify capture's own curve, for highlighting: summarised alongside the
+            // fit captures but left out of the average, so it gets the same smoothing and
+            // level alignment as every position without changing anything else.
+            if (! allVerify.empty())
+            {
+                auto combined = snapshot;
+                for (const auto& v : allVerify)
+                {
+                    auto c = std::make_shared<roomeq::Capture> (*v);
+                    c->excluded = true;
+                    combined.push_back (std::move (c));
+                }
+                if (auto all = roomeq::summarizeSession (combined, fraction, g))
+                    for (std::size_t i = 0; i < allVerify.size(); ++i)
+                    {
+                        d->verifyIds.push_back (verifyIds[i]);
+                        d->verifyDb.push_back (all->positionDb[snapshot.size() + i]);
+                    }
             }
             shared = std::move (d);
         }

@@ -156,6 +156,26 @@ int ResponseGraph::selectedIndex() const
     return -1;
 }
 
+const std::vector<double>* ResponseGraph::selectedCurve() const
+{
+    if (display == nullptr || selectedId < 0)
+        return nullptr;
+    if (const auto i = selectedIndex(); i >= 0)
+        return &display->summary.positionDb[static_cast<std::size_t> (i)];
+    for (std::size_t i = 0; i < display->verifyIds.size(); ++i)
+        if (display->verifyIds[i] == selectedId)
+            return &display->verifyDb[i];
+    return nullptr;
+}
+
+juce::String ResponseGraph::selectedName() const
+{
+    for (const auto& e : processor.getEngine().getEntries())
+        if (e.id == selectedId)
+            return juce::String::fromUTF8 (e.capture->name.c_str());
+    return {};
+}
+
 bool ResponseGraph::customTargetEditable() const
 {
     return display != nullptr && processor.getTargetChoice() == AdaptiveRoomEQProcessor::targetCustom
@@ -363,8 +383,9 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
         legend.push_back ({ curves.showProposal ? "Predicted with proposal" : "Predicted", theme::aqua, false });
     if (! display->verifiedDb.empty())
         legend.push_back ({ "Verified (" + juce::String (display->verifiedCount) + ")", theme::violet, false });
-    if (selected >= 0)
-        legend.push_back ({ "Selected", theme::orange, false });
+    const auto* chosen = selectedCurve();
+    if (chosen != nullptr)
+        legend.push_back ({ "Selected: " + selectedName(), theme::orange, false });
     drawLegend (g, { area.getX(), 8.0f }, legend);
 
     juce::Graphics::ScopedSaveState clip (g);
@@ -382,7 +403,7 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
         }
         else
         {
-            g.setColour (theme::muted.withAlpha (0.6f));
+            g.setColour (theme::muted.withAlpha (chosen != nullptr ? 0.3f : 0.6f));   // stand back while one is selected
             g.strokePath (path, juce::PathStrokeType (1.1f));
         }
     }
@@ -399,12 +420,6 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
         strokeDashed (g, path, 1.5f, 6.0f, 4.0f);
     }
 
-    if (selected >= 0)
-    {
-        g.setColour (theme::orange);
-        g.strokePath (curve (s.grid, s.positionDb[static_cast<std::size_t> (selected)], area, false), juce::PathStrokeType (2.0f));
-    }
-
     g.setColour (theme::blue);
     g.strokePath (curve (s.grid, s.averageDb, area, false),
                   juce::PathStrokeType (2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
@@ -417,6 +432,16 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
     {
         g.setColour (theme::violet);
         g.strokePath (curve (s.grid, display->verifiedDb, area, false), juce::PathStrokeType (2.0f));
+    }
+
+    // The selected capture on top of everything, outlined so it reads over the other curves.
+    if (chosen != nullptr)
+    {
+        const auto path = curve (s.grid, *chosen, area, false);
+        g.setColour (theme::plane.withAlpha (0.85f));
+        g.strokePath (path, juce::PathStrokeType (5.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour (theme::orange);
+        g.strokePath (path, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
     if (customTargetEditable())
@@ -531,8 +556,8 @@ void ResponseGraph::drawHover (juce::Graphics& g) const
             text << "   predicted " << juce::String (predicted[i], 1);
         if (! display->verifiedDb.empty() && std::isfinite (display->verifiedDb[i]))
             text << "   verified " << juce::String (display->verifiedDb[i], 1);
-        if (const auto sel = selectedIndex(); sel >= 0 && std::isfinite (s.positionDb[static_cast<std::size_t> (sel)][i]))
-            text << "   selected " << juce::String (s.positionDb[static_cast<std::size_t> (sel)][i], 1);
+        if (const auto* sel = selectedCurve(); sel != nullptr && std::isfinite ((*sel)[i]))
+            text << "   " << selectedName() << " " << juce::String ((*sel)[i], 1);
         text << " dB";
     }
     text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1)

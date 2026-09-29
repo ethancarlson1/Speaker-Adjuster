@@ -11,6 +11,7 @@ public:
         setInterceptsMouseClicks (false, true);
 
         name.setEditable (false, true, false);
+        name.addMouseListener (this, false);   // a click on the name selects the row too
         name.setFont (juce::FontOptions (15.0f, juce::Font::bold));
         name.setColour (juce::Label::textColourId, theme::ink);
         name.setTooltip ("Double-click to rename");
@@ -32,8 +33,15 @@ public:
         addAndMakeVisible (remove);
     }
 
-    void update (const MeasurementEngine::Entry& entry, bool isSelected, bool measuring)
+    void mouseUp (const juce::MouseEvent& e) override
     {
+        if (e.eventComponent == &name && e.getNumberOfClicks() == 1 && ! e.mouseWasDraggedSinceMouseDown())
+            owner.selectRow (row);
+    }
+
+    void update (const MeasurementEngine::Entry& entry, int rowNumber, bool isSelected, bool measuring)
+    {
+        row = rowNumber;
         id = entry.id;
         capture = entry.capture;
         verify = entry.verify;
@@ -114,7 +122,7 @@ private:
     juce::Label name;
     juce::ToggleButton include;
     juce::TextButton redo, remove;
-    int id = -1;
+    int id = -1, row = -1;
     std::shared_ptr<const roomeq::Capture> capture;
     bool selected = false, verify = false, stale = false;
 };
@@ -140,7 +148,7 @@ void CaptureList::setEntries (std::vector<MeasurementEngine::Entry> newEntries, 
     list.repaint();
     for (int row = 0; row < getNumRows(); ++row)
         if (auto* c = dynamic_cast<Row*> (list.getComponentForRowNumber (row)))
-            c->update (entries[static_cast<std::size_t> (row)], list.isRowSelected (row), measuring);
+            c->update (entries[static_cast<std::size_t> (row)], row, list.isRowSelected (row), measuring);
 }
 
 int CaptureList::getSelectedId() const
@@ -185,12 +193,28 @@ juce::Component* CaptureList::refreshComponentForRow (int row, bool selected, ju
         delete existing;
         r = new Row (*this);
     }
-    r->update (entries[static_cast<std::size_t> (row)], selected, measuring);
+    r->update (entries[static_cast<std::size_t> (row)], row, selected, measuring);
     return r;
 }
 
 void CaptureList::selectedRowsChanged (int)
 {
+    justSelected = true;
     if (callbacks.onSelect)
         callbacks.onSelect (getSelectedId());
+}
+
+void CaptureList::listBoxItemClicked (int row, const juce::MouseEvent&)
+{
+    // A click that didn't just select this row was on the selected row: clear it.
+    if (! justSelected && list.isRowSelected (row))
+        list.deselectAllRows();
+    justSelected = false;
+}
+
+void CaptureList::selectRow (int row)
+{
+    if (row >= 0 && row < getNumRows() && ! list.isRowSelected (row))
+        list.selectRow (row);
+    justSelected = false;
 }

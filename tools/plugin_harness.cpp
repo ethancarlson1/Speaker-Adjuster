@@ -861,6 +861,10 @@ int main (int argc, char** argv)
         check (after < 1.0 && after < 0.75 * before, "re-measured through the correction: " + juce::String (before, 2) + " -> "
                                                          + juce::String (after, 2) + " dB RMS from target");
         check (d->proposal->bands == engine.getApplied(), "verify captures don't change the proposal");
+        auto curvesOk = d->verifyIds.size() == 4 && d->verifyDb.size() == 4;
+        for (const auto& c : d->verifyDb)
+            curvesOk = curvesOk && c.size() == d->summary.grid.size() && std::isfinite (c[c.size() / 2]);
+        check (curvesOk, "each verify capture has its own curve, for highlighting");
     }
 
     std::cout << "Compare and undo\n";
@@ -1141,6 +1145,18 @@ int main (int argc, char** argv)
         check (graph != nullptr, "graph found");
         if (graph != nullptr)
         {
+            // Selecting a capture highlights its curve: a sweep position, then a verify capture.
+            const auto all = engine.getEntries();
+            const auto firstVerify = std::find_if (all.begin(), all.end(), [] (const auto& e) { return e.verify; });
+            ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
+            graph->setData (engine.getDisplay(), all[1].id);
+            check (graph->isHighlighting(), "selecting a position highlights its curve");
+            writeSnapshot (*editor, stem + "-selected.png");
+            graph->setData (engine.getDisplay(), firstVerify != all.end() ? firstVerify->id : -1);
+            check (graph->isHighlighting(), "and a verify capture's too");
+            graph->setData (engine.getDisplay(), -1);
+            check (! graph->isHighlighting(), "no selection, no highlight");
+
             auto source = juce::Desktop::getInstance().getMainMouseSource();
             const auto event = [&] (juce::Point<float> at, juce::Point<float> down, int clicks, bool dragged)
             {

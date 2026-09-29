@@ -25,6 +25,9 @@ public:
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
 
+    // Whether a selected capture's curve is highlighted, for tests.
+    bool isHighlighting() const { return selectedCurve() != nullptr; }
+
     // Where the handles are drawn (component coordinates), for tests.
     juce::Point<float> getVoicingHandlePosition (int band) const { return voicingHandle (band, eqArea()); }
     juce::Point<float> getTargetPointPosition (int index) const { return targetPoint (static_cast<std::size_t> (index), responseArea()); }
@@ -68,7 +71,9 @@ private:
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawEq (juce::Graphics&, juce::Rectangle<float> area) const;
-    int selectedIndex() const;
+    int selectedIndex() const;                          // among the fit positions, or -1
+    const std::vector<double>* selectedCurve() const;   // the selected capture's curve (position or verify), or null
+    juce::String selectedName() const;
     bool customTargetEditable() const;
 
     // Voicing handles and target points, in component coordinates.
