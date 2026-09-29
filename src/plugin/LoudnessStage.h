@@ -68,9 +68,11 @@ public:
     };
     const Status& getStatus() const { return status; }
 
-    // Audio thread. `mic` may be null. `suspend` while a measurement runs.
+    // Audio thread. `mic` may be null. `suspend` while a measurement runs: the
+    // shelves and high-pass glide flat, or go flat at once with `snap` (a test
+    // signal replaced the program and starts with silence, so it can't click).
     void process (float* const* channels, int numChannels, const float* mic, int numSamples,
-                  const LoudnessSettings& settings, bool suspend) noexcept;
+                  const LoudnessSettings& settings, bool suspend, bool snap = false) noexcept;
 
 private:
     void updateTargets (const LoudnessSettings& settings, bool suspend) noexcept;

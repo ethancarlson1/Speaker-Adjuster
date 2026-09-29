@@ -250,6 +250,24 @@ LoudnessController::Info LoudnessController::getInfo() const
     return i;
 }
 
+void LoudnessController::clearCalibration()
+{
+    jassert (step == Step::idle || step == Step::awaitingSpl);
+    step = Step::idle;
+    analysing = false;
+    {
+        const std::lock_guard<std::mutex> guard (stateLock);
+        calibration = {};
+        calibrated = false;
+        calibrationBands.clear();
+        calibratedAt = recheckedAt = 0;
+        recheckChangeDb = 0.0;
+    }
+    status = "Level calibration cleared: loudness compensation stays flat until you calibrate again";
+    publishModel();
+    sendChangeMessage();
+}
+
 void LoudnessController::publishModel()
 {
     modelDirty = false;

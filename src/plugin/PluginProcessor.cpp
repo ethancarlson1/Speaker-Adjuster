@@ -370,11 +370,16 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         samplesSinceMicSignal.store (samplesSinceMicSignal.load (std::memory_order_relaxed) + numSamples,
                                      std::memory_order_relaxed);
 
-    // Normal measurements replace the EQ'd program with the raw test signal (and
-    // "Measure from music" records the EQ'd program as its reference): EQ first.
-    // Verify measurements play the test signal through the EQ: EQ last.
-    const auto settings = getEqSettings();
+    // Measurements bypass the correction, voicing EQ and level match (they glide
+    // out): test signals replace the program, and "Measure from music" records
+    // the program as it plays, after they've settled. EQ first.
+    // Verify and the loudness calibration measure the corrected system: the
+    // test signal plays through the EQ, EQ last.
+    auto settings = getEqSettings();
+    const auto measuring = recorder.isActive();
     const auto throughEq = recorder.playsThroughEq();
+    if (measuring && ! throughEq)
+        settings.correctionOn = settings.voicingOn = false;
     auto* const* channels = mainOut.getArrayOfWritePointers();
     const auto numChannels = mainOut.getNumChannels();
     if (! throughEq)
@@ -393,10 +398,12 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         mainOut.clear();
 
     // Loudness compensation (the standalone app has no program to compensate).
-    // Flat and not tracking while a measurement or calibration plays.
+    // Flat and not tracking while a measurement or calibration plays: at once
+    // under a test signal (it starts with silence), gliding under music.
     if (! standalone)
     {
-        loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), recorder.isActive());
+        loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), measuring,
+                          recorder.replacesOutput());
         showTap.record (channels, numChannels, mic, numSamples);   // after all the EQ: the room's own response
     }
 
@@ -592,6 +599,22 @@ MeasurementEngine::CorrectionSettings AdaptiveRoomEQProcessor::getCorrectionSett
     s.config.rangeHiHz = raw (ParamIds::rangeHi);
     s.fs = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
     return s;
+}
+
+juce::Result AdaptiveRoomEQProcessor::clearRoomData()
+{
+    using Step = LoudnessController::Step;
+    if (engine.getActivity() != MeasurementEngine::Activity::idle)
+        return juce::Result::fail ("Wait for the measurement to finish (or stop it), then clear");
+    if (const auto step = loudnessControl.getStep(); (step != Step::idle && step != Step::awaitingSpl) || loudnessControl.isAnalysing())
+        return juce::Result::fail ("Wait for the loudness calibration or re-check to finish (or stop it), then clear");
+    if (showControl.getStep() == ShowController::Step::storing)
+        return juce::Result::fail ("Wait for the show reference to finish storing (or stop it), then clear");
+    engine.clearAll();
+    loudnessControl.clearCalibration();
+    if (showControl.getInfo().hasReference)
+        showControl.clearReference();
+    return juce::Result::ok();
 }
 
 juce::Result AdaptiveRoomEQProcessor::startProgram (int replaceId)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "plugin/TapRecorder.h"
+#include "plugin/WarningDismissal.h"
 #include "roomeq/showtrack.h"
 
 #include <juce_data_structures/juce_data_structures.h>
@@ -52,6 +53,7 @@ public:
         roomeq::ShowState state;
         int blocksHeard = 0;             // show blocks analysed since the reference
         int blocksDropped = 0;           // skipped: a measurement played, or the mic was dead
+        bool warningDismissed = false;   // the banner's ×: nothing new since
     };
 
     static constexpr double referenceSeconds = 30.0;
@@ -65,6 +67,7 @@ public:
     juce::Result storeReference();
     void cancelStore();                  // stops a reference being stored (the old one stays)
     void clearReference();
+    void dismissWarning();               // hides the current warning until something new (see WarningDismissal)
 
     Step getStep() const { return step; }
     float getProgress() const;
@@ -121,6 +124,7 @@ private:
     juce::int64 storedAt = 0;
     std::optional<roomeq::DeltaTracker> tracker;
     int blocksHeard = 0, blocksDropped = 0;
+    WarningDismissal dismissal;          // not saved: a new session shows what it finds
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ShowController)
 };

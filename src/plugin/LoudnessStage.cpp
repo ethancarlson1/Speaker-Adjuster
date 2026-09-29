@@ -86,7 +86,7 @@ void LoudnessStage::updateTargets (const LoudnessSettings& settings, bool suspen
 }
 
 void LoudnessStage::process (float* const* channels, int numChannels, const float* mic, int numSamples,
-                             const LoudnessSettings& settings, bool suspend) noexcept
+                             const LoudnessSettings& settings, bool suspend, bool snap) noexcept
 {
     auto changed = pendingModel.read (model);
     if (! sameSettings (settings, last) || suspend != lastSuspend)
@@ -137,6 +137,11 @@ void LoudnessStage::process (float* const* channels, int numChannels, const floa
 
     if (changed || ! haveTargets)
         updateTargets (settings, suspend);
+    if (suspend && snap && chain.isGliding())
+    {
+        chain.jumpToTargets();
+        chain.reset();
+    }
     chain.process (channels, numChannels, numSamples);
     tap.record (channels, numChannels, mic, numSamples);
 }

@@ -36,6 +36,7 @@ struct CaptureRequest
     std::vector<float> excitation;            // one take: preroll + sweep + tail, or noise + tail
     std::vector<std::vector<float>> mic;      // per repeat (sweep) or a single take (noise, program)
     std::vector<float> reference;             // noise: what was played; program: mono sum of the input
+    std::size_t settle = 0;                   // program: samples passed through before recording starts
 
     int replaceId = -1;                       // capture being redone, or -1 for a new one
     bool throughEq = false;                   // verify: the excitation plays through the correction and voicing EQ
@@ -49,6 +50,7 @@ struct CaptureRequest
     // Audio-thread cursor.
     int repeat = 0;
     std::size_t position = 0;
+    std::size_t settled = 0;                  // program: of `settle`
 };
 
 // Plays sweeps and records the measurement mic on the audio thread.
@@ -87,8 +89,16 @@ public:
         return r != nullptr && r->throughEq;
     }
 
-    // Audio thread: whether a measurement is in flight (the loudness stage steps aside).
+    // Audio thread: whether a measurement is in flight (the EQ and loudness step aside).
     bool isActive() const noexcept { return active.load (std::memory_order_acquire) != nullptr; }
+
+    // Audio thread: whether the measurement in flight replaces the program
+    // with a test signal (anything but a music capture).
+    bool replacesOutput() const noexcept
+    {
+        const auto* r = active.load (std::memory_order_acquire);
+        return r != nullptr && r->kind != CaptureRequest::Kind::program;
+    }
 
 private:
     static void finish (CaptureRequest& r, bool cancelled, std::atomic<CaptureRequest*>& active) noexcept;
@@ -104,5 +114,6 @@ std::unique_ptr<CaptureRequest> makeSweepRequest (double sampleRate, double seco
 // Builds a pink-noise request: `seconds` of noise on one speaker, then a 1 s tail.
 std::unique_ptr<CaptureRequest> makeNoiseRequest (double sampleRate, double seconds, int channel, double levelDbfs);
 
-// Builds a program-material request recording `seconds` of input and mic.
-std::unique_ptr<CaptureRequest> makeProgramRequest (double sampleRate, double seconds);
+// Builds a program-material request recording `seconds` of input and mic,
+// after letting `settleSeconds` pass (while the EQ and loudness glide out).
+std::unique_ptr<CaptureRequest> makeProgramRequest (double sampleRate, double seconds, double settleSeconds = 0.0);

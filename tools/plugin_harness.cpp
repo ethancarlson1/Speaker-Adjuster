@@ -435,6 +435,9 @@ struct Show
     double rightEnergy = 0.0, channelDiff = 0.0;
     double keepSeconds = 6.0;
     double micGainDb = 0.0;   // the mic preamp: scales everything the mic hears, noise too
+    std::vector<float>* playedIn = nullptr;    // when set: channel 0 in, and `playedChannel` out
+    std::vector<float>* playedOut = nullptr;
+    int playedChannel = 0;
     std::vector<float> speaker = std::vector<float> (blockSize, 0.0f);
     std::size_t t = 0;
 
@@ -457,12 +460,16 @@ struct Show
                 if (roomChange)
                     heard = static_cast<float> (roomChange (heard));
                 buffer.setSample (2, i, micSignal ? micSignal (t) : micGain * heard);
+                if (playedIn != nullptr)
+                    playedIn->push_back (in);
             }
             p.processBlock (buffer, midi);
             for (int i = 0; i < blockSize; ++i)
             {
                 speaker[static_cast<std::size_t> (i)] = buffer.getSample (0, i);
                 lastOutput.push_back (buffer.getSample (0, i));
+                if (playedOut != nullptr)
+                    playedOut->push_back (buffer.getSample (playedChannel, i));
                 rightEnergy += static_cast<double> (buffer.getSample (1, i)) * buffer.getSample (1, i);
                 channelDiff = std::max (channelDiff, static_cast<double> (std::abs (buffer.getSample (1, i) - buffer.getSample (0, i))));
             }
@@ -553,7 +560,7 @@ void clockDriftChecks (const juce::String& snapshotPath)
     {
         SimulatedRoom room (6.0, 9, 3e-4, 0.0);
         DriftingMic mic { room, ppm };
-        const auto program = musicLikeProgram (AdaptiveRoomEQProcessor::programSeconds + 1.0);
+        const auto program = musicLikeProgram (MeasurementEngine::programSettleSeconds + AdaptiveRoomEQProcessor::programSeconds + 1.0);
         check (proc.startProgram().wasOk(), "start music capture, mic clock 20 ppm fast");
         runMeasurement (proc, mic, &program);
     }
@@ -793,7 +800,7 @@ int main (int argc, char** argv)
     std::cout << "Measuring from program material\n";
     {
         SimulatedRoom room (6.0, 9, 3e-4, 0.0);
-        const auto program = musicLikeProgram (AdaptiveRoomEQProcessor::programSeconds + 1.0);
+        const auto program = musicLikeProgram (MeasurementEngine::programSettleSeconds + AdaptiveRoomEQProcessor::programSeconds + 1.0);
         check (proc.startProgram().wasOk(), "start program capture");
         runMeasurement (proc, room, &program);
     }
@@ -1114,12 +1121,55 @@ int main (int argc, char** argv)
         check (worstEq < 0.01, "and the speakers get it (worst " + juce::String (worstEq, 3) + " dB)");
         setParam (proc, "loudHighPass", 0.0f);
 
-        // Measurements step it aside.
+        // Measurements step it aside, and the correction and voicing EQ too.
+        // A sweep plays exactly as generated from its first sample: the shelves
+        // and high-pass go flat at once, under the silence it starts with.
+        setParam (proc, "loudHighPass", 1.0f);
+        show.play (&music, 3.0);
+        check (status.lowGainDb.load() > 0.0f && status.hpFreq.load() > 0.0f, "shelves and high-pass on before measuring");
+        const auto sweepSettings = proc.getSweepSettings();
+        const auto asGenerated = makeSweepRequest (fs, sweepSettings.seconds, 1, sweepSettings.channel, sweepSettings.levelDbfs)->excitation;
+        std::vector<float> played, heardIn;
+        show.playedOut = &played;
+        show.playedChannel = sweepSettings.channel;
         check (proc.startSweep().wasOk(), "start a sweep");
-        show.play (&music, 1.0);
-        check (status.lowGainDb.load() <= 0.0f && status.highGainDb.load() <= 0.0f, "loudness is flat while measuring");
+        show.play (&music, 1.5);
+        show.playedOut = nullptr;
+        double worstSweep = 0.0;
+        for (std::size_t i = 0; i < played.size() && i < asGenerated.size(); ++i)
+            worstSweep = std::max (worstSweep, static_cast<double> (std::abs (played[i] - asGenerated[i])));
+        check (status.lowGainDb.load() <= 0.0f && status.highGainDb.load() <= 0.0f && worstSweep < 1e-9,
+               "loudness is flat while measuring, and the sweep plays exactly as generated from its first sample");
         engine.cancel();
         show.play (&music, 2.0, [&] { return engine.getActivity() == MeasurementEngine::Activity::idle; });
+
+        // Music captures: the correction, voicing EQ and loudness glide out while
+        // the music plays on, and recording starts once they have.
+        show.play (&music, 3.0);
+        played.clear();
+        show.playedIn = &heardIn;
+        show.playedOut = &played;
+        show.playedChannel = 0;
+        check (proc.startProgram().wasOk(), "start a music capture");
+        show.play (&music, MeasurementEngine::programSettleSeconds + 2.0);
+        show.playedIn = show.playedOut = nullptr;
+        const auto settled = static_cast<std::size_t> (MeasurementEngine::programSettleSeconds * fs);
+        double residual = 0.0, peak = 0.0;
+        for (std::size_t i = settled; i < played.size(); ++i)
+        {
+            residual = std::max (residual, static_cast<double> (std::abs (played[i] - heardIn[i])));
+            peak = std::max (peak, static_cast<double> (std::abs (heardIn[i])));
+        }
+        const auto residualDb = 20.0 * std::log10 (std::max (residual, 1e-12) / peak);
+        check (residualDb < -40.0 && proc.getEngine().getProgress() > 0.0f,
+               "during a music capture the speakers get the music uncorrected once it has settled (residual "
+                   + juce::String (residualDb, 1) + " dB), and recording has started");
+        engine.cancel();
+        show.play (&music, 2.0, [&] { return engine.getActivity() == MeasurementEngine::Activity::idle; });
+        setParam (proc, "loudHighPass", 0.0f);
+        show.play (&music, 3.0);
+        const auto back = loudnessPathError();
+        check (back < 0.01, "afterwards the correction, voicing and loudness are all back (worst " + juce::String (back, 3) + " dB)");
 
         // The amp gets 4 dB louder after the plugin: re-check finds it from the music.
         show.ampGainDb = 4.0;
@@ -1192,6 +1242,25 @@ int main (int argc, char** argv)
         const auto message = juce::String::fromUTF8 (info.state.message.c_str());
         check (info.state.severity >= 1 && flagged.contains ("200") && ! flagged.contains ("1k") && ! flagged.contains ("4k"),
                "the build-up is flagged at " + flagged.joinIntoString (", ") + " Hz: " + message);
+
+        // The banner's x: the same change stays hidden, a new one brings it back.
+        tracking.dismissWarning();
+        check (tracking.getInfo().warningDismissed, "dismissed: the warning is hidden");
+        show.play (&music, 30.0);
+        drain();
+        check (tracking.getInfo().warningDismissed && tracking.getInfo().state.severity >= 1,
+               "30 s more of the same change: still hidden");
+        auto dip = Biquad::peaking (5000.0, -7.0, 0.8);   // and now the top end dulls too
+        show.roomChange = [bump, dip] (double x) mutable { return dip.process (bump.process (x)); };
+        show.play (&music, 150.0);
+        drain();
+        info = tracking.getInfo();
+        flagged.clear();
+        for (std::size_t b = 0; b < info.state.flags.size(); ++b)
+            if (info.state.flags[b] != 0)
+                flagged.add (names[b]);
+        check (! info.warningDismissed && (flagged.contains ("5k") || flagged.contains ("6.3k")),
+               "a new change flagged (" + flagged.joinIntoString (", ") + " Hz): the warning is back");
 
         // A measurement mid-show: that block is dropped, not counted as the room.
         const auto dropped = info.blocksDropped;
@@ -1276,6 +1345,8 @@ int main (int argc, char** argv)
         writeSnapshot (*editor, stem + "-loudness-small.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
         writeSnapshot (*editor, stem + "-correct-small.png");
+        ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
+        writeSnapshot (*editor, stem + "-measure-small.png");
         editor->setSize (1200, 820);
 
         std::cout << "Editing on the graph\n";
@@ -1350,6 +1421,42 @@ int main (int argc, char** argv)
             file.deleteFile();
             setParam (proc, "target", 0.0f);
         }
+    }
+
+    std::cout << "Clear all\n";
+    {
+        auto& tracking = proc.getShow();
+        idleWithMic (proc, 3e-4f);
+        check (! engine.getEntries().empty() && ! engine.getApplied().empty() && proc.getLoudness().getInfo().calibrated
+                   && tracking.getInfo().hasReference,
+               "before: measurements, a correction, a level calibration and a show reference");
+        check (proc.startSweep().wasOk(), "start a sweep");
+        check (proc.clearRoomData().failed(), "clearing waits while a measurement runs");
+        engine.cancel();
+        for (int i = 0; i < 20 && engine.getActivity() != MeasurementEngine::Activity::idle; ++i)
+        {
+            idleWithMic (proc, 3e-4f);
+            pump (proc);
+        }
+        const auto micKept = proc.getLoudness().getInfo().hasMicOffset;
+        const auto voicing = proc.getVoicingSections();
+        check (proc.clearRoomData().wasOk(), "clear all");
+        for (int i = 0; i < 12000 && ! engine.isDisplayCurrent(); ++i)   // the display catches up
+            pump (proc);
+        const auto shown = engine.getDisplay();
+        const auto li = proc.getLoudness().getInfo();
+        check (engine.getEntries().empty() && engine.getApplied().empty() && ! engine.hasPrevious() && ! li.calibrated
+                   && li.hasMicOffset == micKept && ! tracking.getInfo().hasReference && (shown == nullptr || ! shown->proposal),
+               "no measurements, corrections, level calibration or show reference; the mic calibration stays");
+        check (proc.getVoicingSections() == voicing && worstMismatchDb (impulseThrough (proc), voicing, makeupFor (voicing)) < 0.02,
+               "the speakers get just the voicing EQ: no correction, loudness flat");
+        juce::MemoryBlock cleared;
+        proc.getStateInformation (cleared);
+        AdaptiveRoomEQProcessor restored;
+        restored.setStateInformation (cleared.getData(), static_cast<int> (cleared.getSize()));
+        check (restored.getEngine().getEntries().empty() && restored.getEngine().getApplied().empty()
+                   && ! restored.getLoudness().getInfo().calibrated && ! restored.getShow().getInfo().hasReference,
+               "and the saved session stays cleared");
     }
 
     micLevelChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-miclevel.png");

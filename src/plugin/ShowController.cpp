@@ -113,8 +113,19 @@ void ShowController::clearReference()
         tracker.reset();
         storedAt = 0;
         blocksHeard = blocksDropped = 0;
+        dismissal.reset();
     }
     status = "Reference cleared; show tracking is off";
+    sendChangeMessage();
+}
+
+void ShowController::dismissWarning()
+{
+    {
+        const std::lock_guard<std::mutex> guard (stateLock);
+        if (tracker)
+            dismissal.dismiss (tracker->state());
+    }
     sendChangeMessage();
 }
 
@@ -134,6 +145,7 @@ ShowController::Info ShowController::getInfo() const
         i.state = tracker->state();
     i.blocksHeard = blocksHeard;
     i.blocksDropped = blocksDropped;
+    i.warningDismissed = dismissal.hides (i.state);
     return i;
 }
 
@@ -249,6 +261,7 @@ void ShowController::handle (const Result& r)
             tracker.emplace (reference);
             storedAt = juce::Time::currentTimeMillis();
             blocksHeard = blocksDropped = 0;
+            dismissal.reset();
         }
         ++generation;   // show blocks analysed before this reference don't count
         status = "Reference stored (" + juce::String (heard) + " of 22 bands heard clearly); tracking the show";
@@ -257,7 +270,7 @@ void ShowController::handle (const Result& r)
     const std::lock_guard<std::mutex> guard (stateLock);
     if (tracker)
     {
-        tracker->addBlock (r.bands);
+        dismissal.update (tracker->addBlock (r.bands));
         ++blocksHeard;
     }
 }
@@ -282,6 +295,7 @@ void ShowController::fromValueTree (const juce::ValueTree& t)
     tracker.reset();
     storedAt = 0;
     blocksHeard = blocksDropped = 0;
+    dismissal.reset();
     if (! t.hasType (treeType))
         return;
     auto bands = unpack (t[bandsId]);

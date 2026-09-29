@@ -147,6 +147,26 @@ TEST_CASE ("program capture passes audio through and records input and mic")
     CHECK (std::abs (finished->mic[0][48000]) > 0.0f);
 }
 
+TEST_CASE ("program capture lets the audio settle before recording")
+{
+    CaptureRecorder rec;
+    REQUIRE (rec.start (makeProgramRequest (48000.0, 1.0, 0.5)));
+    CHECK (rec.getCurrent()->totalSamples == 72000);
+    const auto noise = whiteNoise (static_cast<std::size_t> (2 * 48000), 0.1, 12);
+    const std::vector<float> program (noise.begin(), noise.end());
+    Loop loop;
+    const auto run = drive (rec, loop, 0, 700, 100000, &program);   // the settle ends mid-block
+    auto finished = rec.collectFinished();
+    REQUIRE (finished != nullptr);
+    CHECK_FALSE (finished->cancelled);
+    CHECK (finished->samplesDone.load() == 72000);
+    for (std::size_t i = 0; i < 1000; ++i)
+        CHECK (run.left[i] == program[i]);   // passes through while settling too
+    for (std::size_t i = 0; i < finished->reference.size(); i += 101)
+        CHECK (finished->reference[i] == doctest::Approx (program[24000 + i]));
+    CHECK (std::abs (finished->mic[0][24000]) > 0.0f);
+}
+
 TEST_CASE ("process reports when it wrote the output")
 {
     std::vector<float> l (256, 0.5f), r (256, 0.5f), mic (256, 0.0f);
@@ -156,12 +176,15 @@ TEST_CASE ("process reports when it wrote the output")
     CHECK (l[0] == 0.5f);
 
     REQUIRE (rec.start (makeProgramRequest (48000.0, 1.0)));
+    CHECK (rec.isActive());
+    CHECK_FALSE (rec.replacesOutput());
     CHECK_FALSE (rec.process (main, 2, mic.data(), 256));          // program passes through
     rec.cancel();
     CHECK_FALSE (rec.process (main, 2, mic.data(), 256));
     REQUIRE (rec.collectFinished() != nullptr);
 
     REQUIRE (rec.start (makeSweepRequest (48000.0, 2.0, 1, 1, -12.0)));
+    CHECK (rec.replacesOutput());
     CHECK (rec.process (main, 2, mic.data(), 256));                // sweep replaces the output
     CHECK (l[0] == 0.0f);
 }

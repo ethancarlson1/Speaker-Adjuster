@@ -86,6 +86,10 @@ public:
     juce::Result startMicCalibration (double calibratorSpl);
     juce::Result startRecheck();
     void cancel();
+    // Forgets the level calibration (and its re-checks): the shelves and
+    // high-pass go flat until it's calibrated again. The mic calibration is the
+    // mic's, not the room's, so it stays. Only while idle or awaiting the SPL.
+    void clearCalibration();
 
     Step getStep() const { return step; }
     bool isAnalysing() const { return analysing; }

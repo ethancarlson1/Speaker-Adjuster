@@ -153,7 +153,7 @@ juce::Result MeasurementEngine::startProgram (double sampleRate, double seconds,
 {
     if (sampleRate <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
-    return startRequest (makeProgramRequest (sampleRate, seconds), replaceId, false);
+    return startRequest (makeProgramRequest (sampleRate, seconds, programSettleSeconds), replaceId, false);
 }
 
 juce::Result MeasurementEngine::startCalibration (double sampleRate, double seconds, double levelDbfs)
@@ -241,7 +241,7 @@ juce::String MeasurementEngine::getStatus() const
                                                static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)))
                    + " of " + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)) + " s";
         const auto speaker = juce::String (r->sweepChannel == 0 ? "left" : "right")
-                             + (r->throughEq ? " speaker, through the EQ" : " speaker");
+                             + (r->throughEq ? " speaker, through the EQ" : " speaker, correction bypassed");
         if (r->kind == CaptureRequest::Kind::noise)
             return "Measuring " + pendingName + ": pink noise, "
                    + juce::String (juce::jmin (static_cast<int> (static_cast<double> (done) / r->sampleRate),
@@ -249,9 +249,14 @@ juce::String MeasurementEngine::getStatus() const
                    + " of " + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate))
                    + " s on the " + speaker;
         if (r->kind == CaptureRequest::Kind::program)
-            return "Recording program for " + pendingName + ": "
-                   + juce::String (static_cast<int> (static_cast<double> (done) / r->sampleRate)) + " of "
-                   + juce::String (static_cast<int> (static_cast<double> (r->totalSamples) / r->sampleRate)) + " s";
+        {
+            const auto settle = static_cast<std::int64_t> (r->settle);
+            if (done < settle)
+                return "Recording program for " + pendingName + ": taking the correction out first";
+            return "Recording program for " + pendingName + ", correction bypassed: "
+                   + juce::String (static_cast<int> (static_cast<double> (done - settle) / r->sampleRate)) + " of "
+                   + juce::String (static_cast<int> (static_cast<double> (r->reference.size()) / r->sampleRate)) + " s";
+        }
         const auto take = std::min<std::int64_t> (r->repeats, done / std::max<std::int64_t> (1, static_cast<std::int64_t> (r->excitation.size())) + 1);
         return "Measuring " + pendingName + ": sweep " + juce::String (take) + " of " + juce::String (r->repeats)
                + " on the " + speaker;
@@ -312,6 +317,24 @@ void MeasurementEngine::remove (int id)
     }
     requestSummary();
     sendChangeMessage();
+}
+
+void MeasurementEngine::clearAll()
+{
+    jassert (getActivity() == Activity::idle);
+    {
+        const std::lock_guard<std::mutex> guard (stateLock);
+        entries.clear();
+    }
+    nextNumber = nextVerifyNumber = 1;
+    applied.clear();
+    previous.clear();
+    hasPreviousCorrection = false;
+    comparing = false;
+    appliedId = previousId = 0;   // nextCorrectionId keeps counting, so nothing old can match
+    status = "Cleared: no measurements, no correction";
+    playingChanged();
+    requestSummary();
 }
 
 void MeasurementEngine::setSmoothingFraction (int fraction)

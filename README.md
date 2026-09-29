@@ -33,11 +33,22 @@ So far all of this has only been checked against simulated rooms. The next step 
 
 It judges the loudest peaks of the last 3 s, and only while something plays through the plugin (output peaks above −40 dBFS), so a quiet room never reads as "turn it up". Clipping is reported whatever is playing. In the plugin, set the gain with soundcheck music or pink noise at show level. The standalone app only plays test signals, so run one (a pink noise capture is easiest) and set the gain while it plays. The level has to move 1 dB past the edge of the zone before the advice changes, so it doesn't flicker.
 
+**Clear all…** (under the measure buttons) starts the room over. After a confirmation, it deletes:
+- every measurement (positions and verify captures), so numbering starts again at 1;
+- the applied and previous corrections, so the correction goes flat;
+- the loudness level calibration, so the compensation stays flat until you calibrate again;
+- the show reference.
+
+The voicing EQ, targets, the mic calibration (it belongs to the mic, not the room) and all settings stay. It can't be undone, and it waits until nothing is measuring, calibrating or storing.
+
 **Nothing plays unless the mic can hear.** Before a sweep, pink noise, a verify, a music capture, the mic calibrator or a re-check starts, the plugin checks that the mic input carried signal (above −100 dBFS) in the last second. If it's dead (not routed, muted, no phantom power), a popup says so and nothing plays.
 
-Measurements always play straight to the speaker, bypassing the correction and voicing EQ, so the fit always sees the PA's own response.
+**The correction is off while measuring.** Every measurement except **Verify** bypasses the correction, the voicing EQ and the level-match make-up, so the fit always sees the PA's own response. The status line says "correction bypassed".
+- **Sweeps and pink noise** replace the program with the test signal, played straight to the speaker. The loudness shelves and high-pass go flat at once, under the silence the signal starts with, so it plays exactly as generated.
+- **Measure from music** keeps the music playing. The correction, voicing and loudness glide out over 1.5 s, and the 30 s recording starts after that. The audience hears the uncorrected mix for those ~32 s, then everything glides back.
+- **Verify** and the loudness **Calibrate level** play through the correction and voicing on purpose: they measure the corrected system, as the audience hears it. The loudness stage is flat for them too.
 
-**Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible. It's a dual-FFT against the plugin's output, so it also measures the PA's own response while a correction is on. Both speakers play during it.
+**Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible. It's a dual-FFT against the plugin's output. Both speakers play during it.
 
 **Two clocks.** Pink noise and music compare the output and the mic phase for phase over 20–30 s. If the output and the mic are on different clocks, the delay between them slides during the capture. That happens with two interfaces, or a macOS aggregate device.
 
@@ -136,6 +147,7 @@ The EQ strip shows the compensation at the current level in gold. The tab shows 
 2. During the show the plugin keeps measuring the same response from the music, 10 s at a time. It compares the last 2 minutes with the reference, band by band, using only the bands the mic heard clearly.
 3. A change common to every band is a level change after the plugin (an amp or a fader). It's shown on its own, and flagged if it reaches 3 dB; **Re-check level** brings the loudness calibration up to date with it. What's left is the tonal change.
 4. If a band's tonal change reaches **3 dB**, a banner appears on the graph side in both views, e.g. "Since soundcheck: +5.2 dB at 125–250 Hz". It turns red at 6 dB and clears once the change falls below 2 dB. Click the banner for the band-by-band details.
+5. The banner's **×** hides it until something new comes up: another band (or the level) is flagged, the change grows from 3 dB to 6 dB, or a band that cleared trips again. The show view's tracking text still shows the change, marked as hidden. The dismissal isn't saved with the session.
 
 Things that aren't the room don't count:
 - The measurement is taken after all of the plugin's EQ, so correction, voicing and loudness changes aren't mistaken for the room.
@@ -255,10 +267,12 @@ The harness drives the real processor against a simulated room. It checks:
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;
 - a dead mic input refuses every test signal and nothing plays;
+- Clear all: refused mid-measurement; afterwards no measurements, corrections, level calibration or show reference, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
+- measurements bypass the correction: with correction, voicing, loudness shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
 - the mic level advice: waiting while nothing plays, too quiet and hot mics brought into the zone by following it, clipping, and no signal;
 - selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music;
-- show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, and a block with a sweep in it dropped;
+- show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
 It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.

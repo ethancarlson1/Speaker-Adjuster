@@ -82,6 +82,9 @@ public:
     juce::Result startSweep (double sampleRate, const SweepSettings& settings, int replaceId = -1, bool verify = false);
     juce::Result startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId = -1,
                              bool verify = false);
+    // Music plays on while the correction, voicing and loudness glide out; the
+    // recording starts this long after.
+    static constexpr double programSettleSeconds = 1.5;
     juce::Result startProgram (double sampleRate, double seconds, int replaceId = -1);
     // Loudness calibration: pink noise on both speakers through the EQ. Nothing is
     // recorded or filed here (the loudness stage's tap records what it needs).
@@ -97,6 +100,9 @@ public:
     void rename (int id, const juce::String& newName);
     void setExcluded (int id, bool excluded);
     void remove (int id);
+    // Every capture and both corrections (applied and previous): the room starts
+    // over. Only while nothing is measuring or analysing.
+    void clearAll();
 
     void setSmoothingFraction (int fraction);
     void setSmoothingSource (std::function<int()> source) { smoothingSource = std::move (source); }

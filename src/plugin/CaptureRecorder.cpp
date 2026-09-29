@@ -101,20 +101,22 @@ bool CaptureRecorder::process (float* const* main, int numMainChannels, const fl
         return true;
     }
 
-    // Program: audio passes through untouched; record the input and the mic.
+    // Program: audio passes through untouched. Once it has settled, record the input and the mic.
+    const auto start = std::min (n, r->settle - r->settled);
+    r->settled += start;
     const auto remaining = r->reference.size() - r->position;
-    const auto count = std::min (n, remaining);
+    const auto count = std::min (n - start, remaining);
     const auto gain = numMainChannels > 1 ? 0.5f : 1.0f;
     for (std::size_t i = 0; i < count; ++i)
     {
         auto sum = 0.0f;
         for (int ch = 0; ch < std::min (numMainChannels, 2); ++ch)
-            sum += main[ch][i];
+            sum += main[ch][start + i];
         r->reference[r->position + i] = gain * sum;
-        r->mic[0][r->position + i] = mic != nullptr ? mic[i] : 0.0f;
+        r->mic[0][r->position + i] = mic != nullptr ? mic[start + i] : 0.0f;
     }
     r->position += count;
-    r->samplesDone.store (static_cast<std::int64_t> (r->position), std::memory_order_relaxed);
+    r->samplesDone.store (static_cast<std::int64_t> (r->settled + r->position), std::memory_order_relaxed);
     if (r->position == r->reference.size())
         finish (*r, false, active);
     return false;
@@ -160,15 +162,16 @@ std::unique_ptr<CaptureRequest> makeNoiseRequest (double sampleRate, double seco
     return r;
 }
 
-std::unique_ptr<CaptureRequest> makeProgramRequest (double sampleRate, double seconds)
+std::unique_ptr<CaptureRequest> makeProgramRequest (double sampleRate, double seconds, double settleSeconds)
 {
     auto r = std::make_unique<CaptureRequest>();
     r->kind = CaptureRequest::Kind::program;
     r->sampleRate = sampleRate;
     r->sweepConfig.fs = sampleRate;
     const auto length = static_cast<std::size_t> (seconds * sampleRate);
+    r->settle = static_cast<std::size_t> (std::max (0.0, settleSeconds) * sampleRate);
     r->reference.assign (length, 0.0f);
     r->mic.assign (1, std::vector<float> (length, 0.0f));
-    r->totalSamples = static_cast<std::int64_t> (length);
+    r->totalSamples = static_cast<std::int64_t> (r->settle + length);
     return r;
 }

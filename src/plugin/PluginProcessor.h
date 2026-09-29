@@ -77,6 +77,12 @@ public:
     juce::Result startNoise (int replaceId = -1, bool verify = false);
     juce::Result startProgram (int replaceId = -1);
 
+    // Starts the room over: every measurement, the applied and previous
+    // corrections, the loudness level calibration and the show reference go.
+    // The voicing EQ, targets, mic calibration and settings stay. Refused while
+    // anything is measuring, calibrating or storing.
+    juce::Result clearRoomData();
+
     // Targets: the three presets, or the session's custom points.
     enum TargetChoice { targetFlat = 0, targetHouse, targetSpeech, targetCustom };
     int getTargetChoice() const;

@@ -13,15 +13,18 @@
 // The show-tracking warning: a strip across the top of the graph side, yellow
 // for a change of 3 dB or more since soundcheck, red for 6 dB or more. Click
 // it for the band-by-band details. Hidden when nothing's flagged.
-class ShowBanner final : public juce::Component
+class ShowBanner final : public juce::Component,
+                         public juce::SettableTooltipClient
 {
 public:
     std::function<void()> onClick;
+    std::function<void()> onDismiss;   // the × at the right
     void set (int newSeverity, const juce::String& newText);
     int getSeverity() const { return severity; }
     const juce::String& getText() const { return text; }
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    juce::Rectangle<float> dismissArea() const;
 
 private:
     int severity = 0;
@@ -137,6 +140,7 @@ private:
 
     juce::TextButton measureButton { "Measure position" };
     juce::TextButton programButton { "Measure from music (30 s)" };
+    juce::TextButton clearAllButton { juce::String::fromUTF8 ("Clear all\xe2\x80\xa6") };
     juce::TextButton stopButton { "Stop" };
 
     // Correct tab.

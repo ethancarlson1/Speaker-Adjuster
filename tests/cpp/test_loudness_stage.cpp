@@ -22,13 +22,13 @@ std::vector<float> noiseAt (double seconds, double levelDbfsC, unsigned seed)
 
 // Runs x (same on both channels) through the stage; returns the left output.
 std::vector<double> run (LoudnessStage& stage, const std::vector<float>& x, const LoudnessSettings& s,
-                         bool suspend = false, const std::vector<float>* mic = nullptr)
+                         bool suspend = false, const std::vector<float>* mic = nullptr, bool snap = false)
 {
     std::vector<float> l (x), r (x);
     for (std::size_t pos = 0; pos + block <= x.size(); pos += block)
     {
         float* ch[] = { l.data() + pos, r.data() + pos };
-        stage.process (ch, 2, mic != nullptr ? mic->data() + pos : nullptr, block, s, suspend);
+        stage.process (ch, 2, mic != nullptr ? mic->data() + pos : nullptr, block, s, suspend, snap);
     }
     return { l.begin(), l.end() };
 }
@@ -92,6 +92,38 @@ TEST_CASE ("loudness stage: 10 dB below the reference gets the planned shelves")
     CHECK (std::abs (testing::dtftDb (flat, 100.0, fs)) < 0.01);   // glided to flat
     run (stage, noiseAt (5.0, -10.0, 3), s, true);
     CHECK (st.splUsed.load() == before);
+}
+
+TEST_CASE ("loudness stage: a test signal takes it flat at once, music glides")
+{
+    for (const auto snap : { true, false })
+    {
+        LoudnessStage stage;
+        LoudnessSettings s;
+        s.config.hpTrack = true;
+        s.hpBaseHz = 45.0;
+        stage.setModel (calibratedModel());
+        stage.prepare (fs, block, s);
+        run (stage, noiseAt (30.0, -30.0, 6), s);             // 85 dB(C): shelves up, high-pass on
+        REQUIRE (stage.getStatus().lowGainDb.load() > 4.5f);
+
+        std::vector<float> x (static_cast<std::size_t> (fs), 0.0f);
+        x[3000] = 1.0f;
+        const auto y = run (stage, x, s, true, nullptr, snap);
+        const std::vector<double> ir (y.begin() + 3000, y.end());
+        const auto error = std::abs (testing::dtftDb (ir, 50.0, fs));
+        if (snap)
+        {
+            auto exact = true;
+            for (std::size_t i = 0; i < x.size(); ++i)
+                exact = exact && y[i] == static_cast<double> (x[i]);
+            CHECK (exact);                                    // untouched from the first sample
+        }
+        else
+        {
+            CHECK (error > 0.5);                              // still gliding 60 ms in
+        }
+    }
 }
 
 TEST_CASE ("loudness stage: at or above the reference it stays flat; the high-pass tracks")
