@@ -346,6 +346,8 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     clearRefButton.setTooltip ("Forget the reference: show tracking stops.");
     clearRefButton.onClick = [this]
     {
+        // Made here rather than in the inner capture: MSVC reads `this` there as the outer lambda.
+        juce::Component::SafePointer<AdaptiveRoomEQEditor> editor (this);
         juce::AlertWindow::showAsync (juce::MessageBoxOptions()
                                           .withIconType (juce::MessageBoxIconType::QuestionIcon)
                                           .withTitle ("Clear the reference?")
@@ -353,10 +355,10 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
                                           .withButton ("Clear")
                                           .withButton ("Cancel")
                                           .withAssociatedComponent (this),
-                                      [safe = juce::Component::SafePointer<AdaptiveRoomEQEditor> (this)] (int result)
+                                      [editor] (int result)
                                       {
-                                          if (safe != nullptr && result == 1)
-                                              safe->processor.getShow().clearReference();
+                                          if (editor != nullptr && result == 1)
+                                              editor->processor.getShow().clearReference();
                                       });
     };
     showRecheckButton.setTooltip ("Listens to ~12 s of the music through the mic and updates the loudness calibration "
