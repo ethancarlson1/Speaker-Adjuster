@@ -20,6 +20,7 @@ const juce::ParameterID maxBoost { "maxBoost", 1 };
 const juce::ParameterID rangeLo { "rangeLo", 1 };
 const juce::ParameterID rangeHi { "rangeHi", 1 };
 const juce::ParameterID voicingOn { "voicingOn", 1 };
+const juce::ParameterID levelMatch { "levelMatch", 1 };
 const juce::ParameterID loudOn { "loudOn", 1 };
 const juce::ParameterID loudRef { "loudRef", 1 };
 const juce::ParameterID loudAmount { "loudAmount", 1 };
@@ -104,6 +105,7 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
     correctionOnParam = parameters.getRawParameterValue (ParamIds::correctionOn.getParamID());
     amountParam = parameters.getRawParameterValue (ParamIds::amount.getParamID());
     voicingOnParam = parameters.getRawParameterValue (ParamIds::voicingOn.getParamID());
+    levelMatchParam = parameters.getRawParameterValue (ParamIds::levelMatch.getParamID());
     for (int i = 0; i < roomeq::numVoicingBands; ++i)
     {
         auto& v = voicingParams[static_cast<std::size_t> (i)];
@@ -177,6 +179,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
 
     // Voicing EQ.
     layout.add (std::make_unique<AudioParameterBool> (ParamIds::voicingOn, "Voicing EQ", true));
+    // Make-up gain so correction + voicing leave the program's loudness where it was.
+    layout.add (std::make_unique<AudioParameterBool> (ParamIds::levelMatch, "Match output level", true));
     const StringArray types { "Bell", "Low shelf", "High shelf", "High-pass 12 dB", "High-pass 24 dB",
                               "Low-pass 12 dB", "Low-pass 24 dB" };
     for (int i = 0; i < roomeq::numVoicingBands; ++i)
@@ -231,6 +235,7 @@ EqSettings AdaptiveRoomEQProcessor::getEqSettings() const noexcept
     s.correctionOn = correctionOnParam->load() > 0.5f;
     s.amount = juce::jlimit (0.0, 1.0, static_cast<double> (amountParam->load()) / 100.0);
     s.voicingOn = voicingOnParam->load() > 0.5f;
+    s.levelMatch = levelMatchParam->load() > 0.5f;
     for (std::size_t i = 0; i < s.voicing.size(); ++i)
     {
         const auto& p = voicingParams[i];

@@ -50,6 +50,7 @@ Measurements always play straight to the speaker, bypassing the correction and v
    - **Hear previous** switches to the previous correction while it's on.
    - **Undo** swaps back (press it again to swap forward).
    - **Amount** scales the applied correction, and **Correction on** bypasses it.
+   - **Match output level** keeps the overall level where it was (see [Output level match](#output-level-match)).
 4. **Verify: measure through the EQ** measures a position with the signal played through the correction and voicing, like the audience hears it. Verify captures (V1, V2…) never change the proposal. Their average is the violet **Verified** curve, and the panel shows how far it is from the target.
 
 **Quick mode:** with one good position the applied correction is half strength and within ±3 dB; with two, 75% and ±6 dB. Full strength needs three.
@@ -62,6 +63,19 @@ Eight bands (bell, low/high shelf, 12 or 24 dB/octave high/low-pass) after the c
 - double-click to switch it on or off.
 
 All voicing and correction settings are automatable parameters. Measurements, the applied and previous corrections, and the custom target are saved with the host session.
+
+## Output level match
+
+**Match output level** (Correct tab, on by default) adds a make-up gain after the correction and voicing, so music comes out of them as loud as it went in. The gain comes from the two EQ curves:
+- It's the inverse of their loudness gain on pink noise (equal energy per octave, a stand-in for typical music), weighted like a LUFS meter (ITU-R BS.1770 K-weighting).
+- So a big bass cut, which a loudness meter barely notices, gets little make-up. A cut through the presence range gets more.
+- It never goes past ±12 dB.
+
+It updates the moment the EQ changes and glides with it, never pumps, and adds no latency. Switching **Correction on**, **Voicing EQ on** or **Hear previous** is therefore a level-matched comparison. The EQ strip shows the gain on its right ("Output level matched: +1.2 dB").
+
+It's exact for pink noise and typical music, and within about a dB for unusually bass-heavy or thin material. It follows the EQ, not the music's level: a quiet song stays quiet.
+
+Loudness compensation isn't levelled. Its boosts are meant to make a quieter show sound fuller. Levelling them would pull the mids down as the boost grows and fight the level tracking.
 
 ## Loudness compensation (Loudness tab)
 
@@ -165,7 +179,7 @@ Phase 3's "done when" test:
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), level tracking, calibration, background analysis and fitting, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
 | `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ and the loudness stage |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
@@ -200,7 +214,7 @@ cd prototype && ROOMEQ_CLI=../build/roomeq_cli pytest               # Python tes
 The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, grade, reason string and curve must agree to within 1e-6 dB. The fitted correction must agree to within 0.05 dB; locally it's within 2e-6 dB.
 
 The harness drives the real processor against a simulated room. It checks:
-- the speakers get exactly the predicted correction and voicing;
+- the speakers get exactly the predicted correction and voicing, plus the output level match's make-up, and pink noise comes out as loud as it goes in;
 - re-measuring through the correction lands near the target;
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;

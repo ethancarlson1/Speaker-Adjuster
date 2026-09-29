@@ -46,6 +46,8 @@ private:
         bool showProposal = false;
         bool correctionOn = true, voicingOn = true;
         bool showLoudness = false, loudnessOn = true, loudnessCalibrated = false;
+        bool levelMatch = true;
+        float makeupDb = 0.0f;
     };
 
     juce::Rectangle<float> responseArea() const;

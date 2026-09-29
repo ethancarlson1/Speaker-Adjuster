@@ -204,34 +204,78 @@ void EqStages::prepare (double sampleRate, const EqSettings& settings) noexcept
     pending.read (correction);
     correctionChain.prepare (fs);
     voicingChain.prepare (fs);
+    levelMatch.prepare (fs);
+    gainGlide = 1.0 - std::exp (-1.0 / (0.02 * fs));   // the chains' glide
     updateCorrectionTargets();
     updateVoicingTargets();
     correctionChain.jumpToTargets();
     voicingChain.jumpToTargets();
+    gain = gainTarget;
 }
 
 void EqStages::updateCorrectionTargets() noexcept
 {
     std::array<SvfCoeffs, EqChain::maxSections> c {};
     int n = 0;
+    roomeq::LevelMatch::flat (correctionPower);
     if (current.correctionOn)
         for (int i = 0; i < correction.count && n < EqChain::maxSections; ++i)
-            c[static_cast<std::size_t> (n++)] = designSvf (correction.bands[static_cast<std::size_t> (i)].scaled (current.amount), fs);
+        {
+            const auto band = correction.bands[static_cast<std::size_t> (i)].scaled (current.amount);
+            c[static_cast<std::size_t> (n++)] = designSvf (band, fs);
+            levelMatch.multiply (correctionPower, band);
+        }
     correctionChain.setTargets (c.data(), n);
+    updateMakeup();
 }
 
 void EqStages::updateVoicingTargets() noexcept
 {
     std::array<SvfCoeffs, EqChain::maxSections> c {};
     int n = 0;
+    roomeq::LevelMatch::flat (voicingPower);
     if (current.voicingOn)
         for (const auto& v : current.voicing)
         {
             const auto sections = roomeq::voicingSections (v);
             for (int i = 0; i < sections.count && n < EqChain::maxSections; ++i)
-                c[static_cast<std::size_t> (n++)] = designSvf (sections.bands[static_cast<std::size_t> (i)], fs);
+            {
+                const auto& band = sections.bands[static_cast<std::size_t> (i)];
+                c[static_cast<std::size_t> (n++)] = designSvf (band, fs);
+                levelMatch.multiply (voicingPower, band);
+            }
         }
     voicingChain.setTargets (c.data(), n);
+    updateMakeup();
+}
+
+void EqStages::updateMakeup() noexcept
+{
+    const auto db = current.levelMatch ? levelMatch.makeupDb (correctionPower, voicingPower) : 0.0;
+    gainTarget = std::pow (10.0, db / 20.0);
+    makeupDb.store (static_cast<float> (db), std::memory_order_relaxed);
+}
+
+void EqStages::applyGain (float* const* channels, int numChannels, int numSamples) noexcept
+{
+    numChannels = std::min (numChannels, EqChain::maxChannels);
+    if (same (gain, gainTarget))
+    {
+        if (same (gain, 1.0))
+            return;
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int n = 0; n < numSamples; ++n)
+                channels[ch][n] = static_cast<float> (channels[ch][n] * gain);
+        return;
+    }
+    for (int n = 0; n < numSamples; ++n)
+    {
+        gain += gainGlide * (gainTarget - gain);
+        if (close (gainTarget, gain))
+            gain = gainTarget;
+        for (int ch = 0; ch < numChannels; ++ch)
+            channels[ch][n] = static_cast<float> (channels[ch][n] * gain);
+    }
 }
 
 void EqStages::process (float* const* channels, int numChannels, int numSamples, const EqSettings& settings) noexcept
@@ -239,6 +283,7 @@ void EqStages::process (float* const* channels, int numChannels, int numSamples,
     syncSettings (settings);
     correctionChain.process (channels, numChannels, numSamples);
     voicingChain.process (channels, numChannels, numSamples);
+    applyGain (channels, numChannels, numSamples);
 }
 
 void EqStages::skip (const EqSettings& settings) noexcept
@@ -248,6 +293,7 @@ void EqStages::skip (const EqSettings& settings) noexcept
     voicingChain.jumpToTargets();
     correctionChain.reset();
     voicingChain.reset();
+    gain = gainTarget;
 }
 
 void EqStages::syncSettings (const EqSettings& settings) noexcept
@@ -264,5 +310,10 @@ void EqStages::syncSettings (const EqSettings& settings) noexcept
         current.voicingOn = settings.voicingOn;
         current.voicing = settings.voicing;
         updateVoicingTargets();
+    }
+    if (settings.levelMatch != current.levelMatch)
+    {
+        current.levelMatch = settings.levelMatch;
+        updateMakeup();
     }
 }

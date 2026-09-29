@@ -94,7 +94,7 @@ private:
     juce::ComboBox target;
     juce::Label targetLabel;
     juce::TextButton targetMenu { juce::String::fromUTF8 ("Targets\xe2\x80\xa6") };
-    juce::ToggleButton correctionOn { "Correction on" };
+    juce::ToggleButton correctionOn { "Correction on" }, levelMatch { "Match output level" };
     juce::Slider amount { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         maxCut { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         maxBoost { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
@@ -104,7 +104,7 @@ private:
     juce::TextButton applyButton { "Apply correction" }, compareButton { "Hear previous" }, undoButton { "Undo" },
         verifyButton { "Verify: measure through the EQ" };
     std::unique_ptr<ComboAttachment> targetAttachment;
-    std::unique_ptr<ButtonAttachment> correctionOnAttachment;
+    std::unique_ptr<ButtonAttachment> correctionOnAttachment, levelMatchAttachment;
     std::unique_ptr<SliderAttachment> amountAttachment, maxCutAttachment, maxBoostAttachment, rangeLoAttachment,
         rangeHiAttachment;
 

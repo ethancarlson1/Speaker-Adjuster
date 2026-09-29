@@ -20,7 +20,7 @@ juce::String tickLabel (double hz)
 bool sameEq (const EqSettings& a, const EqSettings& b)
 {
     return a.correctionOn == b.correctionOn && std::equal_to<double>() (a.amount, b.amount) && a.voicingOn == b.voicingOn
-           && a.voicing == b.voicing;
+           && a.voicing == b.voicing && a.levelMatch == b.levelMatch;
 }
 
 void strokeDashed (juce::Graphics& g, const juce::Path& path, float width, float dash, float gap)
@@ -77,7 +77,8 @@ void ResponseGraph::refresh()
         || processor.getTarget() != lastTarget || engine.isComparingPrevious() != lastComparing
         || loudnessBands (processor.getLoudnessStatus()) != lastLoudness
         || processor.getLoudnessSettings().on != lastLoudnessOn
-        || processor.getLoudness().getInfo().calibrated != lastLoudnessCalibrated)
+        || processor.getLoudness().getInfo().calibrated != lastLoudnessCalibrated
+        || std::abs (processor.getMakeupDb() - curves.makeupDb) > 0.005f)
     {
         updateCurves();
         repaint();
@@ -110,6 +111,8 @@ void ResponseGraph::updateCurves()
     };
     curves.correctionOn = lastEq.correctionOn;
     curves.voicingOn = lastEq.voicingOn;
+    curves.levelMatch = lastEq.levelMatch;
+    curves.makeupDb = processor.getMakeupDb();
     curves.applied = roomeq::responseDb (scaledBy (lastApplied, lastEq.amount), curves.grid, fs);
     const auto* proposal = display != nullptr && display->proposal ? &*display->proposal : nullptr;
     curves.showProposal = proposal != nullptr && proposal->bands != engine.getApplied();
@@ -443,6 +446,18 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area) cons
         legend.push_back ({ ! curves.loudnessOn ? "Loudness (off)" : curves.loudnessCalibrated ? "Loudness now" : "Loudness (not calibrated)",
                             theme::gold, ! loudnessActive });
     drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
+
+    // Output level match, on the legend row's right.
+    {
+        const auto r = std::round (curves.makeupDb * 10.0f) / 10.0f;
+        const auto amount = std::abs (r) < 0.05f ? juce::String ("0.0")
+                                                 : (r > 0.0f ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
+        g.setColour (curves.levelMatch ? theme::ink2 : theme::muted);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText (curves.levelMatch ? "Output level matched: " + amount + " dB" : juce::String ("Output level match off"),
+                    juce::Rectangle<float> (area.getRight() - 240.0f, area.getY() - 24.0f, 236.0f, 20.0f),
+                    juce::Justification::centredRight);
+    }
 
     juce::Graphics::ScopedSaveState clip (g);
     g.reduceClipRegion (area.toNearestInt());

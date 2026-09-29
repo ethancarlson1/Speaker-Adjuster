@@ -12,8 +12,8 @@
 #include <atomic>
 #include <mutex>
 
-// Audio path: measured correction -> voicing EQ -> loudness compensation, the
-// same on both speakers.
+// Audio path: measured correction -> voicing EQ -> output level match ->
+// loudness compensation, the same on both speakers.
 //
 // Buses: stereo main in/out plus a mono sidechain input for the measurement
 // mic. The standalone app is a measurement tool: its only input is the mic
@@ -87,6 +87,7 @@ public:
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
     std::vector<roomeq::Band> getVoicingSections() const;         // for the graph
+    float getMakeupDb() const noexcept { return eq.getMakeupDb(); }   // level match gain now (0 when off)
 
     LoudnessSettings getLoudnessSettings() const noexcept;        // what the loudness stage uses now
     LoudnessController& getLoudness() { return loudnessControl; }
@@ -124,6 +125,7 @@ private:
     std::atomic<float>* correctionOnParam = nullptr;
     std::atomic<float>* amountParam = nullptr;
     std::atomic<float>* voicingOnParam = nullptr;
+    std::atomic<float>* levelMatchParam = nullptr;
     std::array<VoicingParams, roomeq::numVoicingBands> voicingParams;
     struct LoudnessParams
     {

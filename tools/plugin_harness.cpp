@@ -18,6 +18,8 @@
 
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
+#include "roomeq/levelmatch.h"
+#include "roomeq/noise.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -186,7 +188,9 @@ void pump (AdaptiveRoomEQProcessor& p)
     juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
 }
 
-// Runs audio blocks until the current measurement is recorded and analysed.
+// Runs audio blocks until the current measurement is recorded, then waits for
+// its analysis without playing on (so the audio that follows is the same
+// however long the background analysis takes).
 void runMeasurement (AdaptiveRoomEQProcessor& p, SimulatedRoom& room, const std::vector<float>* program = nullptr)
 {
     juce::AudioBuffer<float> buffer (3, blockSize);   // main L/R in-place + mic sidechain
@@ -195,7 +199,7 @@ void runMeasurement (AdaptiveRoomEQProcessor& p, SimulatedRoom& room, const std:
     std::size_t programPos = 0;
     const auto channel = p.getSweepSettings().channel;
 
-    for (int block = 0; block < 100000 && p.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++block)
+    for (int block = 0; block < 100000 && p.getEngine().getActivity() == MeasurementEngine::Activity::measuring; ++block)
     {
         for (int i = 0; i < blockSize; ++i)
         {
@@ -210,7 +214,7 @@ void runMeasurement (AdaptiveRoomEQProcessor& p, SimulatedRoom& room, const std:
         if (block % 64 == 0)
             pump (p);
     }
-    for (int i = 0; i < 400 && p.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
+    for (int i = 0; i < 2000 && p.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
         pump (p);
     for (int i = 0; i < 20; ++i)   // let the averaged display catch up
         pump (p);
@@ -223,19 +227,21 @@ void setParam (AdaptiveRoomEQProcessor& p, const juce::String& id, float value)
 }
 
 // The main path's response (program in, speakers out) to an impulse, after
-// letting any EQ glide settle (the loudness stage glides with a 0.25 s time constant).
+// letting any EQ glide settle (the loudness stage glides with a 0.25 s time
+// constant). `aSecondBefore` runs 1 s before the impulse.
 std::vector<double> impulseThrough (AdaptiveRoomEQProcessor& p, int length = 1 << 15,
-                                    const std::function<void()>& beforeImpulse = {})
+                                    const std::function<void()>& aSecondBefore = {})
 {
     juce::AudioBuffer<float> buffer (3, blockSize);
     juce::MidiBuffer midi;
-    for (int b = 0; b < 300; ++b)
+    constexpr int preroll = 300, oneSecond = static_cast<int> (fs) / blockSize;
+    for (int b = 0; b < preroll; ++b)
     {
+        if (b == preroll - oneSecond && aSecondBefore)
+            aSecondBefore();
         buffer.clear();
         p.processBlock (buffer, midi);
     }
-    if (beforeImpulse)
-        beforeImpulse();
     std::vector<double> out;
     for (int pos = 0; pos < length; pos += blockSize)
     {
@@ -264,12 +270,69 @@ double dtftDb (const std::vector<double>& x, double f)
     return 20.0 * std::log10 (std::abs (acc));
 }
 
-double worstMismatchDb (const std::vector<double>& ir, const std::vector<roomeq::Band>& expected)
+// `offsetDb`: a broadband gain on top of the bands (the output level match).
+double worstMismatchDb (const std::vector<double>& ir, const std::vector<roomeq::Band>& expected, double offsetDb = 0.0)
 {
     double worst = 0.0;
     for (double f : { 30.0, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 })
-        worst = std::max (worst, std::abs (dtftDb (ir, f) - roomeq::responseDb (expected, { f }, fs).front()));
+        worst = std::max (worst, std::abs (dtftDb (ir, f) - roomeq::responseDb (expected, { f }, fs).front() - offsetDb));
     return worst;
+}
+
+// The make-up gain the output level match should apply for these correction + voicing bands.
+double makeupFor (const std::vector<roomeq::Band>& bands)
+{
+    roomeq::LevelMatch lm;
+    lm.prepare (fs);
+    return lm.makeupDb (bands);
+}
+
+// K-weighted level (dB) of pink noise going into the plugin's main path and coming out.
+std::pair<double, double> pinkLevelsInOut (AdaptiveRoomEQProcessor& p)
+{
+    roomeq::NoiseConfig cfg;
+    cfg.fs = fs;
+    cfg.duration = 10.0;
+    cfg.levelDbfs = -12.0;
+    const auto x = roomeq::generatePinkNoise (cfg);
+    juce::AudioBuffer<float> buffer (3, blockSize);
+    juce::MidiBuffer midi;
+    std::vector<double> in, out;
+    for (std::size_t pos = 0; pos + blockSize <= x.size(); pos += blockSize)
+    {
+        buffer.clear();
+        for (int i = 0; i < blockSize; ++i)
+        {
+            buffer.setSample (0, i, static_cast<float> (x[pos + static_cast<std::size_t> (i)]));
+            buffer.setSample (1, i, static_cast<float> (x[pos + static_cast<std::size_t> (i)]));
+            in.push_back (buffer.getSample (0, i));
+        }
+        p.processBlock (buffer, midi);
+        for (int i = 0; i < blockSize; ++i)
+            out.push_back (buffer.getSample (0, i));
+    }
+    const auto kLevel = [] (const std::vector<double>& v)
+    {
+        auto y = v;
+        for (const auto& band : roomeq::kWeightingBands())
+        {
+            const auto c = roomeq::designBiquad (band, fs);
+            double s1 = 0.0, s2 = 0.0;
+            for (auto& t : y)
+            {
+                const auto o = c.b0 * t + s1;
+                s1 = c.b1 * t - c.a1 * o + s2;
+                s2 = c.b2 * t - c.a2 * o;
+                t = o;
+            }
+        }
+        double sum = 0.0;
+        const auto start = static_cast<std::size_t> (fs);   // after any glide and the filters' start-up
+        for (std::size_t i = start; i < y.size(); ++i)
+            sum += y[i] * y[i];
+        return 10.0 * std::log10 (sum / static_cast<double> (y.size() - start));
+    };
+    return { kLevel (in), kLevel (out) };
 }
 
 // RMS of (curve - target) over the fit range, outside nulls, on the display grid.
@@ -627,16 +690,30 @@ int main (int argc, char** argv)
     auto expected = engine.getApplied();
     for (const auto& b : proc.getVoicingSections())
         expected.push_back (b);
-    auto worst = worstMismatchDb (impulseThrough (proc), expected);
-    check (worst < 0.02, "speakers get correction + voicing as predicted (worst " + juce::String (worst, 3) + " dB)");
+    auto makeup = makeupFor (expected);
+    auto worst = worstMismatchDb (impulseThrough (proc), expected, makeup);
+    check (worst < 0.02, "speakers get correction + voicing + make-up as predicted (worst " + juce::String (worst, 3) + " dB)");
+    check (std::abs (proc.getMakeupDb() - makeup) < 1e-4,   // worked out on the audio thread
+           "output level match: " + juce::String (proc.getMakeupDb(), 2) + " dB make-up, as the curves give");
+    {
+        const auto [in, out] = pinkLevelsInOut (proc);
+        check (std::abs (out - in) < 0.3, "pink noise comes out as loud as it goes in (" + juce::String (out - in, 2)
+                                               + " dB, K-weighted)");
+        setParam (proc, "levelMatch", 0.0f);
+        check (worstMismatchDb (impulseThrough (proc), expected) < 0.02 && std::abs (proc.getMakeupDb()) < 1e-6,
+               "match output level off: the EQ alone");
+        const auto [in2, out2] = pinkLevelsInOut (proc);
+        check (std::abs ((out2 - in2) + makeup) < 0.3, "and the level moves by the make-up (" + juce::String (out2 - in2, 2) + " dB)");
+        setParam (proc, "levelMatch", 1.0f);
+    }
     setParam (proc, "correctionAmount", 50.0f);
     expected.clear();
     for (const auto& b : engine.getApplied())
         expected.push_back (b.scaled (0.5));
     for (const auto& b : proc.getVoicingSections())
         expected.push_back (b);
-    worst = worstMismatchDb (impulseThrough (proc), expected);
-    check (worst < 0.02, "50% amount halves the correction (worst " + juce::String (worst, 3) + " dB)");
+    worst = worstMismatchDb (impulseThrough (proc), expected, makeupFor (expected));
+    check (worst < 0.02, "50% amount halves the correction, make-up follows (worst " + juce::String (worst, 3) + " dB)");
     setParam (proc, "correctionAmount", 100.0f);
     setParam (proc, "correctionOn", 0.0f);
     setParam (proc, "voicingOn", 0.0f);
@@ -714,13 +791,15 @@ int main (int argc, char** argv)
         return bands;
     };
     // The deadband's held level keeps drifting slowly (30 s) towards the tracked one
-    // through the silence around the impulse, so the response must lie between the
-    // EQ the stage showed just before and just after it.
+    // through the silence around the impulse, and the EQ follows it 0.25 s behind,
+    // so the response must lie between the EQ the stage showed a second before and
+    // just after it.
     const auto loudnessPathError = [&]
     {
         std::vector<roomeq::Band> before;
         const auto ir = impulseThrough (proc, 1 << 15, [&] { before = loudnessBands (status); });
         auto cvBefore = correctionAndVoicing(), cvAfter = correctionAndVoicing();
+        const auto cvMakeup = makeupFor (cvBefore);
         for (const auto& b : before)
             cvBefore.push_back (b);
         for (const auto& b : loudnessBands (status))
@@ -729,20 +808,25 @@ int main (int argc, char** argv)
         for (double f : { 30.0, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 })
         {
             const auto x = dtftDb (ir, f);
-            const auto a = roomeq::responseDb (cvBefore, { f }, fs).front(), c = roomeq::responseDb (cvAfter, { f }, fs).front();
+            const auto a = roomeq::responseDb (cvBefore, { f }, fs).front() + cvMakeup;
+            const auto c = roomeq::responseDb (cvAfter, { f }, fs).front() + cvMakeup;
             worstError = std::max ({ worstError, std::min (a, c) - x, x - std::max (a, c) });
         }
         return worstError;
     };
+    // Plays until the step's recording is collected, then waits for its analysis
+    // without playing on, so how long the background analysis takes never shifts
+    // the audio that follows (the run is the same every time).
     const auto waitForStep = [&] (Show& show, Music* music, double seconds, Step until)
     {
-        show.play (music, seconds, [&] { return loud.getStep() == until && ! loud.isAnalysing(); });
-        for (int i = 0; i < 400 && loud.isAnalysing(); ++i)
+        show.play (music, seconds, [&] { return loud.isAnalysing() || loud.getStep() == until; });
+        for (int i = 0; i < 2000 && loud.isAnalysing(); ++i)
             pump (proc);
     };
     pump (proc);
     check (loud.hasPlan() && ! loud.getInfo().calibrated, "shelves planned; not calibrated yet");
-    check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing()) < 0.02, "uncalibrated: loudness adds nothing");
+    check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing(), makeupFor (correctionAndVoicing())) < 0.02,
+           "uncalibrated: loudness adds nothing");
     {
         SimulatedRoom room (7.0, 21, 3e-4, 0.0);
         Show show { proc, room, 0.0, {}, {} };
@@ -788,8 +872,10 @@ int main (int argc, char** argv)
                 v = probe.next();
             music.gain = std::pow (10.0, (calOutput - 12.0 - roomeq::cWeightedLevelDbfs (x, fs)) / 20.0);
         }
-        setParam (proc, "loudOn", 0.0f);   // off: the output is the stage's input, so the level can be checked
-        show.play (&music, 14.0);
+        // Off: the output is the stage's input, so the level can be checked. (Long enough for the
+        // level to come all the way down from the loud pink noise earlier: it falls with a 5 s time constant.)
+        setParam (proc, "loudOn", 0.0f);
+        show.play (&music, 28.0);
         const auto expectedSpl = 95.0 + show.outputLevelDbfs() - calOutput;
         check (std::abs (status.splNow.load() - expectedSpl) < 0.5,
                "tracked level " + juce::String (status.splNow.load(), 2) + " dB(C) vs " + juce::String (expectedSpl, 2) + " from the output");
@@ -857,7 +943,8 @@ int main (int argc, char** argv)
                "nothing changed: calibration kept (" + loud.getStatus() + ")");
 
         setParam (proc, "loudOn", 0.0f);
-        check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing()) < 0.02, "loudness off: flat");
+        check (worstMismatchDb (impulseThrough (proc), correctionAndVoicing(), makeupFor (correctionAndVoicing())) < 0.02,
+               "loudness off: flat");
         setParam (proc, "loudOn", 1.0f);
         show.play (&music, 3.0);   // boosting again, for the screenshot
     }
@@ -900,7 +987,7 @@ int main (int argc, char** argv)
         for (const auto& b : restored.getVoicingSections())
             restoredEq.push_back (b);
         check (restoredEq.size() > engine.getApplied().size()
-                   && worstMismatchDb (impulseThrough (restored), restoredEq) < 0.02,
+                   && worstMismatchDb (impulseThrough (restored), restoredEq, makeupFor (restoredEq)) < 0.02,
                "restored plugin plays the same correction and voicing");
         std::cout << "    state size " << state.getSize() / 1024 << " KB\n";
     }
@@ -923,6 +1010,8 @@ int main (int argc, char** argv)
         writeSnapshot (*editor, stem + "-loudness.png");
         editor->setSize (1060, 740);   // the smallest size: everything still fits
         writeSnapshot (*editor, stem + "-loudness-small.png");
+        ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
+        writeSnapshot (*editor, stem + "-correct-small.png");
         editor->setSize (1200, 820);
 
         std::cout << "Editing on the graph\n";

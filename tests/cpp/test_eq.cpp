@@ -1,6 +1,7 @@
 #include "helpers.h"
 #include "plugin/EqStages.h"
 #include "plugin/LatestValue.h"
+#include "roomeq/noise.h"
 
 #include <doctest/doctest.h>
 
@@ -72,6 +73,7 @@ TEST_CASE ("state-variable sections match the RBJ biquads the graph draws")
         {
             EqStages eq;
             EqSettings s;
+            s.levelMatch = false;   // the sections' own response
             eq.setCorrection (setOf ({ b }));
             eq.prepare (fs, s);
             const auto y = run (eq, impulse (1 << 16), s);
@@ -103,8 +105,12 @@ TEST_CASE ("correction amount, both stages and bypass")
             expected.push_back (sec.bands[static_cast<std::size_t> (i)]);
     }
     CHECK (expected.size() == 5);   // 2 correction + HP24 (two sections) + bell
+    LevelMatch lm;
+    lm.prepare (fs);
+    const auto makeup = lm.makeupDb (expected);   // about 0 here: the cut and the boost balance out
+    CHECK (eq.getMakeupDb() == doctest::Approx (makeup).epsilon (1e-6));
     for (double f : { 25.0, 40.0, 150.0, 400.0, 2000.0, 12000.0 })
-        CHECK (testing::dtftDb (y, f, fs) == doctest::Approx (responseDb (expected, { f }, fs).front()).epsilon (1e-3));
+        CHECK (testing::dtftDb (y, f, fs) == doctest::Approx (responseDb (expected, { f }, fs).front() + makeup).epsilon (1e-3));
 
     // Both stages bypassed: after the glide the output is the input, bit for bit.
     s.correctionOn = false;
@@ -135,6 +141,7 @@ TEST_CASE ("applying a correction glides instead of clicking")
     // Smooth: the new correction arrives mid-stream and glides.
     EqStages eq;
     EqSettings s;
+    s.levelMatch = false;   // the correction alone (level match has its own test)
     eq.prepare (fs, s);
     std::vector<float> l (x.begin(), x.end()), r = l;
     for (std::size_t pos = 0; pos < l.size(); pos += 256)
@@ -168,6 +175,69 @@ TEST_CASE ("applying a correction glides instead of clicking")
     const auto level = *std::max_element (settled.begin(), settled.end());
     const auto expectedDb = responseDb ({ deep.bands[0], deep.bands[1] }, { 200.0 }, fs).front();
     CHECK (20.0 * std::log10 (level / 0.5) == doctest::Approx (expectedDb).epsilon (0.01));
+}
+
+TEST_CASE ("level match: pink noise comes out as loud as it goes in, and switching glides")
+{
+    const double fs = 48000.0;
+    const CorrectionSet correction = setOf ({ { BandKind::bell, 150.0, -8.0, 1.0 }, { BandKind::lowShelf, 120.0, -6.0 },
+                                              { BandKind::bell, 2500.0, -4.0, 1.5 } });
+    EqSettings s;
+    s.voicing[1] = { true, VoicingType::bell, 400.0, -3.0, 1.0 };
+
+    NoiseConfig cfg;
+    cfg.fs = fs;
+    cfg.duration = 20.0;
+    cfg.levelDbfs = -6.0;
+    const auto pink = generatePinkNoise (cfg);
+    const auto k = kWeightingBands();
+    const auto kLevel = [&] (const std::vector<double>& x)
+    {
+        const auto c0 = designBiquad (k[0], fs), c1 = designBiquad (k[1], fs);
+        const testing::Biquad b0 { c0.b0, c0.b1, c0.b2, c0.a1, c0.a2 }, b1 { c1.b0, c1.b1, c1.b2, c1.a1, c1.a2 };
+        const auto y = b1.process (b0.process (x));
+        double sum = 0.0;
+        for (std::size_t i = y.size() / 4; i < y.size(); ++i)   // after the EQ's glide and the filters' start-up
+            sum += y[i] * y[i];
+        return 10.0 * std::log10 (sum / static_cast<double> (y.size() - y.size() / 4));
+    };
+
+    for (const bool on : { true, false })
+    {
+        s.levelMatch = on;
+        EqStages eq;
+        eq.setCorrection (correction);
+        eq.prepare (fs, s);
+        const auto diff = kLevel (run (eq, pink, s)) - kLevel (pink);
+        if (on)
+        {
+            MESSAGE ("level match on: out - in = " << diff << " dB (K-weighted pink noise)");
+            std::vector<Band> bands (correction.bands.begin(), correction.bands.begin() + correction.count);
+            bands.push_back (voicingSections (s.voicing[1]).bands[0]);
+            LevelMatch lm;
+            lm.prepare (fs);
+            CHECK (eq.getMakeupDb() > 1.0);
+            CHECK (eq.getMakeupDb() == doctest::Approx (lm.makeupDb (bands)).epsilon (1e-6));
+            CHECK (std::abs (diff) < 0.25);   // pink noise is what the make-up is worked out for
+        }
+        else
+            CHECK (diff < -1.0);             // without it, these cuts make the output quieter
+    }
+
+    // Switching level match on and off mid-stream glides instead of clicking.
+    const auto x = sine (200.0, fs, 48000);
+    EqStages eq;
+    s.levelMatch = false;
+    eq.setCorrection (correction);
+    eq.prepare (fs, s);
+    std::vector<float> l (x.begin(), x.end()), r = l;
+    for (std::size_t pos = 0; pos < l.size(); pos += 256)
+    {
+        s.levelMatch = pos >= 12032 && pos < 36096;
+        float* ch[] = { l.data() + pos, r.data() + pos };
+        eq.process (ch, 2, static_cast<int> (std::min<std::size_t> (256, l.size() - pos)), s);
+    }
+    CHECK (hfPeak ({ l.begin(), l.end() }, fs) < 1e-4);
 }
 
 TEST_CASE ("latest-value hand-off keeps only the newest value")

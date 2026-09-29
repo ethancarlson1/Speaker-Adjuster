@@ -1,19 +1,26 @@
 #pragma once
 
-// The EQ on the audio path: measured correction -> voicing EQ, both stereo
-// with the same settings on both sides. JUCE-free, so it's unit tested.
+// The EQ on the audio path: measured correction -> voicing EQ -> output level
+// match, stereo with the same settings on both sides. JUCE-free, so it's unit
+// tested.
 //
 // Each filter section is a trapezoidal state-variable filter (Simper). Its
 // magnitude response is identical to the RBJ biquad of the same band (what
 // the fit and the graph use), and its coefficients can glide from one
 // setting to another per sample without clicks: changing a band, applying a
 // new correction, A/B and bypass all glide over ~20 ms.
+//
+// Level match: a make-up gain worked out from the two stages' curves (see
+// roomeq/levelmatch.h) keeps typical program as loud coming out as going in.
+// It glides with the EQ, so A/B and bypass are level-matched too.
 
 #include "plugin/LatestValue.h"
 #include "roomeq/filters.h"
+#include "roomeq/levelmatch.h"
 #include "roomeq/voicing.h"
 
 #include <array>
+#include <atomic>
 
 struct SvfCoeffs
 {
@@ -69,6 +76,7 @@ struct EqSettings
     double amount = 1.0;                  // 0..1, scales the correction's gains
     bool voicingOn = true;
     std::array<roomeq::VoicingBand, roomeq::numVoicingBands> voicing {};
+    bool levelMatch = true;               // make-up gain so the EQ doesn't change the level
 };
 
 class EqStages
@@ -88,14 +96,24 @@ public:
     // settle at once, so a later measurement through the EQ starts settled.
     void skip (const EqSettings& settings) noexcept;
 
+    // The make-up gain being applied (dB; 0 when level match is off). Any thread.
+    float getMakeupDb() const noexcept { return makeupDb.load (std::memory_order_relaxed); }
+
 private:
     void syncSettings (const EqSettings& settings) noexcept;
     void updateCorrectionTargets() noexcept;
     void updateVoicingTargets() noexcept;
+    void updateMakeup() noexcept;
+    void applyGain (float* const* channels, int numChannels, int numSamples) noexcept;
 
     LatestValue<CorrectionSet> pending;
     CorrectionSet correction;
     EqSettings current;
     double fs = 48000.0;
     EqChain correctionChain, voicingChain;
+
+    roomeq::LevelMatch levelMatch;
+    roomeq::LevelMatch::Power correctionPower {}, voicingPower {};
+    double gainTarget = 1.0, gain = 1.0, gainGlide = 0.001;
+    std::atomic<float> makeupDb { 0.0f };
 };

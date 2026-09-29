@@ -162,6 +162,11 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     button (targetMenu, correctControls);
     correctionOnAttachment = std::make_unique<ButtonAttachment> (params, "correctionOn", correctionOn);
     button (correctionOn, correctControls);
+    levelMatchAttachment = std::make_unique<ButtonAttachment> (params, "levelMatch", levelMatch);
+    levelMatch.setTooltip ("Adds a make-up gain so the correction and voicing leave the music's loudness where it was "
+                           "(worked out from their curves, weighted like a LUFS meter). Switching Correction on and "
+                           "off is then a level-matched comparison. Loudness compensation isn't levelled.");
+    button (levelMatch, correctControls);
     slider (amount, amountLabel, "Amount", "correctionAmount", amountAttachment, correctControls);
     slider (maxCut, maxCutLabel, "Max cut", "maxCut", maxCutAttachment, correctControls);
     slider (maxBoost, maxBoostLabel, "Max boost", "maxBoost", maxBoostAttachment, correctControls);
@@ -709,6 +714,10 @@ juce::String AdaptiveRoomEQEditor::correctionInfo() const
     }
     if (engine.isComparingPrevious())
         text << "\nPlaying the previous correction.";
+    if (processor.getEqSettings().levelMatch)
+        text << "\nOutput level matched: " << signedDb (processor.getMakeupDb()) << " dB make-up for the correction and voicing.";
+    else
+        text << "\nOutput level match is off: the EQ changes the level.";
 
     if (display != nullptr && ! display->verifiedDb.empty() && ! display->targetDb.empty() && display->proposal)
     {
@@ -882,7 +891,7 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     {
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (12.5f));
-        g.drawFittedText (correctionInfo(), infoBounds, juce::Justification::topLeft, 12, 0.9f);
+        g.drawFittedText (correctionInfo(), infoBounds, juce::Justification::topLeft, juce::jmax (1, infoBounds.getHeight() / 15), 0.9f);
     }
     else if (currentTab == Tab::loudness)
     {
@@ -991,7 +1000,12 @@ void AdaptiveRoomEQEditor::resized()
                 target.setBounds (r);
                 content.removeFromTop (8);
             }
-            fullRow (correctionOn, 24);
+            {
+                auto r = content.removeFromTop (24);
+                correctionOn.setBounds (r.removeFromLeft (128));
+                levelMatch.setBounds (r);
+                content.removeFromTop (8);
+            }
             row (amountLabel, amount);
             row (maxCutLabel, maxCut);
             row (maxBoostLabel, maxBoost);
@@ -1073,12 +1087,11 @@ void AdaptiveRoomEQEditor::resized()
         }
     }
 
-    // What's left: correction / loudness details and the tab's tip (the Loudness
-    // tab keeps its details and drops the tip when the window is small).
-    if (currentTab == Tab::loudness)
-        tipBounds = content.getHeight() >= 150 ? content.removeFromBottom (64) : juce::Rectangle<int>();
-    else
-        tipBounds = content.removeFromBottom (84);
+    // What's left: correction / loudness details and the tab's tip. When the
+    // window is too small for both, the details stay and the tip goes.
+    const auto tipHeight = currentTab == Tab::loudness ? 64 : 84;
+    const auto detailsHeight = currentTab == Tab::correct || currentTab == Tab::loudness ? 90 : 0;
+    tipBounds = content.getHeight() >= tipHeight + detailsHeight ? content.removeFromBottom (tipHeight) : juce::Rectangle<int>();
     infoBounds = content.withTrimmedTop (4);
 
     auto right = getLocalBounds().withTrimmedTop (headerHeight).reduced (margin).withTrimmedLeft (controlsWidth + margin);
