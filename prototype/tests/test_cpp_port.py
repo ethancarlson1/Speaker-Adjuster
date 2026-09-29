@@ -261,6 +261,53 @@ def test_correction_fit_matches_python(sim, tmp_path, target_name, positions, li
     assert cpp["rms_error_db"] == pytest.approx(py.rms_error_db, abs=FIT_TOL_DB)
 
 
+def test_sub_zone_matches_python(tmp_path):
+    """A sub: graded, summarised and corrected against the 40-100 Hz reference band."""
+    from roomeq import correction, grading, targets
+
+    band = (40.0, 100.0)
+    room = roomsim.SimulatedRoom(pa=roomsim.PASpec(hp_hz=30.0, hp_order=4, lp_hz=100.0, lp_order=4,
+                                                   peq=((55.0, 5.0, 2.0),), h2_db=-50.0, h3_db=-55.0))
+    acfg = capture.AnalysisConfig(grading=grading.GradingConfig(passband=band))
+    rng = np.random.default_rng(53)
+    play = sweep.build_playback(CFG)
+    args, caps = [], []
+    for pos in range(3):
+        recs = [room.play(play, pos, roomsim.NoiseSpec(pink_dbfs=-60.0), rng) for _ in range(2)]
+        files = ",".join(str(save(tmp_path, f"sub{pos}_{i}", r)) for i, r in enumerate(recs))
+        args += ["--position", f"S{pos}={files}"]
+        caps.append(capture.analyze_sweep_capture(f"S{pos}", recs, CFG, acfg))
+    cfg = correction.CorrectionConfig(ref_band=band, range_hz=(20.0, 150.0))
+    result = run_cli("analyze", "--fs", CFG.fs, "--duration", CFG.duration, "--smoothing", 6, *args,
+                     "--band-lo", band[0], "--band-hi", band[1], "--target", "flat",
+                     "--range-lo", 20, "--range-hi", 150)
+
+    for cpp, py in zip(result["captures"], caps):
+        assert cpp["overall"] == py.grade.overall.label, py.name
+        assert cpp["reasons"] == py.grade.reasons, py.name
+        for cb, pb in zip(cpp["bands"], py.grade.bands):
+            assert cb["out_of_range"] == pb.out_of_range, f"{py.name} {pb.name}"
+            assert cb["grade"] == (None if pb.grade is None else pb.grade.label), f"{py.name} {pb.name}"
+            assert abs(cb["level_db"] - pb.level_db) < TOL_DB, f"{py.name} {pb.name}"
+    assert any(not b.out_of_range for b in caps[0].grade.bands) and caps[0].grade.bands[-1].out_of_range
+
+    summary = averaging.summarize_session(caps, 6, log_freq_grid(20, 20000, 48), band=band)
+    s = result["summary"]
+    assert np.allclose(s["offsets_db"], summary.offsets_db, atol=TOL_DB)
+    assert_curve(s["average_db"], summary.average_db, "average")
+    assert s["usable"] == pytest.approx(list(summary.usable), abs=1e-9)
+    assert summary.usable[1] < 200.0
+    assert s["target_db"] == pytest.approx(summary.target_db, abs=TOL_DB)
+
+    py = correction.design_correction(caps, summary, targets.FLAT, CFG.fs, cfg)
+    cpp = result["correction"]
+    assert_curve(cpp["target_db"], py.target_db, "target")
+    assert_curve(cpp["desired_db"], py.desired_db, "desired")
+    assert cpp["fit_range"] == pytest.approx(list(py.fit_range), abs=1e-9)
+    assert len(cpp["bands"]) == len(py.bands) > 0
+    assert np.max(np.abs(np.array(cpp["correction_db"]) - py.correction_db)) < FIT_TOL_DB
+
+
 # ---------------------------------------------------------------------------
 # Phase 3: loudness plan, level tracking, re-check bands
 

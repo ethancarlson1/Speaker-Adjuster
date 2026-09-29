@@ -75,6 +75,8 @@ std::pair<double, double> usableRange (const std::vector<double>& freqsLog, cons
         if (freqsLog[i] >= refLo && freqsLog[i] <= refHi)
             ref.push_back (levelDb[i]);
     const auto threshold = nanMean (ref) - dropDb;
+    if (startHz <= 0.0)
+        startHz = std::sqrt (refLo * refHi);
 
     std::size_t i0 = 0;
     for (std::size_t i = 1; i < freqsLog.size(); ++i)
@@ -121,7 +123,8 @@ QuickModePolicy quickModePolicy (int nGood, int userFraction)
 }
 
 std::optional<SessionSummary> summarizeSession (const std::vector<std::shared_ptr<const Capture>>& captures,
-                                                int userFraction, const std::vector<double>& grid)
+                                                int userFraction, const std::vector<double>& grid,
+                                                double bandLo, double bandHi)
 {
     std::vector<std::size_t> included;
     for (std::size_t i = 0; i < captures.size(); ++i)
@@ -153,7 +156,7 @@ std::optional<SessionSummary> summarizeSession (const std::vector<std::shared_pt
     // Align every capture (excluded ones too, for display) to the mean level of the included ones.
     std::vector<double> levels, includedLevels;
     for (std::size_t i = 0; i < captures.size(); ++i)
-        levels.push_back (levelOffsetDb (freqs, powers[i], 250.0, 4000.0, &maskWeights[i]));
+        levels.push_back (levelOffsetDb (freqs, powers[i], bandLo, bandHi, &maskWeights[i]));
     for (auto i : included)
         includedLevels.push_back (levels[i]);
     const auto target = nanMean (includedLevels);
@@ -194,8 +197,8 @@ std::optional<SessionSummary> summarizeSession (const std::vector<std::shared_pt
             v *= gain;
         s.positionDb.push_back (toDb (smoothPower (freqs, p, fraction, grid, &displayWeights[i])));
     }
-    s.usable = usableRange (grid, toDb (smoothPower (freqs, s.power, 1.0, grid, &s.weight)));
-    s.targetDb = targetLevelDb (grid, s.averageDb);
+    s.usable = usableRange (grid, toDb (smoothPower (freqs, s.power, 1.0, grid, &s.weight)), bandLo, bandHi);
+    s.targetDb = targetLevelDb (grid, s.averageDb, bandLo, bandHi);
     return s;
 }
 } // namespace roomeq

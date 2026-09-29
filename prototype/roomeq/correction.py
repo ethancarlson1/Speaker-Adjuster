@@ -4,9 +4,10 @@ Pipeline (design_correction):
 
 1. The averaged response at the session's smoothing, its 1-octave trend and a
    1/6-octave version for null detection, all on a 24-points-per-octave grid.
-2. Fit range: the PA's -6 dB points (1-octave trend vs. the 250 Hz-4 kHz
-   mean), intersected with the user's frequency range. Nothing is corrected
-   outside it, and nothing is ever boosted outside it.
+2. Fit range: the PA's -6 dB points (1-octave trend vs. the reference band's
+   mean: 250 Hz-4 kHz, or 40-100 Hz for subs), intersected with the user's
+   frequency range. Nothing is corrected outside it, and nothing is ever
+   boosted outside it. The target is placed on the reference band too.
 3. Nulls: where the average dips more than 6 dB below its 1-octave trend, or
    the positions (1/3 octave, level-aligned) disagree by more than 6 dB. The
    correction may cut there but never boost.
@@ -45,7 +46,8 @@ class CorrectionConfig:
     max_cut_db: float = 12.0
     max_boost_db: float = 3.0
     range_hz: tuple[float, float] = (20.0, 20000.0)   # user frequency range, intersected with the PA's
-    rolloff_db: float = 6.0                            # PA range edge: this far below the 250 Hz-4 kHz mean
+    rolloff_db: float = 6.0                            # PA range edge: this far below the reference band's mean
+    ref_band: tuple[float, float] = (250.0, 4000.0)    # the zone's reference band (subs: 40-100 Hz)
     boost_min_octaves: float = 1.0
     cut_min_octaves_low: float = 1 / 3                 # below `cut_split_hz` (room modes that survive averaging)
     cut_min_octaves_high: float = 2 / 3
@@ -365,11 +367,11 @@ def design_correction(captures, summary: SessionSummary, target: TargetCurve, fs
     trend = to_db(smooth_power(summary.freqs, summary.power, 1, grid, summary.weight))
     notes = []
 
-    lo, hi = usable_range(grid, trend, drop_db=cfg.rolloff_db)
+    lo, hi = usable_range(grid, trend, cfg.ref_band, drop_db=cfg.rolloff_db)
     lo, hi = max(lo, cfg.range_hz[0]), min(hi, cfg.range_hz[1])
     notes.append(f"fit range {lo:.0f} Hz - {hi:.0f} Hz")
 
-    offset = anchor_offset_db(grid, average, target)
+    offset = anchor_offset_db(grid, average, target, cfg.ref_band)
     target_db = offset + target.db(grid)
 
     strength = policy.strength

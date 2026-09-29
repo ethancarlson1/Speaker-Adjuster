@@ -4,6 +4,8 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+
 using namespace roomeq;
 
 namespace
@@ -89,6 +91,20 @@ TEST_CASE ("usable range finds the -10 dB points")
     const auto [lo, hi] = usableRange (g, db);
     CHECK (lo == doctest::Approx (60.0 * 0.76).epsilon (0.03));
     CHECK (hi == doctest::Approx (g.back()));
+}
+
+TEST_CASE ("usable range of a sub walks out from its own band")
+{
+    // Plays 30-100 Hz (4th-order high- and low-pass): nothing at 1 kHz.
+    const auto g = logFreqGrid (20.0, 20000.0, 48);
+    std::vector<double> db (g.size());
+    for (std::size_t i = 0; i < g.size(); ++i)
+        db[i] = -10.0 * std::log10 ((1.0 + std::pow (30.0 / g[i], 8.0)) * (1.0 + std::pow (g[i] / 100.0, 8.0)));
+    const auto [lo, hi] = usableRange (g, db, 40.0, 100.0);
+    CHECK (lo > 20.0);
+    CHECK (lo < 30.0);
+    CHECK (hi > 100.0);
+    CHECK (hi < 150.0);
 }
 
 TEST_CASE ("quick mode strength grows with good positions")

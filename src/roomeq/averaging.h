@@ -35,10 +35,11 @@ AverageResult powerAverage (const std::vector<double>& freqs, const std::vector<
                             double lo = 250.0, double hi = 4000.0);
 
 // PA usable range: walk down/up from startHz until the (heavily smoothed)
-// response falls dropDb below the passband mean.
+// response falls dropDb below the reference band's mean. startHz <= 0: the
+// middle of the band (1 kHz for the mains' 250 Hz-4 kHz).
 std::pair<double, double> usableRange (const std::vector<double>& freqsLog, const std::vector<double>& levelDb,
                                        double refLo = 250.0, double refHi = 4000.0, double dropDb = 10.0,
-                                       double startHz = 1000.0);
+                                       double startHz = -1.0);
 
 double targetLevelDb (const std::vector<double>& freqsLog, const std::vector<double>& levelDb,
                       double lo = 250.0, double hi = 4000.0);
@@ -68,7 +69,11 @@ struct SessionSummary
 };
 
 // Captures on a different sample rate are rebinned onto the first included
-// capture's grid. Returns nullopt if every capture is excluded.
+// capture's grid. Returns nullopt if every capture is excluded. [bandLo, bandHi]
+// is the zone's reference band (250 Hz-4 kHz for full-range speakers, 40-100 Hz
+// for subs): levels are aligned over it, the usable range is measured from it
+// and the target overlay is placed on it.
 std::optional<SessionSummary> summarizeSession (const std::vector<std::shared_ptr<const Capture>>& captures,
-                                                int userFraction, const std::vector<double>& grid);
+                                                int userFraction, const std::vector<double>& grid,
+                                                double bandLo = 250.0, double bandHi = 4000.0);
 } // namespace roomeq

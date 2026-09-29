@@ -34,7 +34,9 @@ struct CorrectionConfig
     double maxBoostDb = 3.0;
     double rangeLoHz = 20.0;              // user frequency range, intersected with the PA's
     double rangeHiHz = 20000.0;
-    double rolloffDb = 6.0;               // PA range edge: this far below the 250 Hz-4 kHz mean
+    double rolloffDb = 6.0;               // PA range edge: this far below the reference band's mean
+    double refBandLoHz = 250.0;           // the zone's reference band (subs: 40-100 Hz): the range
+    double refBandHiHz = 4000.0;          // edges are found from it and the target is placed on it
     double boostMinOctaves = 1.0;
     double cutMinOctavesLow = 1.0 / 3.0;  // below cutSplitLoHz (room modes that survive averaging)
     double cutMinOctavesHigh = 2.0 / 3.0; // above cutSplitHiHz

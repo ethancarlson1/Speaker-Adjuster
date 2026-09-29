@@ -11,12 +11,13 @@
 //   roomeq_cli show-track --fs 48000 --ref-out a.f64 --ref-mic b.f64 --out c.f64 --mic d.f64
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
 //                      --position P1=a.f64,b.f64 [--position ...]
-//                      [--program P2=reference.f64:mic.f64] [--exclude P1]
+//                      [--program P2=reference.f64:mic.f64] [--exclude P1] [--band-lo 250 --band-hi 4000]
 //                      [--target flat|house|speech [--max-cut 12] [--max-boost 3] [--range-lo 20] [--range-hi 20000]]
 //
 // `analyze` prints JSON: every capture's grade plus the session summary
 // (level-aligned position curves, average, usable range, target level) and,
-// with --target, the fitted correction.
+// with --target, the fitted correction. --band-lo/--band-hi set the reference
+// band (grading, level alignment, usable range, target placement): 40-100 for a sub.
 
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
@@ -299,6 +300,11 @@ int run (int argc, char** argv)
     if (args.command != "analyze")
         throw std::runtime_error ("unknown command: " + args.command);
 
+    const double bandLo = args.get ("band-lo", 250.0), bandHi = args.get ("band-hi", 4000.0);
+    roomeq::AnalysisConfig acfg;
+    acfg.grading.passbandLo = bandLo;
+    acfg.grading.passbandHi = bandHi;
+
     std::vector<std::shared_ptr<const roomeq::Capture>> captures;
     for (const auto& p : args.positions)
     {
@@ -306,7 +312,7 @@ int run (int argc, char** argv)
         std::vector<std::vector<double>> recordings;
         for (const auto& f : split (files, ','))
             recordings.push_back (readF64 (f));
-        auto c = roomeq::analyzeSweepCapture (name, recordings, cfg);
+        auto c = roomeq::analyzeSweepCapture (name, recordings, cfg, acfg);
         c.excluded = args.excluded.count (name) > 0;
         captures.push_back (std::make_shared<roomeq::Capture> (std::move (c)));
     }
@@ -316,13 +322,13 @@ int run (int argc, char** argv)
         const auto parts = split (files, ':');
         if (parts.size() != 2)
             throw std::runtime_error ("expected NAME=reference.f64:mic.f64: " + p);
-        auto c = roomeq::analyzeProgramCapture (name, readF64 (parts[0]), readF64 (parts[1]), cfg.fs);
+        auto c = roomeq::analyzeProgramCapture (name, readF64 (parts[0]), readF64 (parts[1]), cfg.fs, acfg);
         c.excluded = args.excluded.count (name) > 0;
         captures.push_back (std::make_shared<roomeq::Capture> (std::move (c)));
     }
 
     const auto fraction = static_cast<int> (args.get ("smoothing", 6));
-    const auto summary = roomeq::summarizeSession (captures, fraction, roomeq::logFreqGrid (20.0, 20000.0, 48));
+    const auto summary = roomeq::summarizeSession (captures, fraction, roomeq::logFreqGrid (20.0, 20000.0, 48), bandLo, bandHi);
     std::string correction = "null";
     if (summary && args.values.count ("target") > 0)
     {
@@ -340,6 +346,8 @@ int run (int argc, char** argv)
         ccfg.maxBoostDb = args.get ("max-boost", ccfg.maxBoostDb);
         ccfg.rangeLoHz = args.get ("range-lo", ccfg.rangeLoHz);
         ccfg.rangeHiHz = args.get ("range-hi", ccfg.rangeHiHz);
+        ccfg.refBandLoHz = bandLo;
+        ccfg.refBandHiHz = bandHi;
         correction = correctionJson (roomeq::designCorrection (captures, *summary, *target, cfg.fs, ccfg));
     }
     std::cout << "{\"captures\":" << list (captures, [] (const auto& c) { return captureJson (*c); })

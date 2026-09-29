@@ -61,13 +61,15 @@ def power_average(freqs: np.ndarray, powers: list[np.ndarray], weights: list[np.
 
 
 def usable_range(freqs_log: np.ndarray, level_db: np.ndarray, ref_band: tuple[float, float] = (250.0, 4000.0),
-                 drop_db: float = 10.0, start_hz: float = 1000.0) -> tuple[float, float]:
-    """PA usable range: walk down/up from `start_hz` until the response falls
+                 drop_db: float = 10.0, start_hz: float | None = None) -> tuple[float, float]:
+    """PA usable range: walk down/up from `start_hz` (default: the middle of
+    `ref_band`, 1 kHz for the mains' 250 Hz-4 kHz) until the response falls
     `drop_db` below the passband mean. Pass a heavily smoothed (1/1-octave)
     curve so single room modes don't end the walk early.
     """
     sel = (freqs_log >= ref_band[0]) & (freqs_log <= ref_band[1])
     ref = np.nanmean(level_db[sel])
+    start_hz = np.sqrt(ref_band[0] * ref_band[1]) if start_hz is None else start_hz
     i0 = int(np.argmin(np.abs(freqs_log - start_hz)))
     lo, hi = freqs_log[0], freqs_log[-1]
     for i in range(i0, -1, -1):
@@ -122,12 +124,16 @@ class SessionSummary:
     target_db: float
 
 
-def summarize_session(captures, user_fraction: int = 6, grid: np.ndarray | None = None) -> SessionSummary | None:
+def summarize_session(captures, user_fraction: int = 6, grid: np.ndarray | None = None,
+                      band: tuple[float, float] = (250.0, 4000.0)) -> SessionSummary | None:
     """Average the non-excluded captures and prepare display curves.
 
     Redo bands are masked per capture; levels are aligned to the mean of the
     included captures (excluded ones are aligned too, for display). Captures
     on a different sample rate are rebinned onto the first included one's grid.
+    `band` is the zone's reference band (250 Hz-4 kHz for full-range speakers,
+    40-100 Hz for subs): levels are aligned over it, the usable range is
+    measured from it, and the target overlay is placed on it.
     """
     included = [i for i, c in enumerate(captures) if not c.excluded]
     if not included:
@@ -144,7 +150,7 @@ def summarize_session(captures, user_fraction: int = 6, grid: np.ndarray | None 
     mask_weights = [on_grid(c, band_mask_weights(c.freqs, c.grade) * c.weight) for c in captures]
     display_weights = [on_grid(c, c.weight) for c in captures]
 
-    levels = [level_offset_db(freqs, p, (250.0, 4000.0), w) for p, w in zip(powers, mask_weights)]
+    levels = [level_offset_db(freqs, p, band, w) for p, w in zip(powers, mask_weights)]
     target = float(np.nanmean([levels[i] for i in included]))
     offsets = [0.0 if np.isnan(lv) or np.isnan(target) else target - lv for lv in levels]
 
@@ -163,7 +169,7 @@ def summarize_session(captures, user_fraction: int = 6, grid: np.ndarray | None 
     average_db = to_db(smooth_power(freqs, avg, fraction, grid, den))
     position_db = [to_db(smooth_power(freqs, powers[i] * 10 ** (offsets[i] / 10), fraction, grid, display_weights[i]))
                    for i in range(len(captures))]
-    usable = usable_range(grid, to_db(smooth_power(freqs, avg, 1, grid, den)))
+    usable = usable_range(grid, to_db(smooth_power(freqs, avg, 1, grid, den)), band)
     return SessionSummary(freqs=freqs, power=avg, weight=den, offsets_db=offsets, n_good=n_good, policy=policy,
                           grid=grid, average_db=average_db, position_db=position_db, usable=usable,
-                          target_db=target_level_db(grid, average_db))
+                          target_db=target_level_db(grid, average_db, band))

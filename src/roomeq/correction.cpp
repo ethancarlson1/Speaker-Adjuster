@@ -490,12 +490,12 @@ CorrectionResult designCorrection (const std::vector<std::shared_ptr<const Captu
     const auto fine = toDb (smoothPower (summary.freqs, summary.power, 6.0, g, &summary.weight));
     r.trendDb = toDb (smoothPower (summary.freqs, summary.power, 1.0, g, &summary.weight));
 
-    auto [lo, hi] = usableRange (g, r.trendDb, 250.0, 4000.0, cfg.rolloffDb);
+    auto [lo, hi] = usableRange (g, r.trendDb, cfg.refBandLoHz, cfg.refBandHiHz, cfg.rolloffDb);
     lo = std::max (lo, cfg.rangeLoHz);
     hi = std::min (hi, cfg.rangeHiHz);
     r.fitRange = { lo, hi };
 
-    const auto offset = anchorOffsetDb (g, r.averageDb, target);
+    const auto offset = anchorOffsetDb (g, r.averageDb, target, cfg.refBandLoHz, cfg.refBandHiHz);
     r.targetDb = target.db (g);
     for (auto& v : r.targetDb)
         v += offset;
