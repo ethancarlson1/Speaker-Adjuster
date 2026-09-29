@@ -9,11 +9,11 @@
 // then loudness compensation: the mic calibrator, the level calibration in the
 // room, tracking the level of music, the shelves the speakers get, the
 // deadband, and the re-check after an amp gain change; then the state round
-// trip; the mic level advice; pink noise and music across two clocks (a mic 20 ppm fast); the
+// trip; pink noise and music across two clocks (a mic 20 ppm fast); the
 // standalone app; and renders each editor tab to PNG.
 //
 //   AdaptiveRoomEQ_Harness [--out snapshot.png]
-//   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -miclevel.png, -drift.png, -standalone.png)
+//   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -drift.png, -standalone.png)
 //
 // Exits non-zero if any check fails.
 
@@ -434,7 +434,6 @@ struct Show
     std::vector<double> lastOutput;   // channel 0, the last `keepSeconds`
     double rightEnergy = 0.0, channelDiff = 0.0;
     double keepSeconds = 6.0;
-    double micGainDb = 0.0;   // the mic preamp: scales everything the mic hears, noise too
     std::vector<float>* playedIn = nullptr;    // when set: channel 0 in, and `playedChannel` out
     std::vector<float>* playedOut = nullptr;
     int playedChannel = 0;
@@ -446,7 +445,6 @@ struct Show
         juce::AudioBuffer<float> buffer (3, blockSize);
         juce::MidiBuffer midi;
         const auto amp = static_cast<float> (std::pow (10.0, ampGainDb / 20.0));
-        const auto micGain = static_cast<float> (std::pow (10.0, micGainDb / 20.0));
         const auto keep = static_cast<std::size_t> (keepSeconds * fs);
         const auto blocks = static_cast<int> (seconds * fs / blockSize);
         for (int block = 0; block < blocks; ++block)
@@ -459,7 +457,7 @@ struct Show
                 auto heard = room.process (amp * speaker[static_cast<std::size_t> (i)]);   // hears last block
                 if (roomChange)
                     heard = static_cast<float> (roomChange (heard));
-                buffer.setSample (2, i, micSignal ? micSignal (t) : micGain * heard);
+                buffer.setSample (2, i, micSignal ? micSignal (t) : heard);
                 if (playedIn != nullptr)
                     playedIn->push_back (in);
             }
@@ -582,74 +580,6 @@ void clockDriftChecks (const juce::String& snapshotPath)
     editor->setSize (1200, 820);
     for (int i = 0; i < 20; ++i)
         pump (proc);
-    writeSnapshot (*editor, snapshotPath);
-}
-
-// The Mic meter's target zone and gain advice, with music through a simulated
-// room. No editor is open while it listens, so every peak comes to the guide.
-void micLevelChecks (const juce::String& snapshotPath)
-{
-    std::cout << "Mic level advice\n";
-    using Verdict = MicLevelGuide::Verdict;
-    AdaptiveRoomEQProcessor proc;
-    proc.enableAllBuses();
-    proc.setRateAndBufferSizeDetails (fs, blockSize);
-    proc.prepareToPlay (fs, blockSize);
-    SimulatedRoom room (6.0, 23, 1e-4, 0.0);
-    Show show { proc, room, 0.0, {}, {}, {} };
-    Music music;
-    MicLevelGuide guide;
-    const auto listen = [&] (Music* m)
-    {
-        proc.takeMicPeak();
-        proc.takeOutputPeak();
-        show.play (m, MicLevelGuide::windowSeconds);
-        return guide.update (proc.takeMicPeak(), proc.takeOutputPeak(), MicLevelGuide::windowSeconds, proc.isMicConnected());
-    };
-    const auto said = [] (const MicLevelGuide::Advice& a)
-    {
-        return juce::String::fromUTF8 (MicLevelGuide::text (a, false).c_str()) + " (peaks " + juce::String (a.micPeakDb, 1) + " dBFS)";
-    };
-
-    auto a = listen (nullptr);
-    check (a.verdict == Verdict::waiting, "nothing playing: waits instead of calling the room's hiss too quiet: " + said (a));
-    a = listen (&music);
-    const auto atUnity = a.micPeakDb;
-
-    show.micGainDb = -45.0 - atUnity;
-    a = listen (&music);
-    check (a.verdict == Verdict::tooQuiet && a.changeDb >= 15 && a.changeDb <= 25, "a quiet mic: " + said (a));
-    show.micGainDb += a.changeDb;
-    a = listen (&music);
-    check (a.verdict == Verdict::good, "turned up as advised: " + said (a));
-
-    show.micGainDb = -6.0 - atUnity;
-    a = listen (&music);
-    check (a.verdict == Verdict::hot && a.changeDb <= -5, "a hot mic: " + said (a));
-    show.micGainDb += a.changeDb;
-    a = listen (&music);
-    check (a.verdict == Verdict::good, "turned down as advised: " + said (a));
-
-    show.micGainDb = 4.0 - atUnity;
-    a = listen (&music);
-    check (a.verdict == Verdict::clipping, "a clipping mic: " + said (a));
-    listen (nullptr);   // the reverb tail right after the music stops still counts
-    a = listen (nullptr);
-    check (a.verdict == Verdict::waiting, "a few seconds after the music stops: " + said (a));
-
-    show.micSignal = [] (std::size_t) { return 0.0f; };
-    a = listen (&music);
-    check (a.verdict == Verdict::noSignal, "music playing but nothing from the mic: " + said (a));
-    show.micSignal = {};
-
-    // The editor, with the mic in the zone.
-    show.micGainDb = -18.0 - atUnity;
-    std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
-    auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
-    editor->setSize (1200, 820);
-    show.play (&music, MicLevelGuide::windowSeconds);
-    ours->updateMeters (MicLevelGuide::windowSeconds);
-    check (ours->getMicAdvice().verdict == Verdict::good, "the editor's Mic meter agrees: " + said (ours->getMicAdvice()));
     writeSnapshot (*editor, snapshotPath);
 }
 
@@ -1402,8 +1332,6 @@ int main (int argc, char** argv)
                 if (auto* gr = dynamic_cast<ResponseGraph*> (c))
                     showGraph = gr;
             auto& spectrogram = showGraph->getSpectrogram();
-            check (spectrogram.isVisible() && spectrogram.getWidth() > 400 && spectrogram.getHeight() > 100,
-                   "the spectrogram is between the change graph and the EQ strip");
             SimulatedRoom room (7.0, 41, 1e-3, 0.0);
             Show show { proc, room, 0.0, {}, {}, {} };
             Music music;
@@ -1424,7 +1352,67 @@ int main (int argc, char** argv)
             check (frames > 20 * 20, "22 s of music: " + juce::String (frames) + " spectrogram frames");
             proc.getSpl().collect();
         }
-        writeSnapshot (*editor, stem + "-show.png");
+        {
+            // The change graph's hover readout, and the spectrogram/EQ panel and its switch.
+            using Panel = AdaptiveRoomEQProcessor::ShowPanel;
+            ResponseGraph* showGraph = nullptr;
+            for (auto* c : editor->getChildren())
+                if (auto* gr = dynamic_cast<ResponseGraph*> (c))
+                    showGraph = gr;
+            check (proc.getShowPanel() == Panel::both, "the lower panel shows the spectrogram with the EQ over it by default");
+            const auto& names = roomeq::showBandNames();
+            const auto b200 = static_cast<int> (std::find (names.begin(), names.end(), "200") - names.begin());
+            const auto hover = showGraph->showHoverText (showGraph->getShowBandPosition (b200));
+            check (hover.startsWith ("200 Hz band (178" + juce::String::fromUTF8 ("\xe2\x80\x93") + "225 Hz)") && hover.contains ("dB since soundcheck") && hover.contains ("flagged"),
+                   "hovering the 200 Hz bar: " + hover);
+            const auto panelHover = showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0));
+            check (panelHover.contains ("correction") && panelHover.contains ("voicing"), "hovering the lower panel: " + panelHover);
+
+            auto source = juce::Desktop::getInstance().getMainMouseSource();
+            const auto event = [&] (juce::Point<float> at, juce::Point<float> down, bool dragged)
+            {
+                const auto now = juce::Time::getCurrentTime();
+                return juce::MouseEvent (source, at, {}, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, showGraph, showGraph, now, down, now, 1, dragged);
+            };
+            const auto dragBand = [&] (int band, juce::Point<float> by)
+            {
+                const auto from = showGraph->getVoicingHandlePosition (band), to = from + by;
+                showGraph->mouseDown (event (from, from, false));
+                showGraph->mouseDrag (event ((from + to) / 2.0f, from, true));
+                showGraph->mouseDrag (event (to, from, true));
+                showGraph->mouseUp (event (to, from, true));
+            };
+            const auto freqBefore = proc.getEqSettings().voicing[5].freq, gainBefore = proc.getEqSettings().voicing[5].gainDb;
+            dragBand (5, { -40.0f, 20.0f });
+            const auto moved = proc.getEqSettings().voicing[5];
+            check (moved.freq < freqBefore * 0.95 && moved.gainDb < gainBefore - 0.5,
+                   "a voicing handle drags over the spectrogram (band 6 to " + juce::String (moved.freq, 0) + " Hz, "
+                       + juce::String (moved.gainDb, 1) + " dB)");
+            proc.setShowPanel (Panel::spectrogram);
+            showGraph->showPanelChanged();
+            dragBand (5, { -40.0f, 20.0f });
+            check (proc.getEqSettings().voicing[5] == moved && ! showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0)).contains ("correction"),
+                   "spectrogram only: the handles step aside");
+            writeSnapshot (*editor, stem + "-show-spectrogram.png");
+            proc.setShowPanel (Panel::eq);
+            showGraph->showPanelChanged();
+            writeSnapshot (*editor, stem + "-show-eq.png");
+            juce::MemoryBlock saved;
+            proc.getStateInformation (saved);
+            AdaptiveRoomEQProcessor restored;
+            restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+            check (restored.getShowPanel() == Panel::eq, "the choice is saved with the session");
+            setParam (proc, "v6Freq", static_cast<float> (freqBefore));
+            setParam (proc, "v6Gain", static_cast<float> (gainBefore));
+            proc.setShowPanel (Panel::both);
+            showGraph->showPanelChanged();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            const auto over200 = showGraph->getShowBandPosition (b200);
+            showGraph->mouseMove (event (over200, over200, false));   // the snapshot shows the readout
+            writeSnapshot (*editor, stem + "-show.png");
+            showGraph->mouseExit (event (over200, over200, false));
+        }
         editor->setSize (1060, 740);
         writeSnapshot (*editor, stem + "-show-small.png");
         editor->setSize (1200, 820);
@@ -1547,7 +1535,6 @@ int main (int argc, char** argv)
                "and the saved session stays cleared");
     }
 
-    micLevelChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-miclevel.png");
     clockDriftChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-drift.png");
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 

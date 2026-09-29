@@ -26,12 +26,7 @@ So far all of this has only been checked against simulated rooms. The next step 
 7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
 8. Click a capture to highlight its curve: it's drawn on top, thicker, with the others dimmed and its name in the legend. Verify captures can be highlighted too. Click it again to clear the highlight.
 
-**Mic gain.** The Mic meter in the header has a green target zone, −30 to −10 dBFS, for the mic's peaks. The line under it says what to do:
-- ✓ **in the target range**;
-- ! **too quiet**, ! **hot** or ! **near clipping**, with about how many dB to turn the mic gain up or down. It aims 5 dB inside the zone, so the level can move a little without leaving it;
-- ✗ **clipping** (turn it down at least that much) or ✗ **no mic signal**.
-
-It judges the loudest peaks of the last 3 s, and only while something plays through the plugin (output peaks above −40 dBFS), so a quiet room never reads as "turn it up". Clipping is reported whatever is playing. In the plugin, set the gain with soundcheck music or pink noise at show level. The standalone app only plays test signals, so run one (a pink noise capture is easiest) and set the gain while it plays. The level has to move 1 dB past the edge of the zone before the advice changes, so it doesn't flicker.
+**Mic gain.** The Mic meter in the header has a green zone, −30 to −10 dBFS: set the mic gain so its peaks sit there. In the plugin, do it with soundcheck music or pink noise at show level. The standalone app only plays test signals, so run one (a pink noise capture is easiest) and set the gain while it plays. The bar turns red above −3 dBFS.
 
 **Clear all…** (under the measure buttons) starts the room over. After a confirmation, it deletes:
 - every measurement (positions and verify captures), so numbering starts again at 1;
@@ -148,10 +143,14 @@ The left panel has:
 - the loudness readout and **Re-check level**;
 - the SPL meter.
 
-The capture list goes. The graph side has three panels on the same 20 Hz–20 kHz axis:
-- **Change since soundcheck**, ±6 dB. A bar beyond that is pinned to the edge with an arrow and its value.
-- **Mic spectrogram**, the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
-- **The EQ strip.**
+The capture list goes. The graph side has two panels on the same 20 Hz–20 kHz axis:
+- **Change since soundcheck**, ±6 dB. A bar beyond that is pinned to the edge with an arrow and its value. Hover over a bar to see which band it is and its change, e.g. "200 Hz band (178–225 Hz): +4.8 dB since soundcheck (flagged)".
+- **The mic's spectrogram with the EQ over it.** A **Both / Spectrogram / EQ** switch at the right of its legend row picks what's shown, and the choice is saved with the session.
+  - **Both** (the default) draws the correction, voicing and loudness curves and the voicing handles over the spectrogram. Drag a handle straight to where you see a build-up. Hovering reads out the frequency and the EQ there.
+  - **Spectrogram** shows it alone, with its time labels and colour key; the handles step aside.
+  - **EQ** shows the curves alone, as in the setup view.
+
+  The spectrogram covers the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
 
 **SPL at the mic** reads dB SPL from the measurement mic, so it needs the mic calibration (calibrator, Loudness tab). Until then it says so. It shows:
 - the live **dB(A) fast** (125 ms) level, and its max;
@@ -287,11 +286,10 @@ The harness drives the real processor against a simulated room. It checks:
 - a dead mic input refuses every test signal and nothing plays;
 - Clear all: refused mid-measurement; afterwards no measurements, corrections, level calibration or show reference, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
 - measurements bypass the correction: with correction, voicing, loudness shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
-- the mic level advice: waiting while nothing plays, too quiet and hot mics brought into the zone by following it, clipping, and no signal;
 - selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - show tracking: a reference from music in a room with a crowd, the countdown to the first result and then the next, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
-- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music;
+- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering the change graph naming the band and its change; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
 It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.

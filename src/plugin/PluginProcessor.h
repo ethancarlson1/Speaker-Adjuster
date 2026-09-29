@@ -112,6 +112,11 @@ public:
     // The editor's compact show layout; saved with the session (not a parameter).
     bool isShowView() const noexcept { return showView.load(); }
     void setShowView (bool shouldShow) noexcept { showView = shouldShow; }
+    // The show view's lower panel: the mic's spectrogram with the EQ curves over it,
+    // or either alone. Saved with the session.
+    enum class ShowPanel { both = 0, spectrogram, eq };
+    ShowPanel getShowPanel() const noexcept { return static_cast<ShowPanel> (showPanel.load()); }
+    void setShowPanel (ShowPanel p) noexcept { showPanel = static_cast<int> (p); }
     const LoudnessStage::Status& getLoudnessStatus() const { return loudness.getStatus(); }
 
     juce::AudioProcessorValueTreeState& getParameters() { return parameters; }
@@ -136,6 +141,7 @@ private:
     TapRecorder showTap;                          // the final output and the mic, for show tracking
     ShowController showControl { showTap };
     std::atomic<bool> showView { false };
+    std::atomic<int> showPanel { 0 };
     SplMeter spl;
     SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips
     juce::TimedCallback splCollector { [this] { spl.collect(); } };   // keeps the Leqs going with the editor closed

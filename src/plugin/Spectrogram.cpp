@@ -15,8 +15,6 @@ Spectrogram::Spectrogram (SampleFifo& fifoToUse, std::function<double()> sampleR
     pulled.assign (1 << 15, 0.0f);
     for (std::size_t i = 0; i < lut.size(); ++i)
         lut[i] = colourFor (static_cast<float> (i) / static_cast<float> (lut.size() - 1)).getPixelARGB();
-    setInterceptsMouseClicks (false, false);
-    setOpaque (true);
 }
 
 juce::Colour Spectrogram::colourFor (float t)
@@ -37,19 +35,11 @@ juce::Colour Spectrogram::colourFor (float t)
     return stops.back().second;
 }
 
-void Spectrogram::visibilityChanged()
+void Spectrogram::setSize (int width, int height)
 {
-    // Made visible before the editor has a window (a session that opens in the show
-    // view) still needs its timer, so it runs while visible and skips work off screen.
-    if (isVisible())
-        startTimerHz (30);
-    else
-        stopTimer();
-}
-
-void Spectrogram::resized()
-{
-    const auto w = juce::jmax (1, getWidth()), h = juce::jmax (1, getHeight());
+    const auto w = juce::jmax (1, width), h = juce::jmax (1, height);
+    if (image.isValid() && image.getWidth() == w && image.getHeight() == h)
+        return;
     const auto old = image;
     image = juce::Image (juce::Image::RGB, w, h, true);
     image.clear (image.getBounds(), theme::plane);
@@ -91,14 +81,6 @@ void Spectrogram::mapColumns()
         centreBin[i] = std::sqrt (lo * hi) * perHz;
         colWidthBins[i] = (hi - lo) * perHz;
     }
-}
-
-void Spectrogram::timerCallback()
-{
-    if (! isShowing())
-        return;
-    update();
-    repaint();
 }
 
 void Spectrogram::update()
@@ -199,22 +181,24 @@ void Spectrogram::writeRow()
     std::fill (rowLevels.begin(), rowLevels.end(), -300.0f);
 }
 
-void Spectrogram::paint (juce::Graphics& g)
+bool Spectrogram::hearsTheMic() const
 {
-    g.fillAll (theme::plane);
+    return frames > 0 && juce::Time::getMillisecondCounter() - lastDataMs <= 2000;
+}
+
+void Spectrogram::draw (juce::Graphics& g, juce::Rectangle<int> area, float opacity) const
+{
+    g.setColour (theme::plane);
+    g.fillRect (area);
     if (image.isValid())
     {
         // The circular image in two slices: from the newest row down to the bottom, then the rest.
+        juce::Graphics::ScopedSaveState state (g);
+        g.setOpacity (opacity);
         const auto h = image.getHeight(), w = image.getWidth();
         const auto top = h - writeRowIndex;
-        g.drawImage (image, 0, 0, w, top, 0, writeRowIndex, w, top);
+        g.drawImage (image, area.getX(), area.getY(), w, top, 0, writeRowIndex, w, top);
         if (writeRowIndex > 0)
-            g.drawImage (image, 0, top, w, writeRowIndex, 0, 0, w, writeRowIndex);
-    }
-    if (frames == 0 || juce::Time::getMillisecondCounter() - lastDataMs > 2000)
-    {
-        g.setColour (theme::ink2);
-        g.setFont (juce::FontOptions (13.0f));
-        g.drawText ("Waiting for the mic", getLocalBounds(), juce::Justification::centred);
+            g.drawImage (image, area.getX(), area.getY() + top, w, writeRowIndex, 0, 0, w, writeRowIndex);
     }
 }

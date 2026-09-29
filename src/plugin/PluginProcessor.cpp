@@ -650,6 +650,7 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.appendChild (loudnessControl.toValueTree(), nullptr);
     root.appendChild (showControl.toValueTree(), nullptr);
     root.setProperty ("showView", showView.load(), nullptr);
+    root.setProperty ("showPanel", showPanel.load(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
     ct.setProperty ("name", juce::String::fromUTF8 (custom.name.c_str()), nullptr);
@@ -684,6 +685,7 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     loudnessControl.fromValueTree (root.getChildWithName (LoudnessController::treeType));
     showControl.fromValueTree (root.getChildWithName (ShowController::treeType));
     showView = static_cast<bool> (root.getProperty ("showView", false));
+    showPanel = juce::jlimit (0, 2, static_cast<int> (root.getProperty ("showPanel", 0)));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

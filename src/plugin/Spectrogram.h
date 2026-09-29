@@ -10,15 +10,15 @@
 #include <vector>
 
 // The show view's spectrogram of the mic: frequency across, on the graph's
-// 20 Hz-20 kHz log axis (so it lines up with the change bars above it and the
-// EQ curves below), time down with the newest at the top, about 20 s of it.
+// 20 Hz-20 kHz log axis (the EQ curves are drawn over it, and the change bars
+// above it line up), time down with the newest at the top, about 20 s of it.
 //
 // Each column is the energy in its slice of the axis (the power density there
 // times its width, like an RTA), so pink noise reads flat. Colour is level against the
-// loudest of the last few seconds, over 60 dB. The FFTs run on the message
-// thread, only while it's on screen; the audio thread just fills the FIFO.
-class Spectrogram final : public juce::Component,
-                          private juce::Timer
+// loudest of the last few seconds, over 60 dB. The graph that draws it runs
+// update() on the message thread while it's on screen; the audio thread just
+// fills the FIFO.
+class Spectrogram final
 {
 public:
     static constexpr int fftOrder = 13;              // 8192 points: ~6 Hz bins at 48 kHz, 170 ms
@@ -30,19 +30,19 @@ public:
 
     Spectrogram (SampleFifo& fifoToUse, std::function<double()> sampleRateSource);
 
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    void visibilityChanged() override;
-
-    // Takes what's new in the FIFO and analyses it (the timer does this; public for tests).
+    // The picture's size in pixels (what's there is kept, scaled).
+    void setSize (int width, int height);
+    // Takes what's new in the FIFO and analyses it.
     void update();
+    // Draws it into `area` (the size given to setSize).
+    void draw (juce::Graphics&, juce::Rectangle<int> area, float opacity) const;
+    bool hearsTheMic() const;   // analysed something in the last 2 s
     int getFramesAnalysed() const { return frames; }
     double getNewestPeakHz() const { return newestPeakHz; }   // the loudest column of the newest frame
 
     static juce::Colour colourFor (float normalised);          // 0 (quiet) .. 1 (loudest)
 
 private:
-    void timerCallback() override;
     void analyseFrame();
     void mapColumns();
     void writeRow();

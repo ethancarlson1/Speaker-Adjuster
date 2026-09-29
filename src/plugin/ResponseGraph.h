@@ -16,7 +16,8 @@ class AdaptiveRoomEQProcessor;
 // voicing band (drag: frequency and gain, wheel: Q, double-click: on/off).
 // With the custom target selected, its points can be dragged too
 // (double-click adds or removes a point). Hovering shows a readout.
-class ResponseGraph final : public juce::Component
+class ResponseGraph final : public juce::Component,
+                            private juce::Timer
 {
 public:
     explicit ResponseGraph (AdaptiveRoomEQProcessor& processorToUse);
@@ -25,11 +26,15 @@ public:
     void refresh();                                   // polled: repaints if the EQ or target changed
 
     // Show view: the top panel shows the change since the soundcheck reference
-    // (a bar per third octave) instead of the measurements, with the mic's
-    // spectrogram between it and the EQ strip, on the same frequency axis.
+    // (a bar per third octave, with a readout on hover) instead of the
+    // measurements. The panel below shows the mic's spectrogram with the EQ
+    // curves and voicing handles over it, or either alone (Both / Spectrogram /
+    // EQ); all on the same frequency axis.
     void setShowMode (bool shouldShow);
     bool isShowMode() const { return showMode; }
+    void showPanelChanged();                          // the processor's choice changed (tests, session restore)
     Spectrogram& getSpectrogram() { return spectrogram; }
+    juce::String showHoverText (juce::Point<float> p) const;   // what hovering there says ("" for nothing), for tests
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
 
@@ -39,6 +44,8 @@ public:
     // Where the handles are drawn (component coordinates), for tests.
     juce::Point<float> getVoicingHandlePosition (int band) const { return voicingHandle (band, eqArea()); }
     juce::Point<float> getTargetPointPosition (int index) const { return targetPoint (static_cast<std::size_t> (index), responseArea()); }
+    juce::Point<float> getShowBandPosition (int band) const;   // the middle of a change-graph band's column
+    juce::Point<float> getShowPanelPoint (double hz) const;    // in the spectrogram/EQ panel, halfway down
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -63,9 +70,13 @@ private:
     };
 
     juce::Rectangle<float> responseArea() const;
-    juce::Rectangle<float> spectrogramArea() const;   // show mode
-    juce::Rectangle<float> eqArea() const;
-    void drawSpectrogramFrame (juce::Graphics&, juce::Rectangle<float> area) const;
+    juce::Rectangle<float> eqArea() const;            // show mode: the spectrogram/EQ panel
+    void drawShowPanel (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawShowHover (juce::Graphics&) const;
+    int showBandAt (juce::Point<float> p) const;      // the change graph's band under p, or -1
+    bool showsSpectrogram() const;
+    bool showsEq() const;
+    void timerCallback() override;
     float xFor (double hz, juce::Rectangle<float> area) const;
     double hzFor (float x, juce::Rectangle<float> area) const;
     float yFor (double db, juce::Rectangle<float> area) const;
@@ -81,7 +92,8 @@ private:
     static float drawLegend (juce::Graphics&, juce::Point<float> at, const std::vector<LegendItem>& items);   // returns where it ends
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
-    void drawEq (juce::Graphics&, juce::Rectangle<float> area) const;
+    // overImage: halos so the curves read over the spectrogram; reserveRight: room kept at the legend row's end.
+    void drawEq (juce::Graphics&, juce::Rectangle<float> area, bool overImage = false, float reserveRight = 0.0f) const;
     void drawShowChange (juce::Graphics&, juce::Rectangle<float> area) const;
     int selectedIndex() const;                          // among the fit positions, or -1
     const std::vector<double>* selectedCurve() const;   // the selected capture's curve (position or verify), or null
@@ -105,7 +117,7 @@ private:
     int selectedId = -1;
     double dbTop = 10.0, dbBottom = -30.0;
     static constexpr double eqTop = 12.0, eqBottom = -15.0;
-    float hoverX = -1.0f;
+    float hoverX = -1.0f, hoverY = -1.0f;
 
     // Inputs of the cached curves.
     EqSettings lastEq;
@@ -125,4 +137,5 @@ private:
     std::vector<std::pair<double, double>> dragPoints;
 
     Spectrogram spectrogram;
+    juce::TextButton bothButton { "Both" }, spectrogramButton { "Spectrogram" }, eqOnlyButton { "EQ" };
 };

@@ -16,6 +16,7 @@ constexpr int margin = 16;
 constexpr int controlsWidth = 330;
 constexpr int headerHeight = 60;
 constexpr int statusHeight = 92;
+constexpr float micTargetLowDb = -30.0f, micTargetHighDb = -10.0f;   // the Mic meter's green zone, for the mic's peaks
 
 const char* const placementTip =
     "Measure 3-5 spots across the audience area, at different distances and off-axis. "
@@ -681,25 +682,15 @@ void AdaptiveRoomEQEditor::refreshFromEngine()
     repaint();
 }
 
-void AdaptiveRoomEQEditor::updateMeters (double seconds)
+void AdaptiveRoomEQEditor::timerCallback()
 {
     const auto decayed = [] (float current, float peak)
     {
         const auto peakDb = juce::Decibels::gainToDecibels (peak, meterFloorDb);
         return juce::jmax (peakDb, current - meterDecayDbPerTick, meterFloorDb);
     };
-    const auto micPeak = processor.takeMicPeak();
-    const auto outputPeak = processor.takeOutputPeak();
-    micLevelDb = decayed (micLevelDb, micPeak);
-    outputLevelDb = decayed (outputLevelDb, outputPeak);
-    micGuide.update (micPeak, outputPeak, seconds, processor.isMicConnected());
-}
-
-void AdaptiveRoomEQEditor::timerCallback()
-{
-    const auto now = juce::Time::getMillisecondCounterHiRes();
-    updateMeters (lastMeterMs > 0.0 ? (now - lastMeterMs) / 1000.0 : 1.0 / refreshHz);
-    lastMeterMs = now;
+    micLevelDb = decayed (micLevelDb, processor.takeMicPeak());
+    outputLevelDb = decayed (outputLevelDb, processor.takeOutputPeak());
 
     auto& engine = processor.getEngine();
     const auto activity = engine.getActivity();
@@ -1191,19 +1182,10 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     if (! processor.isStandalone())
         header.removeFromLeft (122);   // the Show view button
 
-    // Meters on one row; under the Mic meter, the advice for its gain.
     auto meters = header.removeFromRight (560);
-    auto meterRow = meters.removeFromTop (20);
-    drawMeter (g, meterRow.removeFromRight (270).withSizeKeepingCentre (270, 18), "Output", outputLevelDb);
-    meterRow.removeFromRight (16);
-    meters.removeFromRight (286);
-    drawMeter (g, meterRow.removeFromRight (270).withSizeKeepingCentre (270, 18), "Mic", micLevelDb, true);
-    const auto& advice = micGuide.get();
-    const auto severity = MicLevelGuide::severity (advice.verdict);
-    g.setColour (severity == 0 ? theme::good : severity == 1 ? theme::warning : severity == 2 ? theme::critical : theme::muted);
-    g.setFont (juce::FontOptions (12.0f));
-    g.drawFittedText (juce::String::fromUTF8 (MicLevelGuide::text (advice, processor.isStandalone()).c_str()),
-                      meters.removeFromRight (270).withTrimmedTop (2), juce::Justification::centredLeft, 1, 0.8f);
+    drawMeter (g, meters.removeFromRight (270).withSizeKeepingCentre (270, 18), "Output", outputLevelDb);
+    meters.removeFromRight (16);
+    drawMeter (g, meters.removeFromRight (270).withSizeKeepingCentre (270, 18), "Mic", micLevelDb, true);
 
     const auto micConnected = processor.isMicConnected();
     g.setFont (juce::FontOptions (13.0f));
@@ -1340,7 +1322,7 @@ void AdaptiveRoomEQEditor::drawMeter (juce::Graphics& g, juce::Rectangle<int> ar
     if (withTarget)   // the zone the mic's peaks should sit in, over the bar so it shows either way
     {
         const auto xFor = [&bar] (float db) { return bar.getX() + bar.getWidth() * juce::jmap (db, meterFloorDb, 0.0f, 0.0f, 1.0f); };
-        const auto lo = xFor (MicLevelGuide::targetLowDb), hi = xFor (MicLevelGuide::targetHighDb);
+        const auto lo = xFor (micTargetLowDb), hi = xFor (micTargetHighDb);
         g.setColour (theme::good.withAlpha (0.3f));
         g.fillRect (juce::Rectangle<float> (lo, bar.getY(), hi - lo, bar.getHeight()));
         g.setColour (theme::good);

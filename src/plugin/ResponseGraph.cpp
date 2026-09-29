@@ -3,6 +3,7 @@
 #include "plugin/PluginProcessor.h"
 #include "plugin/Theme.h"
 
+#include <array>
 #include <cmath>
 #include <functional>
 
@@ -53,13 +54,69 @@ std::size_t nearestIndex (const std::vector<double>& grid, double hz)
 ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
     : processor (p), spectrogram (p.getMicFifo(), [&p] { return p.getSampleRate(); })
 {
-    addChildComponent (spectrogram);
+    using Panel = AdaptiveRoomEQProcessor::ShowPanel;
+    const std::array<std::pair<juce::TextButton*, Panel>, 3> choices { { { &bothButton, Panel::both },
+                                                                         { &spectrogramButton, Panel::spectrogram },
+                                                                         { &eqOnlyButton, Panel::eq } } };
+    for (const auto& [button, panel] : choices)
+    {
+        button->setRadioGroupId (7);
+        button->setClickingTogglesState (true);
+        button->setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.6f));
+        button->onClick = [this, which = panel]
+        {
+            processor.setShowPanel (which);
+            showPanelChanged();
+        };
+        addChildComponent (button);
+    }
+    bothButton.setTooltip ("The mic's spectrogram with the EQ curves over it: drag a voicing handle to where you see a build-up.");
+    spectrogramButton.setTooltip ("Just the mic's spectrogram (the last 20 s, newest at the top).");
+    eqOnlyButton.setTooltip ("Just the EQ curves and voicing handles.");
     updateCurves();
 }
 
 void ResponseGraph::resized()
 {
-    spectrogram.setBounds (spectrogramArea().toNearestInt());
+    if (showMode)
+    {
+        const auto area = eqArea().toNearestInt();
+        spectrogram.setSize (area.getWidth(), area.getHeight());
+        auto row = juce::Rectangle<int> (area.getRight() - 214, area.getY() - 25, 214, 21);
+        eqOnlyButton.setBounds (row.removeFromRight (44));
+        spectrogramButton.setBounds (row.removeFromRight (100));
+        bothButton.setBounds (row.removeFromRight (60));
+    }
+}
+
+void ResponseGraph::showPanelChanged()
+{
+    using Panel = AdaptiveRoomEQProcessor::ShowPanel;
+    const auto panel = processor.getShowPanel();
+    bothButton.setToggleState (panel == Panel::both, juce::dontSendNotification);
+    spectrogramButton.setToggleState (panel == Panel::spectrogram, juce::dontSendNotification);
+    eqOnlyButton.setToggleState (panel == Panel::eq, juce::dontSendNotification);
+    repaint();
+}
+
+bool ResponseGraph::showsSpectrogram() const
+{
+    return showMode && processor.getShowPanel() != AdaptiveRoomEQProcessor::ShowPanel::eq;
+}
+
+bool ResponseGraph::showsEq() const
+{
+    return ! showMode || processor.getShowPanel() != AdaptiveRoomEQProcessor::ShowPanel::spectrogram;
+}
+
+void ResponseGraph::timerCallback()
+{
+    // The spectrogram keeps up while it's on screen (a session can open in the
+    // show view before the editor has a window, so the timer runs regardless).
+    if (! showsSpectrogram() || ! isShowing())
+        return;
+    spectrogram.update();
+    repaint (eqArea().expanded (2.0f).toNearestInt());
 }
 
 void ResponseGraph::setData (std::shared_ptr<const MeasurementEngine::Display> newDisplay, int newSelectedId)
@@ -112,9 +169,14 @@ void ResponseGraph::setShowMode (bool shouldShow)
     if (showMode != shouldShow)
     {
         showMode = shouldShow;
-        spectrogram.setVisible (showMode);
+        for (auto* b : { &bothButton, &spectrogramButton, &eqOnlyButton })
+            b->setVisible (showMode);
+        if (showMode)
+            startTimerHz (30);
+        else
+            stopTimer();
+        showPanelChanged();
         resized();
-        repaint();
     }
 }
 
@@ -218,56 +280,165 @@ bool ResponseGraph::customTargetEditable() const
 // ---------------------------------------------------------------------------
 // Geometry
 
-// Setup: response (66%) and EQ strip. Show: change since soundcheck (36%),
-// spectrogram (34%) and EQ strip; each with a legend row above it.
+// Setup: response (66%) and EQ strip. Show: change since soundcheck (40%), and
+// the spectrogram/EQ panel. Each has a legend row above it.
 juce::Rectangle<float> ResponseGraph::responseArea() const
 {
     const auto full = getLocalBounds().toFloat().withTrimmedLeft (44.0f).withTrimmedRight (14.0f);
-    const auto plotHeight = full.getHeight() - 30.0f - 30.0f - 22.0f - (showMode ? 26.0f : 0.0f);
-    return full.withTrimmedTop (30.0f).withHeight (plotHeight * (showMode ? 0.36f : 0.66f));
-}
-
-juce::Rectangle<float> ResponseGraph::spectrogramArea() const
-{
-    const auto r = responseArea();
-    const auto plotHeight = static_cast<float> (getHeight()) - 30.0f - 30.0f - 22.0f - 26.0f;
-    return showMode ? r.withY (r.getBottom() + 26.0f).withHeight (plotHeight * 0.34f) : juce::Rectangle<float>();
+    const auto plotHeight = full.getHeight() - 30.0f - 30.0f - 22.0f;
+    return full.withTrimmedTop (30.0f).withHeight (plotHeight * (showMode ? 0.40f : 0.66f));
 }
 
 juce::Rectangle<float> ResponseGraph::eqArea() const
 {
-    const auto r = showMode ? spectrogramArea() : responseArea();
+    const auto r = responseArea();
     const auto bottom = static_cast<float> (getHeight()) - 22.0f;
     return r.withY (r.getBottom() + 30.0f).withBottom (bottom);
 }
 
-void ResponseGraph::drawSpectrogramFrame (juce::Graphics& g, juce::Rectangle<float> area) const
+void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> area) const
 {
-    // Legend row: what it is, and the colour scale.
-    const auto rowY = area.getY() - 22.0f;
-    g.setFont (juce::FontOptions (12.0f));
-    g.setColour (theme::ink2);
-    g.drawText ("Mic spectrogram, last " + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
-                juce::Rectangle<float> (area.getX(), rowY, 300.0f, 18.0f), juce::Justification::centredLeft);
-    auto key = juce::Rectangle<float> (area.getRight() - 250.0f, rowY, 250.0f, 18.0f);
-    g.setColour (theme::muted);
-    g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::rangeDb)) + " dB",
-                key.removeFromLeft (52.0f), juce::Justification::centredRight);
-    g.drawText ("loudest", key.removeFromRight (58.0f), juce::Justification::centredLeft);
-    const auto bar = key.reduced (6.0f, 5.0f);
-    for (int i = 0; i < static_cast<int> (bar.getWidth()); ++i)
+    const auto spectrum = showsSpectrogram(), eq = showsEq();
+    const auto reserve = 222.0f;   // the Both / Spectrogram / EQ buttons
+    if (spectrum)
+        spectrogram.draw (g, area.toNearestInt(), eq ? 0.7f : 1.0f);
+    if (eq)
     {
-        g.setColour (Spectrogram::colourFor (static_cast<float> (i) / bar.getWidth()));
-        g.fillRect (juce::Rectangle<float> (bar.getX() + static_cast<float> (i), bar.getY(), 1.0f, bar.getHeight()));
+        drawEq (g, area, spectrum, reserve);
     }
-    // Time: the newest at the top.
-    g.setFont (juce::FontOptions (11.0f));
-    g.setColour (theme::muted);
-    g.drawText ("now", juce::Rectangle<float> (0.0f, area.getY() - 2.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
-    g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
-                juce::Rectangle<float> (0.0f, area.getBottom() - 12.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
+    else
+    {
+        drawFrequencyAxis (g, area, true);
+        g.setColour (theme::axis);
+        g.drawRect (area, 1.0f);
+        // Legend row: what it is, and the colour scale (when there's room).
+        const auto rowY = area.getY() - 22.0f;
+        g.setFont (juce::FontOptions (12.0f));
+        g.setColour (theme::ink2);
+        const auto title = "Mic spectrogram, last " + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s";
+        const auto titleWidth = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), title) + 8.0f;
+        g.drawText (title, juce::Rectangle<float> (area.getX(), rowY, titleWidth, 18.0f), juce::Justification::centredLeft);
+        auto key = juce::Rectangle<float> (area.getRight() - reserve - 250.0f, rowY, 250.0f, 18.0f);
+        if (key.getX() > area.getX() + titleWidth + 12.0f)
+        {
+            g.setColour (theme::muted);
+            g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::rangeDb)) + " dB",
+                        key.removeFromLeft (52.0f), juce::Justification::centredRight);
+            g.drawText ("loudest", key.removeFromRight (58.0f), juce::Justification::centredLeft);
+            const auto bar = key.reduced (6.0f, 5.0f);
+            for (int i = 0; i < static_cast<int> (bar.getWidth()); ++i)
+            {
+                g.setColour (Spectrogram::colourFor (static_cast<float> (i) / bar.getWidth()));
+                g.fillRect (juce::Rectangle<float> (bar.getX() + static_cast<float> (i), bar.getY(), 1.0f, bar.getHeight()));
+            }
+        }
+        // Time: the newest at the top.
+        g.setFont (juce::FontOptions (11.0f));
+        g.setColour (theme::muted);
+        g.drawText ("now", juce::Rectangle<float> (0.0f, area.getY() - 2.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
+        g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
+                    juce::Rectangle<float> (0.0f, area.getBottom() - 12.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
+    }
+    if (spectrum && ! spectrogram.hearsTheMic())
+    {
+        g.setColour (theme::ink2);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText ("Spectrogram: waiting for the mic", area.withTrimmedTop (area.getHeight() * 0.3f).withHeight (20.0f),
+                    juce::Justification::centred);
+    }
+}
+
+juce::Point<float> ResponseGraph::getShowBandPosition (int band) const
+{
+    const auto area = responseArea();
+    return { xFor (roomeq::recheckBands()[static_cast<std::size_t> (band)], area), area.getCentreY() };
+}
+
+juce::Point<float> ResponseGraph::getShowPanelPoint (double hz) const
+{
+    const auto area = eqArea();
+    return { xFor (hz, area), area.getCentreY() };
+}
+
+int ResponseGraph::showBandAt (juce::Point<float> p) const
+{
+    const auto area = responseArea();
+    if (! showMode || ! area.contains (p))
+        return -1;
+    const auto hz = hzFor (p.x, area);
+    const auto& bands = roomeq::recheckBands();
+    for (std::size_t b = 0; b < bands.size(); ++b)
+        if (hz >= bands[b] * std::exp2 (-1.0 / 6.0) && hz < bands[b] * std::exp2 (1.0 / 6.0))
+            return static_cast<int> (b);
+    return -1;
+}
+
+juce::String ResponseGraph::showHoverText (juce::Point<float> p) const
+{
+    const auto dash = juce::String::fromUTF8 ("\xe2\x80\x93");
+    if (const auto b = showBandAt (p); b >= 0)
+    {
+        const auto info = processor.getShow().getInfo();
+        const auto centre = roomeq::recheckBands()[static_cast<std::size_t> (b)];
+        const auto name = juce::String (roomeq::showBandNames()[static_cast<std::size_t> (b)]);
+        const auto lo = theme::formatHz (centre * std::exp2 (-1.0 / 6.0)), hi = theme::formatHz (centre * std::exp2 (1.0 / 6.0));
+        const auto sameUnit = lo.endsWith (" kHz") == hi.endsWith (" kHz");   // "178-225 Hz", "891 Hz-1.1 kHz"
+        juce::String text = (name.endsWith ("k") ? name.dropLastCharacters (1) + " kHz" : name + " Hz") + " band ("
+                            + (sameUnit ? lo.upToFirstOccurrenceOf (" ", false, false) : lo) + dash + hi + "): ";
+        const auto& st = info.state;
+        const auto i = static_cast<std::size_t> (b);
+        if (! info.hasReference)
+            return text + "no soundcheck reference yet";
+        if (i >= st.deltaDb.size() || ! std::isfinite (st.deltaDb[i]))
+            return text + "not heard clearly enough yet";
+        const auto d = st.deltaDb[i];
+        text << (d >= 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) << juce::String (std::abs (d), 1) << " dB since soundcheck";
+        if (i < st.flags.size() && st.flags[i] != 0)
+            text << (std::abs (d) >= 6.0 ? " (flagged, 6 dB or more)" : " (flagged)");
+        return text;
+    }
+    const auto panel = eqArea();
+    if (showMode && panel.contains (p) && ! curves.grid.empty())
+    {
+        const auto i = nearestIndex (curves.grid, hzFor (p.x, panel));
+        auto text = theme::formatHz (curves.grid[i]);
+        if (showsEq())
+        {
+            text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1) << " dB";
+            if (curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated)
+                text << ", loudness " << juce::String (curves.loudness[i], 1) << " dB";
+        }
+        return text;
+    }
+    return {};
+}
+
+void ResponseGraph::drawShowHover (juce::Graphics& g) const
+{
+    if (hoverX < 0.0f || draggingBand >= 0)
+        return;
+    const juce::Point<float> p (hoverX, hoverY);
+    const auto text = showHoverText (p);
+    if (text.isEmpty())
+        return;
+    const auto inChange = showBandAt (p) >= 0;
+    const auto area = inChange ? responseArea() : eqArea();
+    if (! inChange)
+    {
+        g.setColour (theme::ink.withAlpha (0.5f));
+        g.drawVerticalLine (juce::roundToInt (hoverX), area.getY(), area.getBottom());
+    }
+    g.setFont (juce::FontOptions (12.0f));
+    const auto w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 16.0f;
+    auto box = juce::Rectangle<float> (hoverX + 10.0f, juce::jlimit (area.getY() + 4.0f, area.getBottom() - 26.0f, hoverY - 30.0f), w, 22.0f);
+    if (box.getRight() > area.getRight())
+        box.setX (juce::jmax (area.getX(), hoverX - 10.0f - w));
+    g.setColour (theme::plane.withAlpha (0.92f));
+    g.fillRoundedRectangle (box, 4.0f);
     g.setColour (theme::axis);
-    g.drawRect (area.expanded (1.0f), 1.0f);
+    g.drawRoundedRectangle (box, 4.0f, 1.0f);
+    g.setColour (theme::ink);
+    g.drawText (text, box, juce::Justification::centred);
 }
 
 float ResponseGraph::xFor (double hz, juce::Rectangle<float> area) const
@@ -332,6 +503,8 @@ juce::Point<float> ResponseGraph::voicingHandle (int band, juce::Rectangle<float
 
 int ResponseGraph::voicingHandleAt (juce::Point<float> p) const
 {
+    if (! showsEq())
+        return -1;
     const auto area = eqArea();
     auto best = -1;
     auto bestDistance = handleRadius + 4.0f;
@@ -527,7 +700,7 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
         }
 }
 
-void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area) const
+void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool overImage, float reserveRight) const
 {
     drawFrequencyAxis (g, area, true);
     drawEqAxis (g, area);
@@ -542,37 +715,43 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area) cons
     if (curves.showLoudness)
         legend.push_back ({ ! curves.loudnessOn ? "Loudness (off)" : curves.loudnessCalibrated ? "Loudness now" : "Loudness (not calibrated)",
                             theme::gold, ! loudnessActive });
-    drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
+    const auto legendEnd = drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
 
-    // Output level match, on the legend row's right.
+    // Output level match, on the legend row's right (left out when there's no room).
     {
         const auto r = std::round (curves.makeupDb * 10.0f) / 10.0f;
         const auto amount = std::abs (r) < 0.05f ? juce::String ("0.0")
                                                  : (r > 0.0f ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
         g.setColour (curves.levelMatch ? theme::ink2 : theme::muted);
         g.setFont (juce::FontOptions (12.0f));
-        g.drawText (curves.levelMatch ? "Output level matched: " + amount + " dB" : juce::String ("Output level match off"),
-                    juce::Rectangle<float> (area.getRight() - 240.0f, area.getY() - 24.0f, 236.0f, 20.0f),
-                    juce::Justification::centredRight);
+        const auto text = curves.levelMatch ? "Output level matched: " + amount + " dB" : juce::String ("Output level match off");
+        const auto box = juce::Rectangle<float> (area.getRight() - reserveRight - 240.0f, area.getY() - 24.0f, 236.0f, 20.0f);
+        if (box.getRight() - juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) > legendEnd + 12.0f)
+            g.drawText (text, box, juce::Justification::centredRight);
     }
 
     juce::Graphics::ScopedSaveState clip (g);
     g.reduceClipRegion (area.toNearestInt());
     const auto& grid = curves.grid;
+    const auto stroke = [&] (const juce::Path& path, juce::Colour colour, float width)
+    {
+        if (overImage)   // a dark edge so the curve reads over the spectrogram
+        {
+            g.setColour (theme::plane.withAlpha (0.85f));
+            g.strokePath (path, juce::PathStrokeType (width + 3.0f));
+        }
+        g.setColour (colour);
+        g.strokePath (path, juce::PathStrokeType (width));
+    };
     if (curves.showProposal)
     {
         g.setColour (theme::aqua.withAlpha (0.7f));
         strokeDashed (g, curve (grid, curves.proposal, area, true), 1.6f, 5.0f, 4.0f);
     }
-    g.setColour (theme::aqua.withAlpha (curves.correctionOn ? 1.0f : 0.4f));
-    g.strokePath (curve (grid, curves.applied, area, true), juce::PathStrokeType (2.2f));
-    g.setColour (theme::magenta.withAlpha (curves.voicingOn ? 1.0f : 0.4f));
-    g.strokePath (curve (grid, curves.voicing, area, true), juce::PathStrokeType (2.0f));
+    stroke (curve (grid, curves.applied, area, true), theme::aqua.withAlpha (curves.correctionOn ? 1.0f : 0.4f), 2.2f);
+    stroke (curve (grid, curves.voicing, area, true), theme::magenta.withAlpha (curves.voicingOn ? 1.0f : 0.4f), 2.0f);
     if (loudnessActive)
-    {
-        g.setColour (theme::gold);
-        g.strokePath (curve (grid, curves.loudness, area, true), juce::PathStrokeType (2.0f));
-    }
+        stroke (curve (grid, curves.loudness, area, true), theme::gold, 2.0f);
 
     g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
     for (int b = 0; b < roomeq::numVoicingBands; ++b)
@@ -657,8 +836,8 @@ void ResponseGraph::paint (juce::Graphics& g)
     if (showMode)
     {
         drawShowChange (g, response);
-        drawSpectrogramFrame (g, spectrogramArea());
-        drawEq (g, eqArea());
+        drawShowPanel (g, eqArea());
+        drawShowHover (g);
         return;
     }
     if (display == nullptr)
@@ -746,9 +925,16 @@ void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> ar
         return;
     }
     const auto& bands = roomeq::recheckBands();
+    const auto hovered = showBandAt ({ hoverX, hoverY });
     auto any = false;
     for (std::size_t b = 0; b < bands.size() && b < st.deltaDb.size(); ++b)
     {
+        if (static_cast<int> (b) == hovered)
+        {
+            const auto x0 = xFor (bands[b] * std::exp2 (-1.0 / 6.0), area), x1 = xFor (bands[b] * std::exp2 (1.0 / 6.0), area);
+            g.setColour (theme::ink.withAlpha (0.06f));
+            g.fillRect (juce::Rectangle<float> (x0, area.getY(), x1 - x0, area.getHeight()));
+        }
         const auto x0 = xFor (bands[b] * std::exp2 (-1.0 / 6.0), area), x1 = xFor (bands[b] * std::exp2 (1.0 / 6.0), area);
         const auto w = (x1 - x0) * 0.7f, cx = 0.5f * (x0 + x1);
         const auto d = st.deltaDb[b];
@@ -803,6 +989,7 @@ void ResponseGraph::setVoicingParam (int band, const char* what, float value)
 void ResponseGraph::mouseMove (const juce::MouseEvent& e)
 {
     hoverX = static_cast<float> (e.x);
+    hoverY = static_cast<float> (e.y);
     const auto overHandle = voicingHandleAt (e.position) >= 0 || targetPointAt (e.position) >= 0;
     setMouseCursor (overHandle ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
     repaint();
@@ -810,7 +997,7 @@ void ResponseGraph::mouseMove (const juce::MouseEvent& e)
 
 void ResponseGraph::mouseExit (const juce::MouseEvent&)
 {
-    hoverX = -1.0f;
+    hoverX = hoverY = -1.0f;
     repaint();
 }
 
