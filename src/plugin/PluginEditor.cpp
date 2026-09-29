@@ -1455,7 +1455,7 @@ void AdaptiveRoomEQEditor::resized()
         std::vector<juce::TextButton*> shown { &zoneTab, &measureTab, &correctTab, &voicingTab };
         if (! processor.isStandalone())
             shown.push_back (&loudnessTab);
-        const juce::Font font (juce::FontOptions (TabLook::tabFontHeight));
+        const juce::Font font { juce::FontOptions (TabLook::tabFontHeight) };
         std::vector<float> widths;
         auto total = 0.0f;
         for (auto* t : shown)
