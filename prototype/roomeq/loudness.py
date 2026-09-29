@@ -83,6 +83,23 @@ def c_weighting_sos(fs: float) -> np.ndarray:
     return sos
 
 
+def a_weighting_bands() -> list[Band]:
+    """IEC 61672 A-weighting as three RBJ sections: 2 poles at 20.6 Hz (Q 0.5),
+    the single poles at 107.7 Hz and 737.9 Hz as one high-pass (at their
+    geometric mean, Q = sqrt(f1 f2) / (f1 + f2)), and 2 poles at 12194 Hz."""
+    f1, f2 = 107.65265, 737.86223
+    return [Band(HIGH_PASS, 20.598997, q=0.5), Band(HIGH_PASS, np.sqrt(f1 * f2), q=np.sqrt(f1 * f2) / (f1 + f2)),
+            Band(filters.LOW_PASS, 12194.217, q=0.5)]
+
+
+def a_weighting_sos(fs: float) -> np.ndarray:
+    """A-weighting normalised to 0 dB at 1 kHz (the SPL meter)."""
+    bands = a_weighting_bands()
+    sos = filters.sos(bands, fs).copy()
+    sos[0, :3] *= 10 ** (-filters.response_db(bands, np.array([1000.0]), fs)[0] / 20)
+    return sos
+
+
 def compensation_target(freqs: np.ndarray, current_spl: float, reference_spl: float) -> np.ndarray:
     """ISO 226 contour difference (dB) to keep the balance heard at the reference level."""
     if current_spl >= reference_spl:

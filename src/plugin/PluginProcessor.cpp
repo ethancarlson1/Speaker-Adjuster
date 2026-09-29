@@ -91,6 +91,8 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
 {
     // Parameter callbacks can arrive on the audio thread, so the engine polls
     // the smoothing choice and correction settings from its message-thread timer instead.
+    if (! standalone)
+        splCollector.startTimerHz (10);
     engine.setSmoothingSource ([this] { return getSmoothingFraction(); });
     engine.setCorrectionSettingsSource ([this] { return getCorrectionSettings(); });
     engine.onPlayingCorrectionChanged = [this] (const std::vector<roomeq::Band>& bands)
@@ -299,6 +301,7 @@ void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     eq.prepare (sampleRate, getEqSettings());
     loudness.prepare (sampleRate, samplesPerBlock, getLoudnessSettings());
     showTap.abortWhileStopped();
+    spl.prepare (sampleRate);
 }
 
 void AdaptiveRoomEQProcessor::releaseResources()
@@ -362,6 +365,12 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         const auto range = juce::FloatVectorOperations::findMinAndMax (mic, numSamples);
         micBlockPeak = juce::jmax (range.getEnd(), -range.getStart());
         updatePeak (micPeak, micBlockPeak);
+    }
+    // The show view's SPL meter and spectrogram listen to the mic as it comes in.
+    if (! standalone && mic != nullptr)
+    {
+        spl.process (mic, numSamples);
+        micFifo.push (mic, numSamples);
     }
     // Counted in processed audio, not wall time, so it works however fast the host runs.
     if (micBlockPeak > micSignalFloor)

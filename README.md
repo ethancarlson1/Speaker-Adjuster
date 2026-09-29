@@ -140,11 +140,29 @@ The EQ strip shows the compensation at the current level in gold. The tab shows 
 
 ## Show view and show tracking
 
-**Show view** (the header button, plugin only) is a compact layout for the show. The left panel has show tracking, the bypasses (**Correction**, **Voicing EQ**, **Loudness**, **Match output level**), the loudness readout and **Re-check level**. The capture list goes, and the graph's top panel shows the change since soundcheck; the EQ strip stays. Click it again for the setup view. The choice is saved with the session.
+**Show view** (the header button, plugin only) is a compact layout for the show. Click it again for the setup view. The choice is saved with the session.
+
+The left panel has:
+- show tracking, with a countdown to the next result;
+- the bypasses (**Correction**, **Voicing EQ**, **Loudness**, **Match output level**);
+- the loudness readout and **Re-check level**;
+- the SPL meter.
+
+The capture list goes. The graph side has three panels on the same 20 Hz–20 kHz axis:
+- **Change since soundcheck**, ±6 dB. A bar beyond that is pinned to the edge with an arrow and its value.
+- **Mic spectrogram**, the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
+- **The EQ strip.**
+
+**SPL at the mic** reads dB SPL from the measurement mic, so it needs the mic calibration (calibrator, Loudness tab). Until then it says so. It shows:
+- the live **dB(A) fast** (125 ms) level, and its max;
+- **LAeq** and **LCeq** over the last 15 minutes (or as much as it has heard so far);
+- **Reset**, which starts the Leqs and the max over.
+
+The weighting is IEC 61672 A and C on the audio thread, and it keeps running with the editor closed. Seconds with nothing from the mic aren't counted, since a dead mic isn't silence.
 
 **Show tracking** warns you when the room's response moves away from what it was at soundcheck:
 1. At the end of soundcheck, with music or pink noise playing at a normal level, press **Store reference** (show view). It records 30 s through the mic and keeps the output-to-mic response per third octave, 63 Hz–8 kHz.
-2. During the show the plugin keeps measuring the same response from the music, 10 s at a time. It compares the last 2 minutes with the reference, band by band, using only the bands the mic heard clearly.
+2. During the show the plugin keeps measuring the same response from the music, 10 s at a time. It compares the last 2 minutes with the reference, band by band, using only the bands the mic heard clearly. The countdown says when the next result is due ("Next update in 7 s"). The first result needs 6 blocks, so it says "First result in about 0:52" until then, or why it's paused (a measurement playing, no mic signal).
 3. A change common to every band is a level change after the plugin (an amp or a fader). It's shown on its own, and flagged if it reaches 3 dB; **Re-check level** brings the loudness calibration up to date with it. What's left is the tonal change.
 4. If a band's tonal change reaches **3 dB**, a banner appears on the graph side in both views, e.g. "Since soundcheck: +5.2 dB at 125–250 Hz". It turns red at 6 dB and clears once the change falls below 2 dB. Click the banner for the band-by-band details.
 5. The banner's **×** hides it until something new comes up: another band (or the level) is flagged, the change grows from 3 dB to 6 dB, or a band that cleared trips again. The show view's tracking text still shows the change, marked as hidden. The dismissal isn't saved with the session.
@@ -272,7 +290,8 @@ The harness drives the real processor against a simulated room. It checks:
 - the mic level advice: waiting while nothing plays, too quiet and hot mics brought into the zone by following it, clipping, and no signal;
 - selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
-- show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
+- show tracking: a reference from music in a room with a crowd, the countdown to the first result and then the next, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
+- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
 It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.

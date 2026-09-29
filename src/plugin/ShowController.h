@@ -54,6 +54,12 @@ public:
         int blocksHeard = 0;             // show blocks analysed since the reference
         int blocksDropped = 0;           // skipped: a measurement played, or the mic was dead
         bool warningDismissed = false;   // the banner's ×: nothing new since
+        // Countdown. While a show block records: seconds until it's in (the next
+        // update), and until the first result if there isn't one yet (an estimate:
+        // blocks the mic can't hear clearly don't count). -1 when not recording.
+        double nextUpdateSeconds = -1.0;
+        double firstResultSeconds = -1.0;
+        juce::String paused;             // why no block is recording ("" when one is, or there's no reference)
     };
 
     static constexpr double referenceSeconds = 30.0;
@@ -128,3 +134,6 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ShowController)
 };
+
+// "Next update in 7 s.", "First result in about 0:45.", or why it's paused ("" with no reference).
+juce::String showCountdown (const ShowController::Info& info);

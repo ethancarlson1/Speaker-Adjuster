@@ -119,6 +119,22 @@ void ShowController::clearReference()
     sendChangeMessage();
 }
 
+juce::String showCountdown (const ShowController::Info& info)
+{
+    const auto clock = [] (double s)
+    {
+        const auto whole = static_cast<int> (std::ceil (s));
+        return whole < 60 ? juce::String (whole) + " s" : juce::String (whole / 60) + ":" + juce::String (whole % 60).paddedLeft ('0', 2);
+    };
+    if (info.firstResultSeconds >= 0.0)
+        return "First result in about " + clock (info.firstResultSeconds) + ".";
+    if (info.nextUpdateSeconds >= 0.0)
+        return "Next update in " + clock (info.nextUpdateSeconds) + ".";
+    if (info.paused.isNotEmpty())
+        return "Paused: " + info.paused + ".";
+    return {};
+}
+
 void ShowController::dismissWarning()
 {
     {
@@ -146,6 +162,30 @@ ShowController::Info ShowController::getInfo() const
     i.blocksHeard = blocksHeard;
     i.blocksDropped = blocksDropped;
     i.warningDismissed = dismissal.hides (i.state);
+
+    if (i.hasReference)
+    {
+        if (step == Step::tracking)
+        {
+            i.nextUpdateSeconds = blockSeconds * (1.0 - juce::jlimit (0.0, 1.0, static_cast<double> (tap.getProgress())));
+            if (! std::isfinite (i.state.levelDb))
+            {
+                // The tracker needs half its window's blocks (6 of 12) before a band counts.
+                const roomeq::ShowConfig cfg;
+                const auto need = static_cast<int> (std::ceil (cfg.minFraction * cfg.windowSeconds / cfg.blockSeconds));
+                const auto more = juce::jmax (1, need - blocksHeard);
+                i.firstResultSeconds = i.nextUpdateSeconds + (more - 1) * blockSeconds;
+            }
+        }
+        else if (step == Step::idle)
+        {
+            const auto env = environment();
+            i.paused = ! env.available || env.fs <= 0.0 ? "audio isn't running"
+                       : env.measuring                  ? "a measurement is playing"
+                       : ! env.micSignal                ? "no signal on the mic"
+                                                        : "starting the next block";
+        }
+    }
     return i;
 }
 

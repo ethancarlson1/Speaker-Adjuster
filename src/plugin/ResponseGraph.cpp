@@ -50,9 +50,16 @@ std::size_t nearestIndex (const std::vector<double>& grid, double hz)
 }
 } // namespace
 
-ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p) : processor (p)
+ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
+    : processor (p), spectrogram (p.getMicFifo(), [&p] { return p.getSampleRate(); })
 {
+    addChildComponent (spectrogram);
     updateCurves();
+}
+
+void ResponseGraph::resized()
+{
+    spectrogram.setBounds (spectrogramArea().toNearestInt());
 }
 
 void ResponseGraph::setData (std::shared_ptr<const MeasurementEngine::Display> newDisplay, int newSelectedId)
@@ -92,6 +99,11 @@ void ResponseGraph::refresh()
             lastShowBlocks = blocks;
             repaint();
         }
+        else if (const auto countdown = showCountdown (info); countdown != lastCountdown)
+        {
+            lastCountdown = countdown;
+            repaint (getLocalBounds().removeFromTop (30));
+        }
     }
 }
 
@@ -100,6 +112,8 @@ void ResponseGraph::setShowMode (bool shouldShow)
     if (showMode != shouldShow)
     {
         showMode = shouldShow;
+        spectrogram.setVisible (showMode);
+        resized();
         repaint();
     }
 }
@@ -204,18 +218,56 @@ bool ResponseGraph::customTargetEditable() const
 // ---------------------------------------------------------------------------
 // Geometry
 
+// Setup: response (66%) and EQ strip. Show: change since soundcheck (36%),
+// spectrogram (34%) and EQ strip; each with a legend row above it.
 juce::Rectangle<float> ResponseGraph::responseArea() const
 {
     const auto full = getLocalBounds().toFloat().withTrimmedLeft (44.0f).withTrimmedRight (14.0f);
-    const auto plotHeight = full.getHeight() - 30.0f - 30.0f - 22.0f;
-    return full.withTrimmedTop (30.0f).withHeight (plotHeight * 0.66f);
+    const auto plotHeight = full.getHeight() - 30.0f - 30.0f - 22.0f - (showMode ? 26.0f : 0.0f);
+    return full.withTrimmedTop (30.0f).withHeight (plotHeight * (showMode ? 0.36f : 0.66f));
+}
+
+juce::Rectangle<float> ResponseGraph::spectrogramArea() const
+{
+    const auto r = responseArea();
+    const auto plotHeight = static_cast<float> (getHeight()) - 30.0f - 30.0f - 22.0f - 26.0f;
+    return showMode ? r.withY (r.getBottom() + 26.0f).withHeight (plotHeight * 0.34f) : juce::Rectangle<float>();
 }
 
 juce::Rectangle<float> ResponseGraph::eqArea() const
 {
-    const auto r = responseArea();
+    const auto r = showMode ? spectrogramArea() : responseArea();
     const auto bottom = static_cast<float> (getHeight()) - 22.0f;
     return r.withY (r.getBottom() + 30.0f).withBottom (bottom);
+}
+
+void ResponseGraph::drawSpectrogramFrame (juce::Graphics& g, juce::Rectangle<float> area) const
+{
+    // Legend row: what it is, and the colour scale.
+    const auto rowY = area.getY() - 22.0f;
+    g.setFont (juce::FontOptions (12.0f));
+    g.setColour (theme::ink2);
+    g.drawText ("Mic spectrogram, last " + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
+                juce::Rectangle<float> (area.getX(), rowY, 300.0f, 18.0f), juce::Justification::centredLeft);
+    auto key = juce::Rectangle<float> (area.getRight() - 250.0f, rowY, 250.0f, 18.0f);
+    g.setColour (theme::muted);
+    g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::rangeDb)) + " dB",
+                key.removeFromLeft (52.0f), juce::Justification::centredRight);
+    g.drawText ("loudest", key.removeFromRight (58.0f), juce::Justification::centredLeft);
+    const auto bar = key.reduced (6.0f, 5.0f);
+    for (int i = 0; i < static_cast<int> (bar.getWidth()); ++i)
+    {
+        g.setColour (Spectrogram::colourFor (static_cast<float> (i) / bar.getWidth()));
+        g.fillRect (juce::Rectangle<float> (bar.getX() + static_cast<float> (i), bar.getY(), 1.0f, bar.getHeight()));
+    }
+    // Time: the newest at the top.
+    g.setFont (juce::FontOptions (11.0f));
+    g.setColour (theme::muted);
+    g.drawText ("now", juce::Rectangle<float> (0.0f, area.getY() - 2.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
+    g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
+                juce::Rectangle<float> (0.0f, area.getBottom() - 12.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
+    g.setColour (theme::axis);
+    g.drawRect (area.expanded (1.0f), 1.0f);
 }
 
 float ResponseGraph::xFor (double hz, juce::Rectangle<float> area) const
@@ -360,7 +412,7 @@ void ResponseGraph::drawEqAxis (juce::Graphics& g, juce::Rectangle<float> area) 
     }
 }
 
-void ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const std::vector<LegendItem>& items)
+float ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const std::vector<LegendItem>& items)
 {
     g.setFont (juce::FontOptions (12.0f));
     auto x = at.x;
@@ -379,6 +431,7 @@ void ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const 
         g.drawText (item.label, juce::Rectangle<float> (x + 24.0f, at.y, w + 4.0f, 14.0f), juce::Justification::centredLeft);
         x += 24.0f + w + 18.0f;
     }
+    return x - 18.0f;
 }
 
 void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area) const
@@ -604,6 +657,7 @@ void ResponseGraph::paint (juce::Graphics& g)
     if (showMode)
     {
         drawShowChange (g, response);
+        drawSpectrogramFrame (g, spectrogramArea());
         drawEq (g, eqArea());
         return;
     }
@@ -628,13 +682,13 @@ void ResponseGraph::paint (juce::Graphics& g)
 void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> area) const
 {
     drawFrequencyAxis (g, area, false);
-    constexpr double range = 12.0;
+    constexpr double range = 6.0;   // bigger changes are pinned to the edge, with their value
     const auto yFor = [&] (double db)
     {
         return area.getY() + static_cast<float> ((range - db) / (2.0 * range)) * area.getHeight();
     };
     g.setFont (juce::FontOptions (11.0f));
-    for (int db = -12; db <= 12; db += 6)
+    for (int db = -6; db <= 6; db += 3)
     {
         const auto y = yFor (db);
         g.setColour (db == 0 ? theme::axis : theme::grid);
@@ -648,18 +702,28 @@ void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> ar
 
     const auto info = processor.getShow().getInfo();
     const auto& st = info.state;
-    drawLegend (g, { area.getX(), 8.0f }, { { "Change since soundcheck (tonal)", theme::blue, false },
-                                            { "Flagged", theme::warning, false },
-                                            { "3 dB", theme::warning.withAlpha (0.6f), true } });
+    const auto legendEnd = drawLegend (g, { area.getX(), 8.0f }, { { "Change since soundcheck (tonal)", theme::blue, false },
+                                                                   { "Flagged", theme::warning, false },
+                                                                   { "3 dB", theme::warning.withAlpha (0.6f), true } });
+    auto header = juce::Rectangle<float> (legendEnd + 16.0f, 4.0f, juce::jmax (0.0f, area.getRight() - 4.0f - legendEnd - 16.0f), 20.0f);
+    g.setFont (juce::FontOptions (12.0f));
     if (info.hasReference && std::isfinite (st.levelDb))
     {
         const auto r = std::round (st.levelDb * 10.0) / 10.0;
         const auto level = std::abs (r) < 0.05 ? juce::String ("0.0")
                                                 : (r > 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
         g.setColour (st.levelFlag != 0 ? theme::warning : theme::ink2);
-        g.setFont (juce::FontOptions (12.0f));
-        g.drawText ("Level after the plugin: " + level + " dB", juce::Rectangle<float> (area.getRight() - 260.0f, 4.0f, 256.0f, 20.0f),
-                    juce::Justification::centredRight);
+        g.drawText ("Level after the plugin: " + level + " dB", header.removeFromRight (200.0f), juce::Justification::centredRight);
+        header.removeFromRight (16.0f);
+    }
+    if (info.hasReference)   // left out when there's no room: the left panel says it too
+    {
+        const auto countdown = showCountdown (info);
+        if (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), countdown) <= header.getWidth())
+        {
+            g.setColour (theme::muted);
+            g.drawText (countdown, header, juce::Justification::centredRight);
+        }
     }
 
     juce::Graphics::ScopedSaveState clip (g);
@@ -700,6 +764,24 @@ void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> ar
         const auto flagged = b < st.flags.size() && st.flags[b] != 0;
         g.setColour (flagged ? (std::abs (d) >= 6.0 ? theme::critical : theme::warning) : theme::blue.withAlpha (0.75f));
         g.fillRoundedRectangle (juce::Rectangle<float> (cx - w / 2.0f, top, w, std::max (1.5f, bottom - top)), 2.0f);
+        if (std::abs (d) > range)
+        {
+            // Off the scale: an arrow at the edge, and the value.
+            const auto up = d > 0.0;
+            const auto tip = up ? top + 3.0f : bottom - 3.0f;
+            const auto base = up ? tip + 7.0f : tip - 7.0f;
+            juce::Path arrow;
+            arrow.addTriangle (cx, tip, cx - 5.0f, base, cx + 5.0f, base);
+            g.setColour (theme::plane);
+            g.fillPath (arrow);
+            if (w >= 22.0f)   // its value, when the bar is wide enough to hold it
+            {
+                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                const auto label = juce::Rectangle<float> (cx - w / 2.0f, up ? base + 1.0f : base - 15.0f, w, 14.0f);
+                g.drawFittedText ((up ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (d), 1),
+                                  label.toNearestInt(), juce::Justification::centred, 1, 0.7f);
+            }
+        }
     }
     if (! any)
     {

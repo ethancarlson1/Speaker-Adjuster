@@ -425,11 +425,17 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     showRecheckButton.setTooltip ("Listens to ~12 s of the music through the mic and updates the loudness calibration "
                                   "if the gain after the plugin changed.");
     showRecheckButton.onClick = [this] { if (micReady()) showResult (processor.getLoudness().startRecheck()); };
+    splResetButton.setTooltip ("Start the Leqs and the max over.");
+    splResetButton.onClick = [this]
+    {
+        processor.getSpl().reset();
+        repaint (splBounds);
+    };
     showCorrectionAttachment = std::make_unique<ButtonAttachment> (params, "correctionOn", showCorrectionOn);
     showVoicingAttachment = std::make_unique<ButtonAttachment> (params, "voicingOn", showVoicingOn);
     showLoudAttachment = std::make_unique<ButtonAttachment> (params, "loudOn", showLoudOn);
     showLevelMatchAttachment = std::make_unique<ButtonAttachment> (params, "levelMatch", showLevelMatch);
-    for (auto* c : std::initializer_list<juce::Component*> { &storeRefButton, &clearRefButton, &showRecheckButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &storeRefButton, &clearRefButton, &showRecheckButton, &splResetButton,
                                                              &showCorrectionOn, &showVoicingOn, &showLoudOn, &showLevelMatch })
     {
         addChildComponent (c);
@@ -708,6 +714,7 @@ void AdaptiveRoomEQEditor::timerCallback()
     storeRefButton.setEnabled (! measuring && ! storing);
     clearRefButton.setEnabled (show.getInfo().hasReference);
     showRecheckButton.setEnabled (! loudBusy && ! measuring && processor.getLoudness().getInfo().canRecheck);
+    splResetButton.setEnabled (processor.getLoudness().getInfo().hasMicOffset);
     micInput.setEnabled (! measuring && micInput.getNumItems() > 0);
     speakerOutput.setEnabled (! measuring && speakerOutput.getNumItems() > 0);
     applyButton.setEnabled (! measuring && engine.canApply());
@@ -746,6 +753,7 @@ void AdaptiveRoomEQEditor::timerCallback()
     {
         repaint (showTextBounds);
         repaint (showLoudBounds);
+        repaint (splBounds);
     }
     else if (currentTab == Tab::correct || currentTab == Tab::loudness)
         repaint (infoBounds);
@@ -831,7 +839,8 @@ juce::String AdaptiveRoomEQEditor::showTrackingText() const
         text << " " << juce::Time (info.storedAt).formatted ("%d %b %H:%M");
     text << " (" << info.referenceBands << " of 22 bands heard clearly).\n";
     const auto seconds = info.blocksHeard * static_cast<int> (ShowController::blockSeconds);
-    text << "Tracking: " << seconds / 60 << ":" << juce::String (seconds % 60).paddedLeft ('0', 2) << " of the show measured.\n";
+    text << "Tracking: " << seconds / 60 << ":" << juce::String (seconds % 60).paddedLeft ('0', 2) << " of the show measured. "
+         << showCountdown (info) << "\n";
     if (! std::isfinite (st.levelDb))
         text << "The first result needs about a minute of music the mic hears clearly.";
     else if (st.severity == 0)
@@ -845,6 +854,51 @@ juce::String AdaptiveRoomEQEditor::showTrackingText() const
         text << "\n" << info.blocksDropped << " block" << (info.blocksDropped == 1 ? "" : "s")
              << " skipped (a measurement played, or the mic was quiet).";
     return text;
+}
+
+void AdaptiveRoomEQEditor::drawSpl (juce::Graphics& g, juce::Rectangle<int> area) const
+{
+    const auto& spl = processor.getSpl();
+    const auto info = processor.getLoudness().getInfo();
+    auto r = area;
+    g.setColour (theme::ink);
+    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    g.drawText ("SPL at the mic", r.removeFromTop (22), juce::Justification::centredLeft);
+    r.removeFromTop (4);
+    if (! info.hasMicOffset)
+    {
+        g.setColour (theme::ink2);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawFittedText ("Calibrate the mic with a calibrator (Loudness tab, in the setup view) to read dB SPL here.", r,
+                          juce::Justification::topLeft, 3);
+        return;
+    }
+    const auto offset = info.micOffsetDb;
+    const auto reading = [offset] (double dbfs)
+    {
+        return dbfs > -100.0 ? juce::String (dbfs + offset, 1) : juce::String::fromUTF8 ("\xe2\x80\x94");
+    };
+    auto big = r.removeFromTop (38);
+    g.setColour (theme::ink);
+    g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+    const auto value = reading (spl.fastDb());
+    const auto valueWidth = juce::jmin (big.getWidth() / 2,
+                                        juce::roundToInt (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), value)) + 8);
+    g.drawText (value, big.removeFromLeft (valueWidth), juce::Justification::centredLeft);
+    g.setColour (theme::ink2);
+    g.setFont (juce::FontOptions (12.5f));
+    g.drawText ("dB(A) fast", big.removeFromLeft (80).withTrimmedTop (12), juce::Justification::centredLeft);
+    g.drawText ("max " + reading (spl.maxDb()), big.withTrimmedTop (12), juce::Justification::centredRight);
+    r.removeFromTop (4);
+    const auto heard = spl.secondsHeard();
+    juce::String leq;
+    if (heard == 0)
+        leq = "LAeq, LCeq: waiting for the mic";
+    else
+        leq << "LAeq " << reading (spl.laeqDb()) << "   LCeq " << reading (spl.lceqDb()) << " dB   "
+            << (heard >= SplMeter::leqSeconds ? juce::String ("(15 min)")
+                                              : "(" + juce::String (heard / 60) + ":" + juce::String (heard % 60).paddedLeft ('0', 2) + ")");
+    g.drawText (leq, r.removeFromTop (18), juce::Justification::centredLeft);
 }
 
 juce::String AdaptiveRoomEQEditor::showLoudnessText() const
@@ -1228,6 +1282,9 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
         g.setColour (theme::ink2);
         g.drawFittedText (showLoudnessText(), showLoudBounds, juce::Justification::topLeft,
                           juce::jmax (1, showLoudBounds.getHeight() / 15), 0.9f);
+        g.setColour (theme::axis);
+        g.drawHorizontalLine (splRuleY, static_cast<float> (controls.getX() + 12), static_cast<float> (controls.getRight() - 12));
+        drawSpl (g, splBounds);
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (13.0f));
         g.drawFittedText (summaryLine(), summaryArea(), juce::Justification::centredLeft, 1);
@@ -1309,7 +1366,7 @@ void AdaptiveRoomEQEditor::resized()
             storeRefButton.setBounds (r);
             panel.removeFromTop (10);
         }
-        showTextBounds = panel.removeFromTop (juce::jmin (150, juce::jmax (90, panel.getHeight() - 170)));
+        showTextBounds = panel.removeFromTop (juce::jmin (150, juce::jmax (90, panel.getHeight() - 300)));
         showRuleY = panel.getY() + 6;
         panel.removeFromTop (16);
         {
@@ -1324,7 +1381,11 @@ void AdaptiveRoomEQEditor::resized()
         }
         showRecheckButton.setBounds (panel.removeFromTop (30));
         panel.removeFromTop (10);
-        showLoudBounds = panel;
+        showLoudBounds = panel.removeFromTop (juce::jmin (panel.getHeight(), 34));
+        splRuleY = panel.getY() + 6;
+        panel.removeFromTop (16);
+        splBounds = panel;
+        splResetButton.setBounds (splBounds.getRight() - 60, splBounds.getY(), 60, 22);
     }
     else
     {

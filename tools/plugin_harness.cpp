@@ -1043,6 +1043,18 @@ int main (int argc, char** argv)
         const auto toneDbfs = 20.0 * std::log10 (0.05 / std::sqrt (2.0));
         check (info.hasMicOffset && std::abs ((94.0 - info.micOffsetDb) - toneDbfs) < 0.1,
                "mic calibrated: 94 dB = " + juce::String (94.0 - info.micOffsetDb, 2) + " dBFS (C)");
+
+        // The show view's SPL meter reads the calibrator too (A and C are both 0 dB at 1 kHz).
+        auto& spl = proc.getSpl();
+        spl.reset();
+        show.play (nullptr, 3.0);
+        spl.collect();
+        const auto fastSpl = spl.fastDb() + info.micOffsetDb, laeq = spl.laeqDb() + info.micOffsetDb,
+                   lceq = spl.lceqDb() + info.micOffsetDb;
+        check (std::abs (fastSpl - 94.0) < 0.1 && std::abs (laeq - 94.0) < 0.1 && std::abs (lceq - 94.0) < 0.1
+                   && spl.secondsHeard() >= 2 && std::abs (spl.maxDb() + info.micOffsetDb - 94.0) < 0.1,
+               "the SPL meter reads the calibrator: " + juce::String (fastSpl, 2) + " dB(A) fast, LAeq " + juce::String (laeq, 2)
+                   + ", LCeq " + juce::String (lceq, 2));
         show.micSignal = nullptr;
 
         // Level calibration: noise on both speakers through the EQ; the mic hears the room.
@@ -1251,6 +1263,11 @@ int main (int argc, char** argv)
         auto info = tracking.getInfo();
         check (info.hasReference && info.referenceBands >= 18,
                "reference stored (" + juce::String (info.referenceBands) + " of 22 bands heard clearly)");
+        show.play (&music, 2.0);
+        info = tracking.getInfo();
+        check (info.firstResultSeconds > 45.0 && info.firstResultSeconds <= 60.0 && info.nextUpdateSeconds <= 10.0
+                   && showCountdown (info).startsWith ("First result in about"),
+               "countdown: " + showCountdown (info));
 
         show.play (&music, 150.0);
         drain();
@@ -1261,6 +1278,11 @@ int main (int argc, char** argv)
                 largest = std::max (largest, std::abs (dv));
         check (info.blocksHeard >= 13 && info.state.severity == 0 && largest < 2.0,
                "2.5 minutes of the same room: no warning (largest change " + juce::String (largest, 2) + " dB)");
+        show.play (&music, 1.0);
+        info = tracking.getInfo();
+        check (info.firstResultSeconds < 0.0 && info.nextUpdateSeconds >= 0.0 && info.nextUpdateSeconds <= 10.0
+                   && showCountdown (info).startsWith ("Next update in"),
+               "once there's a result: " + showCountdown (info));
 
         // The low mids build up by 6 dB (a peaking filter on what the mic hears).
         auto bump = Biquad::peaking (180.0, 6.0, 1.0);
@@ -1373,7 +1395,39 @@ int main (int argc, char** argv)
             pump (proc);
         check (ours->isShowView() && proc.isShowView() && ours->getBanner().getSeverity() >= 1 && ours->getBanner().isVisible(),
                "show view, with the warning banner up");
+        {
+            // The mic's spectrogram: music through a room, then a 1 kHz tone at the mic.
+            ResponseGraph* showGraph = nullptr;
+            for (auto* c : editor->getChildren())
+                if (auto* gr = dynamic_cast<ResponseGraph*> (c))
+                    showGraph = gr;
+            auto& spectrogram = showGraph->getSpectrogram();
+            check (spectrogram.isVisible() && spectrogram.getWidth() > 400 && spectrogram.getHeight() > 100,
+                   "the spectrogram is between the change graph and the EQ strip");
+            SimulatedRoom room (7.0, 41, 1e-3, 0.0);
+            Show show { proc, room, 0.0, {}, {}, {} };
+            Music music;
+            music.gain = 0.03;
+            show.micSignal = [] (std::size_t n) { return static_cast<float> (0.05 * std::sin (juce::MathConstants<double>::twoPi * 1000.0 * static_cast<double> (n) / fs)); };
+            show.play (nullptr, 1.0);
+            spectrogram.update();
+            check (std::abs (spectrogram.getNewestPeakHz() / 1000.0 - 1.0) < 0.05,
+                   "a 1 kHz tone at the mic shows at " + juce::String (spectrogram.getNewestPeakHz(), 0) + " Hz");
+            show.micSignal = {};
+            const auto before = spectrogram.getFramesAnalysed();
+            for (int s = 0; s < 44; ++s)   // the UI's timer takes what's new 30 times a second; every 0.5 s here
+            {
+                show.play (&music, 0.5);
+                spectrogram.update();
+            }
+            const auto frames = spectrogram.getFramesAnalysed() - before;
+            check (frames > 20 * 20, "22 s of music: " + juce::String (frames) + " spectrogram frames");
+            proc.getSpl().collect();
+        }
         writeSnapshot (*editor, stem + "-show.png");
+        editor->setSize (1060, 740);
+        writeSnapshot (*editor, stem + "-show-small.png");
+        editor->setSize (1200, 820);
         ours->setShowView (false);
         editor->setSize (1060, 740);   // the smallest size: everything still fits
         writeSnapshot (*editor, stem + "-loudness-small.png");

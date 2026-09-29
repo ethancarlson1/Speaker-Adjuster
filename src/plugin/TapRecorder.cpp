@@ -38,7 +38,8 @@ float TapRecorder::getProgress() const
 {
     if (tap == nullptr || tap->output.empty())
         return 0.0f;
-    const auto recorded = tap->position > tap->skip ? tap->position - tap->skip : 0;
+    const auto position = tap->position.load (std::memory_order_relaxed);
+    const auto recorded = position > tap->skip ? position - tap->skip : 0;
     return static_cast<float> (recorded) / static_cast<float> (tap->output.size());
 }
 
@@ -48,17 +49,18 @@ void TapRecorder::record (const float* const* channels, int numChannels, const f
     if (t == nullptr)
         return;
     const auto total = t->skip + t->output.size();
+    auto position = t->position.load (std::memory_order_relaxed);
     if (t->cancelRequested.load (std::memory_order_relaxed))
     {
         t->cancelled = true;
-        t->position = total;
+        position = total;
     }
     const auto scale = 1.0f / static_cast<float> (std::max (1, std::min (numChannels, 2)));
-    for (int i = 0; i < numSamples && t->position < total; ++i, ++t->position)
+    for (int i = 0; i < numSamples && position < total; ++i, ++position)
     {
-        if (t->position < t->skip)
+        if (position < t->skip)
             continue;
-        const auto k = t->position - t->skip;
+        const auto k = position - t->skip;
         auto s = numChannels > 0 ? channels[0][i] : 0.0f;
         if (numChannels > 1)
             s += channels[1][i];
@@ -66,7 +68,8 @@ void TapRecorder::record (const float* const* channels, int numChannels, const f
         if (k < t->mic.size())
             t->mic[k] = mic != nullptr ? mic[i] : 0.0f;
     }
-    if (t->position >= total)
+    t->position.store (position, std::memory_order_relaxed);
+    if (position >= total)
     {
         active.store (nullptr, std::memory_order_release);
         t->finished.store (true, std::memory_order_release);

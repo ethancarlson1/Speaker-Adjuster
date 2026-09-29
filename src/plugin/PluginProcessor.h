@@ -5,7 +5,9 @@
 #include "plugin/LoudnessController.h"
 #include "plugin/LoudnessStage.h"
 #include "plugin/MeasurementEngine.h"
+#include "plugin/SampleFifo.h"
 #include "plugin/ShowController.h"
+#include "plugin/SplMeter.h"
 #include "plugin/TapRecorder.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -103,6 +105,10 @@ public:
     LoudnessController& getLoudness() { return loudnessControl; }
     ShowController& getShow() { return showControl; }
 
+    // The show view's SPL meter and spectrogram, from the mic (plugin only).
+    SplMeter& getSpl() { return spl; }
+    SampleFifo& getMicFifo() { return micFifo; }
+
     // The editor's compact show layout; saved with the session (not a parameter).
     bool isShowView() const noexcept { return showView.load(); }
     void setShowView (bool shouldShow) noexcept { showView = shouldShow; }
@@ -130,6 +136,9 @@ private:
     TapRecorder showTap;                          // the final output and the mic, for show tracking
     ShowController showControl { showTap };
     std::atomic<bool> showView { false };
+    SplMeter spl;
+    SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips
+    juce::TimedCallback splCollector { [this] { spl.collect(); } };   // keeps the Leqs going with the editor closed
 
     // Parameter values the audio thread reads each block.
     struct VoicingParams

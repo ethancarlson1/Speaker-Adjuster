@@ -98,6 +98,7 @@ private:
     void showBannerDetails();
     juce::String showTrackingText() const;
     juce::String showLoudnessText() const;
+    void drawSpl (juce::Graphics&, juce::Rectangle<int> area) const;
 
     juce::Rectangle<int> headerArea() const;
     juce::Rectangle<int> controlsArea() const;
@@ -110,12 +111,14 @@ private:
     ShowBanner banner;
     bool showViewOn = false;
     std::vector<juce::Component*> showControls;
-    juce::TextButton storeRefButton { "Store reference" }, clearRefButton { "Clear" }, showRecheckButton { "Re-check level" };
+    juce::TextButton storeRefButton { "Store reference" }, clearRefButton { "Clear" }, showRecheckButton { "Re-check level" },
+        splResetButton { "Reset" };
     juce::ToggleButton showCorrectionOn { "Correction on" }, showVoicingOn { "Voicing EQ on" }, showLoudOn { "Loudness on" },
         showLevelMatch { "Match output level" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showCorrectionAttachment, showVoicingAttachment,
         showLoudAttachment, showLevelMatchAttachment;
-    juce::Rectangle<int> showTextBounds, showLoudBounds;
+    juce::Rectangle<int> showTextBounds, showLoudBounds, splBounds;
+    int splRuleY = 0;
     int showRuleY = 0;
 
     // Tabs.

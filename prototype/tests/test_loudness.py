@@ -34,6 +34,17 @@ def test_c_weighting_within_iec_61672_class_1(fs):
         assert nominal - lo <= db <= nominal + hi, f
 
 
+@pytest.mark.parametrize("fs", [44100, 48000, 96000])
+def test_a_weighting_within_iec_61672_class_1(fs):
+    # (Hz, nominal dB, tolerance -, tolerance +)
+    table = [(31.5, -39.4, 1.5, 1.5), (63, -26.2, 1.0, 1.0), (125, -16.1, 1.0, 1.0), (250, -8.6, 1.0, 1.0),
+             (500, -3.2, 1.0, 1.0), (1000, 0.0, 0.7, 0.7), (2000, 1.2, 1.0, 1.0), (4000, 1.0, 1.0, 1.0),
+             (8000, -1.1, 2.5, 1.5)]
+    _, h = ss.sosfreqz(loudness.a_weighting_sos(fs), worN=[t[0] for t in table], fs=fs)
+    for (f, nominal, lo, hi), db in zip(table, 20 * np.log10(np.abs(h))):
+        assert nominal - lo <= db <= nominal + hi, f
+
+
 # ---------------------------------------------------------------------------
 # Compensation
 

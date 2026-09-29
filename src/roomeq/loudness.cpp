@@ -76,6 +76,19 @@ double cWeightingGain (double fs)
     return std::pow (10.0, -(bandDb (b[0], { 1000.0 }, fs)[0] + bandDb (b[1], { 1000.0 }, fs)[0]) / 20.0);
 }
 
+std::array<Band, 3> aWeightingBands()
+{
+    const auto f1 = 107.65265, f2 = 737.86223;
+    return { Band { BandKind::highPass, hpC, 0.0, 0.5 }, Band { BandKind::highPass, std::sqrt (f1 * f2), 0.0, std::sqrt (f1 * f2) / (f1 + f2) },
+             Band { BandKind::lowPass, lpC, 0.0, 0.5 } };
+}
+
+double aWeightingGain (double fs)
+{
+    const auto b = aWeightingBands();
+    return std::pow (10.0, -responseDb ({ b[0], b[1], b[2] }, { 1000.0 }, fs)[0] / 20.0);
+}
+
 double cWeightedLevelDbfs (const std::vector<double>& x, double fs)
 {
     const auto b = cWeightingBands();

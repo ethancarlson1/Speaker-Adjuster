@@ -2,6 +2,7 @@
 
 #include "plugin/EqStages.h"
 #include "plugin/MeasurementEngine.h"
+#include "plugin/Spectrogram.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -24,9 +25,11 @@ public:
     void refresh();                                   // polled: repaints if the EQ or target changed
 
     // Show view: the top panel shows the change since the soundcheck reference
-    // (a bar per third octave) instead of the measurements.
+    // (a bar per third octave) instead of the measurements, with the mic's
+    // spectrogram between it and the EQ strip, on the same frequency axis.
     void setShowMode (bool shouldShow);
     bool isShowMode() const { return showMode; }
+    Spectrogram& getSpectrogram() { return spectrogram; }
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
 
@@ -38,6 +41,7 @@ public:
     juce::Point<float> getTargetPointPosition (int index) const { return targetPoint (static_cast<std::size_t> (index), responseArea()); }
 
     void paint (juce::Graphics&) override;
+    void resized() override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -59,7 +63,9 @@ private:
     };
 
     juce::Rectangle<float> responseArea() const;
+    juce::Rectangle<float> spectrogramArea() const;   // show mode
     juce::Rectangle<float> eqArea() const;
+    void drawSpectrogramFrame (juce::Graphics&, juce::Rectangle<float> area) const;
     float xFor (double hz, juce::Rectangle<float> area) const;
     double hzFor (float x, juce::Rectangle<float> area) const;
     float yFor (double db, juce::Rectangle<float> area) const;
@@ -72,7 +78,7 @@ private:
     void drawLevelAxis (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawEqAxis (juce::Graphics&, juce::Rectangle<float> area) const;
     struct LegendItem { juce::String label; juce::Colour colour; bool dashed; };
-    static void drawLegend (juce::Graphics&, juce::Point<float> at, const std::vector<LegendItem>& items);
+    static float drawLegend (juce::Graphics&, juce::Point<float> at, const std::vector<LegendItem>& items);   // returns where it ends
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawEq (juce::Graphics&, juce::Rectangle<float> area) const;
@@ -111,9 +117,12 @@ private:
     bool lastLoudnessOn = true, lastLoudnessCalibrated = false;
 
     bool showMode = false;
+    juce::String lastCountdown;
     int lastShowBlocks = -1;
     int selectedBand = 0;
     int draggingBand = -1;
     int draggingPoint = -1;
     std::vector<std::pair<double, double>> dragPoints;
+
+    Spectrogram spectrogram;
 };

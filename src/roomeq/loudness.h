@@ -42,6 +42,12 @@ std::array<Band, 2> cWeightingBands();
 double cWeightingGain (double fs);
 double cWeightedLevelDbfs (const std::vector<double>& x, double fs);
 
+// IEC 61672 A-weighting as three RBJ sections (the SPL meter): 2 poles at 20.6 Hz,
+// the single poles at 107.7 and 737.9 Hz as one high-pass, 2 poles at 12194 Hz;
+// plus a gain for 0 dB at 1 kHz.
+std::array<Band, 3> aWeightingBands();
+double aWeightingGain (double fs);
+
 // ISO 226 contour difference (dB) keeping the balance heard at the reference; zero at or above it.
 std::vector<double> compensationTarget (const std::vector<double>& freqs, double currentSpl, double referenceSpl);
 

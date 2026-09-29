@@ -18,7 +18,7 @@ struct TapRequest
 {
     std::vector<float> output, mic;   // sized by the message thread (mic may be empty)
     std::size_t skip = 0;             // samples to let pass before recording
-    std::size_t position = 0;         // audio-thread cursor (skip counted first)
+    std::atomic<std::size_t> position { 0 };   // audio-thread cursor (skip counted first); read for progress
     std::atomic<bool> cancelRequested { false };
     std::atomic<bool> finished { false };
     bool cancelled = false;           // valid once finished

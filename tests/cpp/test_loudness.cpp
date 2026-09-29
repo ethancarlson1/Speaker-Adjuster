@@ -65,6 +65,25 @@ TEST_CASE ("C-weighting is within IEC 61672 class 1")
     }
 }
 
+TEST_CASE ("A-weighting is within IEC 61672 class 1")
+{
+    struct Row { double f, nominal, lo, hi; };
+    const Row table[] { { 31.5, -39.4, 1.5, 1.5 }, { 63, -26.2, 1.0, 1.0 }, { 125, -16.1, 1.0, 1.0 }, { 250, -8.6, 1.0, 1.0 },
+                        { 500, -3.2, 1.0, 1.0 }, { 1000, 0.0, 0.7, 0.7 }, { 2000, 1.2, 1.0, 1.0 }, { 4000, 1.0, 1.0, 1.0 },
+                        { 8000, -1.1, 2.5, 1.5 } };
+    for (double rate : { 44100.0, 48000.0, 96000.0 })
+    {
+        const auto b = aWeightingBands();
+        const auto g = 20.0 * std::log10 (aWeightingGain (rate));
+        for (const auto& r : table)
+        {
+            const auto db = g + responseDb ({ b[0], b[1], b[2] }, { r.f }, rate).front();
+            CHECK (db >= r.nominal - r.lo);
+            CHECK (db <= r.nominal + r.hi);
+        }
+    }
+}
+
 TEST_CASE ("shelf plan follows the ISO 226 difference; limits and ceiling")
 {
     const auto plan = planShelves (95.0, fs);
