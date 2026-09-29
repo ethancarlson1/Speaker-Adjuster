@@ -110,7 +110,7 @@ juce::Result LoudnessController::startCalibration()
         return juce::Result::fail ("The loudness stage is still recording");
     if (auto r = engine.startCalibration (env.fs, calibrationNoiseSeconds, env.signalLevelDbfs); r.failed())
         return r;
-    startTap (Step::calibrating, calibrationSkipSeconds, calibrationRecordSeconds, env.micConnected);
+    startTap (Step::calibrating, calibrationSkipSeconds, calibrationRecordSeconds, env.micConnected && env.micSignal);
     status = "Calibrating: read your SPL meter (C-weighted, slow) at the mix position while the noise plays";
     sendChangeMessage();
     return juce::Result::ok();
@@ -146,8 +146,9 @@ juce::Result LoudnessController::startMicCalibration (double splOfCalibrator)
         return juce::Result::fail ("Loudness compensation runs in the plugin inside your DAW, so calibrate it there.");
     if (env.fs <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
-    if (! env.micConnected)
-        return juce::Result::fail ("Connect the measurement mic first");
+    if (! env.micConnected || ! env.micSignal)
+        return juce::Result::fail ("There's no signal on the mic input. Route the measurement mic to the plugin's sidechain "
+                                   "input, and check its gain and phantom power, then try again.");
     if (step != Step::idle && step != Step::awaitingSpl)
         return juce::Result::fail ("Wait for the current step to finish, or stop it");
     if (! std::isfinite (splOfCalibrator) || splOfCalibrator < 80.0 || splOfCalibrator > 130.0)
@@ -171,8 +172,9 @@ juce::Result LoudnessController::startRecheck()
     if (! getInfo().canRecheck)
         return juce::Result::fail ("Calibrate with the mic connected first: the re-check compares what the mic hears "
                                    "now with what it heard then");
-    if (! env.micConnected)
-        return juce::Result::fail ("Connect the measurement mic first");
+    if (! env.micConnected || ! env.micSignal)
+        return juce::Result::fail ("There's no signal on the mic input. Route the measurement mic to the plugin's sidechain "
+                                   "input, and check its gain and phantom power, then try again.");
     if (env.fs <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
     if (step != Step::idle)

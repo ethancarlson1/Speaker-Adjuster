@@ -42,6 +42,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void refreshFromEngine();
     void showResult (const juce::Result& result);
+    bool micReady();                 // false (with a warning popup) if a measurement couldn't hear anything
     void redo (int id);
     void drawMeter (juce::Graphics&, juce::Rectangle<int> area, const juce::String& label, float levelDb) const;
     void showTargetMenu();

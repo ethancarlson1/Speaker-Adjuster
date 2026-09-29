@@ -132,6 +132,7 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
         env.fs = getSampleRate();
         env.referenceSpl = loudnessParams.reference->load();
         env.micConnected = isMicConnected();
+        env.micSignal = hasMicSignal();
         env.signalLevelDbfs = raw (ParamIds::sweepLevel);
         env.available = ! standalone;
         return env;
@@ -344,11 +345,19 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // sample, so the sweep never overwrites the recording.
     auto mainOut = getBusBuffer (buffer, false, 0);
     const auto* mic = findMic (buffer);
+    auto micBlockPeak = 0.0f;
     if (mic != nullptr)
     {
         const auto range = juce::FloatVectorOperations::findMinAndMax (mic, numSamples);
-        updatePeak (micPeak, juce::jmax (range.getEnd(), -range.getStart()));
+        micBlockPeak = juce::jmax (range.getEnd(), -range.getStart());
+        updatePeak (micPeak, micBlockPeak);
     }
+    // Counted in processed audio, not wall time, so it works however fast the host runs.
+    if (micBlockPeak > micSignalFloor)
+        samplesSinceMicSignal.store (0, std::memory_order_relaxed);
+    else
+        samplesSinceMicSignal.store (samplesSinceMicSignal.load (std::memory_order_relaxed) + numSamples,
+                                     std::memory_order_relaxed);
 
     // Normal measurements replace the EQ'd program with the raw test signal (and
     // "Measure from music" records the EQ'd program as its reference): EQ first.
@@ -388,6 +397,25 @@ bool AdaptiveRoomEQProcessor::isMicConnected() const
     return micBus != nullptr && micBus->isEnabled();
 }
 
+bool AdaptiveRoomEQProcessor::hasMicSignal() const
+{
+    const auto fs = getSampleRate();
+    return isMicConnected() && fs > 0.0
+           && static_cast<double> (samplesSinceMicSignal.load (std::memory_order_relaxed)) < fs;
+}
+
+juce::Result AdaptiveRoomEQProcessor::checkMicSignal() const
+{
+    const auto where = standalone ? juce::String ("Pick the interface input the mic is plugged into under Mic input")
+                                  : juce::String ("Route the measurement mic to the plugin's sidechain input");
+    if (! isMicConnected())
+        return juce::Result::fail ("The measurement mic isn't connected. " + where + ", then try again. Nothing was played.");
+    if (! hasMicSignal())
+        return juce::Result::fail ("There's no signal on the mic input. " + where
+                                   + ", and check its gain and phantom power, then try again. Nothing was played.");
+    return juce::Result::ok();
+}
+
 MeasurementEngine::SweepSettings AdaptiveRoomEQProcessor::getSweepSettings() const
 {
     MeasurementEngine::SweepSettings s;
@@ -421,8 +449,8 @@ int AdaptiveRoomEQProcessor::getSmoothingFraction() const
 
 juce::Result AdaptiveRoomEQProcessor::startSweep (int replaceId, bool verify)
 {
-    if (! isMicConnected())
-        return juce::Result::fail ("Connect the measurement mic first");
+    if (auto r = checkMicSignal(); r.failed())
+        return r;
     return engine.startSweep (getSampleRate(), getSweepSettings(), replaceId, verify);
 }
 
@@ -438,8 +466,8 @@ juce::Result AdaptiveRoomEQProcessor::startVerify()
 
 juce::Result AdaptiveRoomEQProcessor::startNoise (int replaceId, bool verify)
 {
-    if (! isMicConnected())
-        return juce::Result::fail ("Connect the measurement mic first");
+    if (auto r = checkMicSignal(); r.failed())
+        return r;
     const auto s = getSweepSettings();
     return engine.startNoise (getSampleRate(), getNoiseSeconds(), s.channel, s.levelDbfs, replaceId, verify);
 }
@@ -557,8 +585,8 @@ juce::Result AdaptiveRoomEQProcessor::startProgram (int replaceId)
     if (standalone)
         return juce::Result::fail ("Measuring from music needs the program to pass through the plugin, "
                                    "so it's only available in the plugin inside your DAW.");
-    if (! isMicConnected())
-        return juce::Result::fail ("Connect the measurement mic first");
+    if (auto r = checkMicSignal(); r.failed())
+        return r;
     return engine.startProgram (getSampleRate(), programSeconds, replaceId);
 }
 

@@ -57,6 +57,8 @@ public:
 
     // Message-thread helpers for the editor.
     bool isMicConnected() const;
+    bool hasMicSignal() const;                                    // the mic carried signal within the last second of audio
+    juce::Result checkMicSignal() const;                          // fails, saying what to fix, if a measurement can't hear anything
     bool isStandalone() const { return standalone; }
     float takeMicPeak() noexcept    { return micPeak.exchange (0.0f); }
     float takeOutputPeak() noexcept { return outputPeak.exchange (0.0f); }
@@ -143,6 +145,8 @@ private:
     roomeq::TargetCurve customTarget { "Custom", roomeq::houseTarget().points };
 
     std::atomic<float> micPeak { 0.0f };
+    static constexpr float micSignalFloor = 1e-5f;                // -100 dBFS: below this the mic input is dead
+    std::atomic<std::int64_t> samplesSinceMicSignal { std::int64_t { 1 } << 40 };
     std::atomic<float> outputPeak { 0.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdaptiveRoomEQProcessor)

@@ -139,10 +139,10 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     sweepLevel.setTooltip ("Peak level of the sweep or noise. Pink noise sits ~6 dB lower on average at the same setting.");
 
     measureButton.setColour (juce::TextButton::buttonColourId, theme::blue);
-    measureButton.onClick = [this] { showResult (processor.startMeasurement()); };
+    measureButton.onClick = [this] { if (micReady()) showResult (processor.startMeasurement()); };
     programButton.setTooltip ("Estimate the response from walk-in music or soundcheck when a sweep isn't possible. "
                               "Uses the plugin's output as the reference; both speakers play.");
-    programButton.onClick = [this] { showResult (processor.startProgram()); };
+    programButton.onClick = [this] { if (micReady()) showResult (processor.startProgram()); };
     stopButton.onClick = [this]
     {
         if (processor.getLoudness().getStep() != LoudnessController::Step::idle)
@@ -191,7 +191,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     undoButton.onClick = [this] { processor.getEngine().undoApply(); };
     verifyButton.setTooltip ("Measure a position through the correction and voicing EQ, to check the result. "
                              "Verify captures never change the proposal.");
-    verifyButton.onClick = [this] { showResult (processor.startVerify()); };
+    verifyButton.onClick = [this] { if (micReady()) showResult (processor.startVerify()); };
     for (auto* b : { &applyButton, &compareButton, &undoButton, &verifyButton })
         button (*b, correctControls);
 
@@ -275,11 +275,14 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     micCalButton.setTooltip ("Optional: with a sound level calibrator on the mic, this measures the mic's sensitivity, "
                              "so the calibration can suggest the SPL the mic heard.");
     micCalButton.onClick = [this]
-    { showResult (processor.getLoudness().startMicCalibration (calibratorLevel.getSelectedId() == 2 ? 114.0 : 94.0)); };
+    {
+        if (micReady())
+            showResult (processor.getLoudness().startMicCalibration (calibratorLevel.getSelectedId() == 2 ? 114.0 : 94.0));
+    };
     recheckButton.setTooltip ("During the show: listens to ~12 s of the music through the mic and compares it with "
                               "the calibration. If the amp gain or a fader after the plugin moved, the calibration "
                               "follows. No test signal plays.");
-    recheckButton.onClick = [this] { showResult (processor.getLoudness().startRecheck()); };
+    recheckButton.onClick = [this] { if (micReady()) showResult (processor.getLoudness().startRecheck()); };
     for (auto* c : std::initializer_list<juce::Component*> { &calibrateButton, &splLabel, &splEntry, &setSplButton,
                                                              &calibratorLabel, &calibratorLevel, &micCalButton, &recheckButton })
         button (*c, loudnessControls);
@@ -404,6 +407,24 @@ void AdaptiveRoomEQEditor::selectVoicingBand (int band)
     repaint();
 }
 
+bool AdaptiveRoomEQEditor::micReady()
+{
+    // Checked before anything plays: a sweep nobody can hear is just noise in the room.
+    const auto r = processor.checkMicSignal();
+    if (r.wasOk())
+        return true;
+    errorText = r.getErrorMessage();
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                      .withIconType (juce::MessageBoxIconType::WarningIcon)
+                                      .withTitle ("No mic signal")
+                                      .withMessage (r.getErrorMessage())
+                                      .withButton ("OK")
+                                      .withAssociatedComponent (this),
+                                  nullptr);
+    repaint();
+    return false;
+}
+
 void AdaptiveRoomEQEditor::showResult (const juce::Result& result)
 {
     errorText = result.failed() ? result.getErrorMessage() : juce::String();
@@ -412,6 +433,8 @@ void AdaptiveRoomEQEditor::showResult (const juce::Result& result)
 
 void AdaptiveRoomEQEditor::redo (int id)
 {
+    if (! micReady())
+        return;
     for (const auto& e : processor.getEngine().getEntries())
         if (e.id == id)
             showResult (e.capture->kind == "program" ? processor.startProgram (id)

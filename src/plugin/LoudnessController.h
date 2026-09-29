@@ -37,6 +37,7 @@ public:
         double fs = 0.0;                   // 0 while audio isn't running
         double referenceSpl = 95.0;
         bool micConnected = false;
+        bool micSignal = false;            // and it carried signal within the last second
         double signalLevelDbfs = -12.0;    // calibration noise peak level
         bool available = true;             // false in the standalone app
     };

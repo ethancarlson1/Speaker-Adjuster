@@ -222,6 +222,23 @@ void runMeasurement (AdaptiveRoomEQProcessor& p, Room& room, const std::vector<f
         pump (p);
 }
 
+// Runs half a second of audio with `micLevel` of noise at the mic (0: a dead
+// input) and no program, as a host does before anyone presses Measure.
+void idleWithMic (AdaptiveRoomEQProcessor& p, float micLevel)
+{
+    const auto micChannel = p.isStandalone() ? 0 : 2;
+    juce::AudioBuffer<float> buffer (p.isStandalone() ? 2 : 3, blockSize);
+    juce::MidiBuffer midi;
+    PortableRandom rng (99);
+    for (int b = 0; b < static_cast<int> (fs) / 2 / blockSize; ++b)
+    {
+        buffer.clear();
+        for (int i = 0; i < blockSize; ++i)
+            buffer.setSample (micChannel, i, static_cast<float> (micLevel * rng.normal()));
+        p.processBlock (buffer, midi);
+    }
+}
+
 void setParam (AdaptiveRoomEQProcessor& p, const juce::String& id, float value)
 {
     auto* param = p.getParameters().getParameter (id);
@@ -236,18 +253,26 @@ std::vector<double> impulseThrough (AdaptiveRoomEQProcessor& p, int length = 1 <
 {
     juce::AudioBuffer<float> buffer (3, blockSize);
     juce::MidiBuffer midi;
+    PortableRandom rng (98);
+    const auto micNoise = [&]   // a real mic always hears something; only the main path matters here
+    {
+        for (int i = 0; i < blockSize; ++i)
+            buffer.setSample (2, i, static_cast<float> (1e-4 * rng.normal()));
+    };
     constexpr int preroll = 300, oneSecond = static_cast<int> (fs) / blockSize;
     for (int b = 0; b < preroll; ++b)
     {
         if (b == preroll - oneSecond && aSecondBefore)
             aSecondBefore();
         buffer.clear();
+        micNoise();
         p.processBlock (buffer, midi);
     }
     std::vector<double> out;
     for (int pos = 0; pos < length; pos += blockSize)
     {
         buffer.clear();
+        micNoise();
         if (pos == 0)
         {
             buffer.setSample (0, 0, 1.0f);
@@ -300,6 +325,7 @@ std::pair<double, double> pinkLevelsInOut (AdaptiveRoomEQProcessor& p)
     juce::AudioBuffer<float> buffer (3, blockSize);
     juce::MidiBuffer midi;
     std::vector<double> in, out;
+    PortableRandom rng (97);
     for (std::size_t pos = 0; pos + blockSize <= x.size(); pos += blockSize)
     {
         buffer.clear();
@@ -307,6 +333,7 @@ std::pair<double, double> pinkLevelsInOut (AdaptiveRoomEQProcessor& p)
         {
             buffer.setSample (0, i, static_cast<float> (x[pos + static_cast<std::size_t> (i)]));
             buffer.setSample (1, i, static_cast<float> (x[pos + static_cast<std::size_t> (i)]));
+            buffer.setSample (2, i, static_cast<float> (1e-4 * rng.normal()));   // the mic's own noise floor
             in.push_back (buffer.getSample (0, i));
         }
         p.processBlock (buffer, midi);
@@ -510,6 +537,7 @@ void clockDriftChecks (const juce::String& snapshotPath)
     constexpr double ppm = 20.0;
 
     setParam (proc, "measureSignal", 1.0f);   // pink noise, 20 s
+    idleWithMic (proc, 3e-4f);
     {
         SimulatedRoom room (7.2, 11, 3e-4, 0.0);
         DriftingMic mic { room, ppm };
@@ -565,6 +593,10 @@ void standaloneChecks (const juce::String& snapshotPath)
     juce::AudioBuffer<float> buffer (2, blockSize);
     juce::MidiBuffer midi;
     std::vector<float> speaker (blockSize, 0.0f);
+    idleWithMic (*proc, 0.0f);
+    check (proc->startSweep().failed() && proc->checkMicSignal().getErrorMessage().contains ("Mic input"),
+           "standalone: a dead mic input refuses the sweep and says where to pick the mic");
+    idleWithMic (*proc, 3e-4f);
     check (proc->startSweep().wasOk(), "start sweep");
     for (int block = 0; block < 100000 && proc->getEngine().getActivity() != MeasurementEngine::Activity::idle; ++block)
     {
@@ -653,6 +685,24 @@ int main (int argc, char** argv)
     proc.setRateAndBufferSizeDetails (fs, blockSize);
     proc.prepareToPlay (fs, blockSize);
     check (proc.isMicConnected(), "mic sidechain bus is enabled");
+
+    std::cout << "Mic check\n";
+    idleWithMic (proc, 0.0f);
+    check (! proc.hasMicSignal() && proc.checkMicSignal().getErrorMessage().contains ("no signal on the mic input"),
+           "a dead mic input is noticed");
+    check (proc.startSweep().failed() && proc.startNoise().failed() && proc.startProgram().failed()
+               && proc.getLoudness().startRecheck().failed() && proc.getLoudness().startMicCalibration (94.0).failed(),
+           "sweeps, noise, music, re-check and mic calibration refuse to start");
+    {
+        juce::AudioBuffer<float> buffer (3, blockSize);
+        juce::MidiBuffer midi;
+        buffer.clear();
+        proc.processBlock (buffer, midi);
+        check (proc.getEngine().getActivity() == MeasurementEngine::Activity::idle && buffer.getMagnitude (0, 0, blockSize) <= 0.0f,
+               "and nothing plays");
+    }
+    idleWithMic (proc, 3e-4f);   // the room's noise floor at the mic (-70 dBFS)
+    check (proc.hasMicSignal() && proc.checkMicSignal().wasOk(), "a live mic input is ready");
 
     std::cout << "Measuring positions\n";
     const struct { double distance; unsigned seed; double noise; double rumble; } positions[] = {
@@ -901,6 +951,7 @@ int main (int argc, char** argv)
 
         // Mic calibrator: a 1 kHz tone at 0.05 peak (-29.0 dBFS RMS) stands for 94 dB.
         show.micSignal = [] (std::size_t n) { return static_cast<float> (0.05 * std::sin (juce::MathConstants<double>::twoPi * 1000.0 * static_cast<double> (n) / fs)); };
+        show.play (nullptr, 0.5);   // the calibrator goes on the mic first
         check (loud.startMicCalibration (94.0).wasOk(), "start the mic calibrator (94 dB)");
         waitForStep (show, nullptr, 6.0, Step::idle);
         auto info = loud.getInfo();
