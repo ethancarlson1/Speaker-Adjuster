@@ -20,11 +20,18 @@ So far all of this has only been checked against simulated rooms. The next step 
    - **Pink noise**: 10, 20 or 30 s of pink noise, analysed against the exact noise that was played (dual-FFT). It needs longer for the same accuracy and doesn't separate out distortion, but a single bang or cough averages out instead of spoiling the capture. 20 s is a good default.
 
    Both match within about 1 dB above 60 Hz in the simulated rooms.
-4. Set **Level** so the mic meter peaks well below 0 dBFS. The default is −12 dBFS. It's a peak level for both signals, so pink noise (about 9.5 dB crest factor) plays about 6–7 dB quieter on average than a sweep at the same setting.
+4. Set **Level** (and the mic gain) so the mic's peaks land in the Mic meter's green zone (see **Mic gain** below). The default is −12 dBFS. It's a peak level for both signals, so pink noise (about 9.5 dB crest factor) plays about 6–7 dB quieter on average than a sweep at the same setting.
 5. Press **Measure position** at 3–5 spots across the audience area, at different distances and off-axis. Avoid symmetric spots on the centre line.
 6. Each capture is graded **pass / marginal / redo** with the reason (e.g. "low-end noise too high below 180 Hz"). You can rename a capture (double-click), take it out of the average, redo it, or delete it.
 7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
 8. Click a capture to highlight its curve: it's drawn on top, thicker, with the others dimmed and its name in the legend. Verify captures can be highlighted too. Click it again to clear the highlight.
+
+**Mic gain.** The Mic meter in the header has a green target zone, −30 to −10 dBFS, for the mic's peaks. The line under it says what to do:
+- ✓ **in the target range**;
+- ! **too quiet**, ! **hot** or ! **near clipping**, with about how many dB to turn the mic gain up or down. It aims 5 dB inside the zone, so the level can move a little without leaving it;
+- ✗ **clipping** (turn it down at least that much) or ✗ **no mic signal**.
+
+It judges the loudest peaks of the last 3 s, and only while something plays through the plugin (output peaks above −40 dBFS), so a quiet room never reads as "turn it up". Clipping is reported whatever is playing. In the plugin, set the gain with soundcheck music or pink noise at show level. The standalone app only plays test signals, so run one (a pink noise capture is easiest) and set the gain while it plays. The level has to move 1 dB past the edge of the zone before the advice changes, so it doesn't flicker.
 
 **Nothing plays unless the mic can hear.** Before a sweep, pink noise, a verify, a music capture, the mic calibrator or a re-check starts, the plugin checks that the mic input carried signal (above −100 dBFS) in the last second. If it's dead (not routed, muted, no phantom power), a popup says so and nothing plays.
 
@@ -187,7 +194,7 @@ In Logic, choose the mic's input or track from the AU's **Side Chain** menu. The
 ### 5. On a real PA
 
 Phase 1's "done when" test:
-- Start with **Level** around −30 dBFS and the amps turned down. Bring it up until captures grade PASS, with the mic meter well below 0 dBFS.
+- Start with **Level** around −30 dBFS and the amps turned down. Bring it up until captures grade PASS, with the mic's peaks in the meter's green zone.
 - Measure 3 positions and look at the average.
 - Then measure the same spots with REW or Smaart (same mic, 1/6-octave smoothing, RMS/power average with SPL alignment) and compare. They should agree within a couple of dB.
 - Measure a second time with the plugin to check it's repeatable.
@@ -248,6 +255,7 @@ The harness drives the real processor against a simulated room. It checks:
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;
 - a dead mic input refuses every test signal and nothing plays;
+- the mic level advice: waiting while nothing plays, too quiet and hot mics brought into the zone by following it, clipping, and no signal;
 - selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, and the re-check finding a 4 dB amp change from music;
 - show tracking: a reference from music in a room with a crowd, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, and a block with a sweep in it dropped;

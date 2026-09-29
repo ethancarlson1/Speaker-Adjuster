@@ -88,6 +88,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_loudness.cpp
         tests/cpp/test_showtrack.cpp
         tests/cpp/test_loudness_stage.cpp
+        tests/cpp/test_mic_level.cpp
         tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
@@ -95,6 +96,7 @@ if(ARE_BUILD_TESTS)
         src/plugin/CaptureRecorder.cpp    # the real-time parts are JUCE-free, so they're tested here
         src/plugin/EqStages.cpp
         src/plugin/LoudnessStage.cpp
+        src/plugin/MicLevelGuide.cpp
         src/plugin/TapRecorder.cpp)
     target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest_headers)
     add_test(NAME roomeq_tests COMMAND roomeq_tests)
@@ -165,6 +167,7 @@ target_sources(AdaptiveRoomEQ
         src/plugin/LoudnessController.cpp
         src/plugin/LoudnessStage.cpp
         src/plugin/MeasurementEngine.cpp
+        src/plugin/MicLevelGuide.cpp
         src/plugin/PluginEditor.cpp
         src/plugin/PluginProcessor.cpp
         src/plugin/ResponseGraph.cpp
@@ -204,6 +207,7 @@ if(ARE_BUILD_TESTS)
             src/plugin/LoudnessController.cpp
             src/plugin/LoudnessStage.cpp
             src/plugin/MeasurementEngine.cpp
+            src/plugin/MicLevelGuide.cpp
             src/plugin/PluginEditor.cpp
             src/plugin/PluginProcessor.cpp
             src/plugin/ResponseGraph.cpp

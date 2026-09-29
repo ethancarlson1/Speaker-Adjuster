@@ -614,15 +614,25 @@ void AdaptiveRoomEQEditor::refreshFromEngine()
     repaint();
 }
 
-void AdaptiveRoomEQEditor::timerCallback()
+void AdaptiveRoomEQEditor::updateMeters (double seconds)
 {
     const auto decayed = [] (float current, float peak)
     {
         const auto peakDb = juce::Decibels::gainToDecibels (peak, meterFloorDb);
         return juce::jmax (peakDb, current - meterDecayDbPerTick, meterFloorDb);
     };
-    micLevelDb = decayed (micLevelDb, processor.takeMicPeak());
-    outputLevelDb = decayed (outputLevelDb, processor.takeOutputPeak());
+    const auto micPeak = processor.takeMicPeak();
+    const auto outputPeak = processor.takeOutputPeak();
+    micLevelDb = decayed (micLevelDb, micPeak);
+    outputLevelDb = decayed (outputLevelDb, outputPeak);
+    micGuide.update (micPeak, outputPeak, seconds, processor.isMicConnected());
+}
+
+void AdaptiveRoomEQEditor::timerCallback()
+{
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    updateMeters (lastMeterMs > 0.0 ? (now - lastMeterMs) / 1000.0 : 1.0 / refreshHz);
+    lastMeterMs = now;
 
     auto& engine = processor.getEngine();
     const auto activity = engine.getActivity();
@@ -1064,10 +1074,19 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     if (! processor.isStandalone())
         header.removeFromLeft (122);   // the Show view button
 
+    // Meters on one row; under the Mic meter, the advice for its gain.
     auto meters = header.removeFromRight (560);
-    drawMeter (g, meters.removeFromRight (270).withSizeKeepingCentre (270, 18), "Output", outputLevelDb);
-    meters.removeFromRight (16);
-    drawMeter (g, meters.removeFromRight (270).withSizeKeepingCentre (270, 18), "Mic", micLevelDb);
+    auto meterRow = meters.removeFromTop (20);
+    drawMeter (g, meterRow.removeFromRight (270).withSizeKeepingCentre (270, 18), "Output", outputLevelDb);
+    meterRow.removeFromRight (16);
+    meters.removeFromRight (286);
+    drawMeter (g, meterRow.removeFromRight (270).withSizeKeepingCentre (270, 18), "Mic", micLevelDb, true);
+    const auto& advice = micGuide.get();
+    const auto severity = MicLevelGuide::severity (advice.verdict);
+    g.setColour (severity == 0 ? theme::good : severity == 1 ? theme::warning : severity == 2 ? theme::critical : theme::muted);
+    g.setFont (juce::FontOptions (12.0f));
+    g.drawFittedText (juce::String::fromUTF8 (MicLevelGuide::text (advice, processor.isStandalone()).c_str()),
+                      meters.removeFromRight (270).withTrimmedTop (2), juce::Justification::centredLeft, 1, 0.8f);
 
     const auto micConnected = processor.isMicConnected();
     g.setFont (juce::FontOptions (13.0f));
@@ -1182,7 +1201,8 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     g.drawFittedText (summaryLine(), summaryArea(), juce::Justification::centredLeft, 1);
 }
 
-void AdaptiveRoomEQEditor::drawMeter (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& label, float levelDb) const
+void AdaptiveRoomEQEditor::drawMeter (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& label, float levelDb,
+                                      bool withTarget) const
 {
     g.setColour (theme::ink2);
     g.setFont (juce::FontOptions (12.0f));
@@ -1196,6 +1216,17 @@ void AdaptiveRoomEQEditor::drawMeter (juce::Graphics& g, juce::Rectangle<int> ar
     const auto fraction = juce::jlimit (0.0f, 1.0f, juce::jmap (levelDb, meterFloorDb, 0.0f, 0.0f, 1.0f));
     g.setColour (levelDb > -3.0f ? theme::critical : theme::blue);
     g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * fraction), 3.0f);
+
+    if (withTarget)   // the zone the mic's peaks should sit in, over the bar so it shows either way
+    {
+        const auto xFor = [&bar] (float db) { return bar.getX() + bar.getWidth() * juce::jmap (db, meterFloorDb, 0.0f, 0.0f, 1.0f); };
+        const auto lo = xFor (MicLevelGuide::targetLowDb), hi = xFor (MicLevelGuide::targetHighDb);
+        g.setColour (theme::good.withAlpha (0.3f));
+        g.fillRect (juce::Rectangle<float> (lo, bar.getY(), hi - lo, bar.getHeight()));
+        g.setColour (theme::good);
+        g.fillRect (juce::Rectangle<float> (lo, bar.getY() - 2.0f, 1.5f, bar.getHeight() + 4.0f));
+        g.fillRect (juce::Rectangle<float> (hi - 1.5f, bar.getY() - 2.0f, 1.5f, bar.getHeight() + 4.0f));
+    }
 }
 
 void AdaptiveRoomEQEditor::resized()

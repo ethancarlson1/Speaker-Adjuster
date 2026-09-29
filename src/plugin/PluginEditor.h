@@ -1,6 +1,7 @@
 #pragma once
 
 #include "plugin/CaptureList.h"
+#include "plugin/MicLevelGuide.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/ResponseGraph.h"
 
@@ -57,6 +58,11 @@ public:
     bool isShowView() const { return showViewOn; }
     const ShowBanner& getBanner() const { return banner; }
 
+    // The header meters and the mic level advice; the timer calls it with the
+    // time since the last call (public so tests can drive it).
+    void updateMeters (double seconds);
+    const MicLevelGuide::Advice& getMicAdvice() const { return micGuide.get(); }
+
 private:
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -68,7 +74,8 @@ private:
     void showResult (const juce::Result& result);
     bool micReady();                 // false (with a warning popup) if a measurement couldn't hear anything
     void redo (int id);
-    void drawMeter (juce::Graphics&, juce::Rectangle<int> area, const juce::String& label, float levelDb) const;
+    void drawMeter (juce::Graphics&, juce::Rectangle<int> area, const juce::String& label, float levelDb,
+                    bool withTarget = false) const;
     void showTargetMenu();
     void askToSaveTarget();
 
@@ -191,6 +198,8 @@ private:
     juce::String errorText;
     float micLevelDb = -100.0f;
     float outputLevelDb = -100.0f;
+    MicLevelGuide micGuide;
+    double lastMeterMs = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdaptiveRoomEQEditor)
 };
