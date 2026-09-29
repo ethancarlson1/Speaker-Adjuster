@@ -9,6 +9,7 @@
 namespace
 {
 constexpr double fs = 48000.0;
+constexpr double twoPi = 6.283185307179586;   // M_PI isn't standard (MSVC)
 
 // Runs `seconds` of a sine (amplitude from its rms level in dBFS) through the meter
 // in 480-sample blocks, collecting every second like the plugin's timer.
@@ -22,7 +23,7 @@ void play (SplMeter& m, double seconds, double hz, double rmsDbfs, double& phase
         for (auto& v : block)
         {
             v = static_cast<float> (amp * std::sin (phase));
-            phase += 2.0 * M_PI * hz / fs;
+            phase += twoPi * hz / fs;
         }
         m.process (block.data(), static_cast<int> (block.size()));
         if (b % 100 == 99)
