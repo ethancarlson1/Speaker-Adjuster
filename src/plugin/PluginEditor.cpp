@@ -33,6 +33,11 @@ const char* const voicingTip =
     "numbered handle: sideways for frequency, up and down for gain. The mouse wheel sets Q; "
     "double-click switches a band on or off.";
 
+const char* const zoneTip =
+    "One instance per zone, each on its own track or output. Choosing a zone sets its starting correction range "
+    "(Correct tab); change it after as you like. Delay lines a fill or delay speaker up with the mains: start at "
+    "the extra distance the mains' sound travels to it, then fine-tune.";
+
 const char* const loudnessTip =
     "Keeps the balance you hear at the reference level as the show gets quieter: bass and treble come up "
     "as the level drops (ISO 226). Turn the volume down before the plugin. Calibrate once per setup; "
@@ -144,8 +149,9 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     auto& params = processor.getParameters();
 
     // ---- Tabs
-    for (auto* tab : { &measureTab, &correctTab, &voicingTab, &loudnessTab })
+    for (auto* tab : { &zoneTab, &measureTab, &correctTab, &voicingTab, &loudnessTab })
     {
+        tab->setLookAndFeel (&tabLook);
         tab->setRadioGroupId (1);
         tab->setClickingTogglesState (true);
         tab->setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.6f));
@@ -156,6 +162,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     correctTab.onClick = [this] { showTab (Tab::correct); };
     voicingTab.onClick = [this] { showTab (Tab::voicing); };
     loudnessTab.onClick = [this] { showTab (Tab::loudness); };
+    zoneTab.onClick = [this] { showTab (Tab::zone); };
 
     const auto combo = [&] (juce::ComboBox& box, juce::Label& label, const juce::String& text, const juce::String& id,
                             std::unique_ptr<ComboAttachment>& attachment, std::vector<juce::Component*>& group)
@@ -183,6 +190,24 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         addChildComponent (b);
         group.push_back (&b);
     };
+
+    // ---- Zone tab
+    combo (zone, zoneLabel, "Zone", "zone", zoneAttachment, zoneControls);
+    zone.setTooltip ("What this instance drives. Subs are judged on 40-100 Hz, where they play; the others on "
+                     "250 Hz-4 kHz. Choosing one sets its starting correction range: subs 20-150 Hz, fills and "
+                     "delays from 80 Hz, mains the full range.");
+    if (! processor.isStandalone())   // the app only plays test signals
+    {
+        slider (zoneDelay, zoneDelayLabel, "Delay", "zoneDelay", zoneDelayAttachment, zoneControls);
+        zoneDelay.setTooltip ("0-300 ms, and the distance sound travels in it. Double-click to type a time, or a "
+                              "distance (\"25 m\", \"82 ft\"). Hold Ctrl (Cmd on a Mac) while dragging for fine steps. "
+                              "Measurements bypass it; Verify includes it.");
+        zoneDelay.setVelocityModeParameters (0.05, 1, 0.0, true, juce::ModifierKeys::ctrlAltCommandModifiers);
+        polarityAttachment = std::make_unique<ButtonAttachment> (params, "polarityInvert", polarity);
+        polarity.setTooltip ("Flips this output's polarity (for a sub or fill that cancels the mains around the "
+                             "crossover). Measurements bypass it; Verify includes it.");
+        button (polarity, zoneControls);
+    }
 
     // ---- Measure tab
     combo (signal, signalLabel, "Signal", "measureSignal", signalAttachment, measureControls);
@@ -483,6 +508,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     }
 
     showingNoiseRows = processor.isNoiseSelected();
+    lastMono = processor.isMono();
     selectVoicingBand (0);
     processor.getEngine().addChangeListener (this);
     processor.getLoudness().addChangeListener (this);
@@ -505,6 +531,8 @@ AdaptiveRoomEQEditor::~AdaptiveRoomEQEditor()
     processor.getEngine().removeChangeListener (this);
     processor.getLoudness().removeChangeListener (this);
     processor.getShow().removeChangeListener (this);
+    for (auto* tab : { &zoneTab, &measureTab, &correctTab, &voicingTab, &loudnessTab })
+        tab->setLookAndFeel (nullptr);
     stopTimer();
 }
 
@@ -513,7 +541,11 @@ void AdaptiveRoomEQEditor::showTab (Tab tab)
     if (tab == Tab::loudness && processor.isStandalone())
         tab = Tab::measure;
     currentTab = tab;
-    auto& button = tab == Tab::measure ? measureTab : tab == Tab::correct ? correctTab : tab == Tab::voicing ? voicingTab : loudnessTab;
+    auto& button = tab == Tab::measure   ? measureTab
+                   : tab == Tab::correct ? correctTab
+                   : tab == Tab::voicing ? voicingTab
+                   : tab == Tab::zone    ? zoneTab
+                                         : loudnessTab;
     button.setToggleState (true, juce::dontSendNotification);
     updateTabVisibility();
 }
@@ -537,7 +569,9 @@ void AdaptiveRoomEQEditor::updateTabVisibility()
         c->setVisible (setup && currentTab == Tab::voicing);
     for (auto* c : loudnessControls)
         c->setVisible (setup && currentTab == Tab::loudness);
-    for (auto* t : { &measureTab, &correctTab, &voicingTab })
+    for (auto* c : zoneControls)
+        c->setVisible (setup && currentTab == Tab::zone);
+    for (auto* t : { &zoneTab, &measureTab, &correctTab, &voicingTab })
         t->setVisible (setup);
     loudnessTab.setVisible (setup && ! processor.isStandalone());
     captureList.setVisible (setup);
@@ -550,6 +584,9 @@ void AdaptiveRoomEQEditor::updateTabVisibility()
             c->setVisible (! showingNoiseRows);
         noiseLength.setVisible (showingNoiseRows);
         noiseLengthLabel.setVisible (showingNoiseRows);
+        // A mono track has one speaker: nothing to choose.
+        sweepSpeaker.setVisible (sweepSpeaker.isVisible() && ! lastMono);
+        speakerLabel.setVisible (speakerLabel.isVisible() && ! lastMono);
     }
     resized();
     repaint();
@@ -691,6 +728,13 @@ void AdaptiveRoomEQEditor::timerCallback()
     };
     micLevelDb = decayed (micLevelDb, processor.takeMicPeak());
     outputLevelDb = decayed (outputLevelDb, processor.takeOutputPeak());
+    if (processor.isMono() != lastMono)   // the host changed the track's layout
+    {
+        lastMono = processor.isMono();
+        updateTabVisibility();
+    }
+    if (currentTab == Tab::zone && ! showViewOn)
+        repaint (infoBounds);
 
     auto& engine = processor.getEngine();
     const auto activity = engine.getActivity();
@@ -945,6 +989,32 @@ juce::String AdaptiveRoomEQEditor::statusText() const
     if (currentTab == Tab::loudness && engine.getActivity() == MeasurementEngine::Activity::idle && loud.getStatus().isNotEmpty())
         return loud.getStatus();
     return engine.getStatus();
+}
+
+juce::String AdaptiveRoomEQEditor::zoneInfo() const
+{
+    const auto [lo, hi] = processor.getReferenceBand();
+    const auto settings = processor.getCorrectionSettings();
+    const auto dash = juce::String::fromUTF8 ("\xe2\x80\x93");
+    juce::String text;
+    text << "Measurements are judged on " << theme::formatHz (lo) << dash << theme::formatHz (hi)
+         << (processor.getZone() == AdaptiveRoomEQProcessor::Zone::subs ? ", where subs play" : "")
+         << ". Correcting " << theme::formatHz (settings.config.rangeLoHz) << dash << theme::formatHz (settings.config.rangeHiHz)
+         << " (Correct tab).\n";
+    if (processor.isStandalone())
+        return text + "Delay and polarity are set in the plugin in your DAW.";
+    text << (processor.isMono() ? "Mono track: the test signal plays on its one speaker.\n"
+                                : "Stereo track: the test signal plays on the speaker chosen on the Measure tab.\n");
+    const auto z = processor.getZoneSettings();
+    if (z.delayMs > 0.0 || z.invert)
+    {
+        if (z.delayMs > 0.0)
+            text << "Delayed " << juce::String (zoneDelayText (z.delayMs)) << (z.invert ? ", polarity inverted" : "") << ".";
+        else
+            text << "Polarity inverted.";
+        text << " Measurements bypass this; Verify includes it.";
+    }
+    return text;
 }
 
 juce::String AdaptiveRoomEQEditor::loudnessInfo() const
@@ -1280,6 +1350,12 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (12.5f));
         g.drawFittedText (correctionInfo(), infoBounds, juce::Justification::topLeft, juce::jmax (1, infoBounds.getHeight() / 15), 0.9f);
     }
+    else if (currentTab == Tab::zone)
+    {
+        g.setColour (theme::ink2);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawFittedText (zoneInfo(), infoBounds, juce::Justification::topLeft, juce::jmax (1, infoBounds.getHeight() / 15), 0.9f);
+    }
     else if (currentTab == Tab::loudness)
     {
         g.setColour (theme::axis);
@@ -1293,6 +1369,7 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     const auto* tip = currentTab == Tab::measure   ? placementTip
                       : currentTab == Tab::correct ? correctTip
                       : currentTab == Tab::voicing ? voicingTip
+                      : currentTab == Tab::zone    ? zoneTip
                                                    : loudnessTip;
     if (! tipBounds.isEmpty())
         g.drawFittedText (tip, tipBounds, juce::Justification::bottomLeft, 6);
@@ -1373,11 +1450,26 @@ void AdaptiveRoomEQEditor::resized()
     {
     // Tab bar.
     auto tabs = panel.removeFromTop (30);
-    const auto tabWidth = tabs.getWidth() / (processor.isStandalone() ? 3 : 4);
-    measureTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
-    correctTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
-    voicingTab.setBounds (tabs.removeFromLeft (tabWidth).reduced (1, 0));
-    loudnessTab.setBounds (tabs.reduced (1, 0));
+    {
+        // Each tab as wide as its word, plus an equal share of what's left.
+        std::vector<juce::TextButton*> shown { &zoneTab, &measureTab, &correctTab, &voicingTab };
+        if (! processor.isStandalone())
+            shown.push_back (&loudnessTab);
+        const juce::Font font (juce::FontOptions (TabLook::tabFontHeight));
+        std::vector<float> widths;
+        auto total = 0.0f;
+        for (auto* t : shown)
+            total += widths.emplace_back (juce::GlyphArrangement::getStringWidth (font, t->getButtonText()));
+        const auto share = (static_cast<float> (tabs.getWidth()) - total) / static_cast<float> (shown.size());
+        auto x = static_cast<float> (tabs.getX());
+        for (std::size_t i = 0; i < shown.size(); ++i)
+        {
+            const auto right = i + 1 == shown.size() ? static_cast<float> (tabs.getRight()) : x + widths[i] + share;
+            shown[i]->setBounds (juce::Rectangle<int> (juce::roundToInt (x), tabs.getY(), juce::roundToInt (right) - juce::roundToInt (x),
+                                                       tabs.getHeight()).reduced (1, 0));
+            x = right;
+        }
+    }
     panel.removeFromTop (14);
 
     // Status at the bottom, with Stop beside it.
@@ -1416,7 +1508,7 @@ void AdaptiveRoomEQEditor::resized()
                 row (sweepLengthLabel, sweepLength);
                 row (sweepsLabel, sweepsPerPosition);
             }
-            if (! processor.isStandalone())
+            if (! processor.isStandalone() && ! lastMono)
                 row (speakerLabel, sweepSpeaker);
             row (levelLabel, sweepLevel);
             row (smoothingLabel, smoothing);
@@ -1521,12 +1613,23 @@ void AdaptiveRoomEQEditor::resized()
             fullRow (recheckButton, 30);
             break;
         }
+        case Tab::zone:
+        {
+            row (zoneLabel, zone);
+            if (! processor.isStandalone())
+            {
+                content.removeFromTop (6);
+                row (zoneDelayLabel, zoneDelay);
+                fullRow (polarity, 24);
+            }
+            break;
+        }
     }
 
     // What's left: correction / loudness details and the tab's tip. When the
     // window is too small for both, the details stay and the tip goes.
     const auto tipHeight = currentTab == Tab::loudness ? 64 : 84;
-    const auto detailsHeight = currentTab == Tab::correct || currentTab == Tab::loudness ? 90 : 0;
+    const auto detailsHeight = currentTab == Tab::correct || currentTab == Tab::loudness || currentTab == Tab::zone ? 90 : 0;
     tipBounds = content.getHeight() >= tipHeight + detailsHeight ? content.removeFromBottom (tipHeight) : juce::Rectangle<int>();
     infoBounds = content.withTrimmedTop (4);
     }

@@ -9,8 +9,9 @@
 // then loudness compensation: the mic calibrator, the level calibration in the
 // room, tracking the level of music, the shelves the speakers get, the
 // deadband, and the re-check after an amp gain change; then the state round
-// trip; pink noise and music across two clocks (a mic 20 ppm fast); the
-// standalone app; and renders each editor tab to PNG.
+// trip; zones (a sub on a mono track, delay and polarity); pink noise and
+// music across two clocks (a mic 20 ppm fast); the standalone app; and renders
+// each editor tab to PNG.
 //
 //   AdaptiveRoomEQ_Harness [--out snapshot.png]
 //   (also writes snapshot-correct.png, -voicing.png, -loudness.png, -drift.png, -standalone.png)
@@ -681,6 +682,239 @@ void standaloneChecks (const juce::String& snapshotPath)
     for (int i = 0; i < 20; ++i)
         pump (*proc);
     writeSnapshot (*editor, snapshotPath);
+}
+
+// A sub on a mono track: the zone band, its defaults, the fit, and re-grading
+// when the zone changes. Then the zone's delay and polarity on a stereo
+// instance: on the output, bypassed while measuring, included in Verify, saved.
+void zoneChecks (const juce::String& snapshotStem)
+{
+    std::cout << "Zones: a sub on a mono track\n";
+    {
+        AdaptiveRoomEQProcessor proc;
+        auto layout = proc.getBusesLayout();
+        layout.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
+        layout.outputBuses.getReference (0) = juce::AudioChannelSet::mono();
+        auto surround = layout;
+        surround.inputBuses.getReference (0) = surround.outputBuses.getReference (0) = juce::AudioChannelSet::create5point1();
+        check (! proc.checkBusesLayoutSupported (surround), "5.1 refused");
+        check (proc.setBusesLayout (layout) && proc.isMono() && proc.getTotalNumOutputChannels() == 1
+                   && proc.getTotalNumInputChannels() == 2 && proc.isMicConnected(),
+               "mono track: one channel in and out, plus the mic");
+        proc.setRateAndBufferSizeDetails (fs, blockSize);
+        proc.prepareToPlay (fs, blockSize);
+        const auto rangeLo = [&] { return proc.getParameters().getRawParameterValue ("rangeLo")->load(); };
+        const auto rangeHi = [&] { return proc.getParameters().getRawParameterValue ("rangeHi")->load(); };
+
+        setParam (proc, "zone", 1.0f);   // subs
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        check (proc.getZone() == AdaptiveRoomEQProcessor::Zone::subs && proc.getReferenceBand() == std::pair { 40.0, 100.0 }
+                   && std::abs (rangeLo() - 20.0f) < 0.5f && std::abs (rangeHi() - 150.0f) < 1.0f,
+               "Subs: judged on 40-100 Hz, correcting 20-150 Hz to start");
+        setParam (proc, "sweepSpeaker", 1.0f);   // right: meaningless on one channel
+        check (proc.getSweepSettings().channel == 0, "mono: the sweep plays on the one channel");
+        setParam (proc, "sweepLength", 0.0f);
+
+        // A sub: 4th-order low-pass at 100 Hz and a 55 Hz room mode, into the room (its own 55 Hz high-pass).
+        struct Sub
+        {
+            SimulatedRoom room;
+            Biquad lp1 = Biquad::lowpass (100.0, 0.5412), lp2 = Biquad::lowpass (100.0, 1.3066),
+                   mode = Biquad::peaking (62.0, 6.0, 3.0);
+            float process (float x) { return room.process (static_cast<float> (mode.process (lp2.process (lp1.process (x))))); }
+        };
+        juce::AudioBuffer<float> buffer (2, blockSize);   // main (in place) + mic
+        juce::MidiBuffer midi;
+        const auto measure = [&] (Sub& sub)
+        {
+            std::vector<float> speaker (blockSize, 0.0f);
+            for (int block = 0; block < 100000 && proc.getEngine().getActivity() == MeasurementEngine::Activity::measuring; ++block)
+            {
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    buffer.setSample (0, i, 0.0f);
+                    buffer.setSample (1, i, sub.process (speaker[static_cast<std::size_t> (i)]));
+                }
+                proc.processBlock (buffer, midi);
+                for (int i = 0; i < blockSize; ++i)
+                    speaker[static_cast<std::size_t> (i)] = buffer.getSample (0, i);
+                if (block % 64 == 0)
+                    pump (proc);
+            }
+            for (int i = 0; i < 12000 && proc.getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
+                pump (proc);
+        };
+        // The mic check wants recent signal on the mic channel (channel 1 here).
+        const auto micAlive = [&]
+        {
+            PortableRandom rng (5);
+            for (int b = 0; b < 20; ++b)
+            {
+                buffer.clear();
+                for (int i = 0; i < blockSize; ++i)
+                    buffer.setSample (1, i, static_cast<float> (3e-4 * rng.normal()));
+                proc.processBlock (buffer, midi);
+            }
+        };
+        for (int pos = 0; pos < 3; ++pos)
+        {
+            Sub sub { SimulatedRoom (4.0 + 2.5 * pos, static_cast<unsigned> (31 + pos), 2e-4, 0.0) };
+            micAlive();
+            check (proc.startSweep().wasOk(), "sub position " + juce::String (pos + 1) + ": start sweep");
+            measure (sub);
+        }
+        auto& engine = proc.getEngine();
+        const auto entries = engine.getEntries();
+        const auto oneK = [] (const roomeq::Capture& c)
+        { return std::find_if (c.grade.bands.begin(), c.grade.bands.end(), [] (const auto& b) { return b.name == "1k"; }); };
+        auto graded = entries.size() == 3;
+        for (const auto& e : entries)
+        {
+            std::cout << "    " << e.capture->name << " " << roomeq::gradeLabel (e.capture->grade.overall) << "\n";
+            graded = graded && e.capture->grade.overall != roomeq::Grade::redo && oneK (*e.capture)->outOfRange;
+        }
+        check (graded, "sub captures graded where a sub plays (1 kHz out of its range, not a redo)");
+        const auto d = waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.proposal.has_value(); });
+        if (d != nullptr && d->proposal)
+        {
+            const auto& fit = *d->proposal;
+            auto below = ! fit.bands.empty();
+            for (const auto& b : fit.bands)
+                below = below && b.freq <= 150.0;
+            std::cout << "    usable " << d->summary.usable.first << "-" << d->summary.usable.second << " Hz, fit "
+                      << fit.fitRange.first << "-" << fit.fitRange.second << " Hz, " << fit.bands.size() << " bands\n";
+            check (d->summary.usable.second < 200.0 && d->summary.usable.first < 45.0, "the sub's usable range is its own");
+            check (below && fit.fitRange.second <= 150.0, "the fit stays at 150 Hz and below");
+            check (roomeq::responseDb (fit.bands, { 62.0 }, fs)[0] < -2.0, "and cuts the room mode");
+        }
+        else
+        {
+            check (false, "a fit for the sub");
+        }
+
+        // Change the zone: every capture is graded again, exactly, and its defaults are set.
+        std::vector<roomeq::CaptureGrade> asSub;
+        for (const auto& e : entries)
+            asSub.push_back (e.capture->grade);
+        setParam (proc, "zone", 0.0f);   // mains
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        const auto asMains = engine.getEntries();
+        check (asMains.size() == 3 && std::abs (asMains[0].capture->grade.bands[1].levelDb - asSub[0].bands[1].levelDb) > 10.0
+                   && std::abs (rangeHi() - 20000.0f) < 1.0f,
+               "Mains: the captures are re-graded against 250 Hz-4 kHz, and the range reset");
+        setParam (proc, "zone", 1.0f);
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        auto same = true;
+        const auto back = engine.getEntries();
+        for (std::size_t i = 0; i < back.size() && i < asSub.size(); ++i)
+        {
+            const auto& g = back[i].capture->grade;
+            same = same && g.overall == asSub[i].overall && g.reasons == asSub[i].reasons && g.notes == asSub[i].notes;
+            for (std::size_t b = 0; b < g.bands.size(); ++b)
+                same = same && g.bands[b].outOfRange == asSub[i].bands[b].outOfRange
+                       && std::abs (g.bands[b].levelDb - asSub[i].bands[b].levelDb) < 1e-9;
+        }
+        check (same, "back to Subs: the same grades as measured");
+
+        // A saved session keeps its own range (restoring its zone doesn't reset it).
+        setParam (proc, "rangeHi", 180.0f);
+        juce::MemoryBlock saved;
+        proc.getStateInformation (saved);
+        AdaptiveRoomEQProcessor restored;
+        restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+        for (int i = 0; i < 5; ++i)
+            pump (restored);
+        check (restored.getZone() == AdaptiveRoomEQProcessor::Zone::subs
+                   && std::abs (restored.getParameters().getRawParameterValue ("rangeHi")->load() - 180.0f) < 1.0f,
+               "the zone is saved, and restoring it keeps the session's own range");
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
+        editor->setSize (1200, 820);
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        writeSnapshot (*editor, snapshotStem + "-sub-measure.png");
+        ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+        writeSnapshot (*editor, snapshotStem + "-sub-zone.png");
+    }
+
+    std::cout << "Zones: delay and polarity\n";
+    {
+        AdaptiveRoomEQProcessor proc;
+        proc.enableAllBuses();
+        proc.setRateAndBufferSizeDetails (fs, blockSize);
+        proc.prepareToPlay (fs, blockSize);
+        const auto peakOf = [] (const std::vector<double>& ir)
+        {
+            std::size_t at = 0;
+            for (std::size_t i = 1; i < ir.size(); ++i)
+                if (std::abs (ir[i]) > std::abs (ir[at]))
+                    at = i;
+            return at;
+        };
+        setParam (proc, "zoneDelay", 12.5f);
+        setParam (proc, "polarityInvert", 1.0f);
+        auto ir = impulseThrough (proc);
+        check (peakOf (ir) == 600 && std::abs (ir[600] + 1.0) < 1e-6, "12.50 ms and inverted: the impulse comes out 600 samples later, flipped");
+        auto* delayParam = proc.getParameters().getParameter ("zoneDelay");
+        check (delayParam->getText (delayParam->getValue(), 64) == "12.50 ms (4.29 m / 14.1 ft)"
+                   && std::abs (delayParam->getValueForText ("34.3 m") - delayParam->convertTo0to1 (100.0f)) < 1e-6f,
+               "the delay reads as a distance, and a distance can be typed");
+        setParam (proc, "zoneDelay", 12.51f);
+        ir = impulseThrough (proc);
+        check (peakOf (ir) == 600 && std::abs (dtftDb (ir, 1000.0)) < 0.01 && std::abs (dtftDb (ir, 10000.0)) < 0.01,
+               "12.51 ms: a fractional delay, flat to 10 kHz (" + juce::String (dtftDb (ir, 10000.0), 3) + " dB)");
+
+        // Measurements bypass them; Verify includes them.
+        idleWithMic (proc, 3e-4f);
+        setParam (proc, "sweepLength", 0.0f);
+        setParam (proc, "zoneDelay", 100.0f);
+        {
+            SimulatedRoom room (7.0, 21, 3e-4, 0.0);
+            check (proc.startSweep().wasOk(), "sweep with a 100 ms delay set");
+            runMeasurement (proc, room);
+        }
+        const auto flight = 1000.0 * (7.0 / 343.0 * fs + 288 + blockSize) / fs;
+        auto entries = proc.getEngine().getEntries();
+        check (entries.size() == 1 && std::abs (entries[0].capture->delaysMs.front() - flight) < 0.5,
+               "the measurement bypassed the delay (" + juce::String (entries.empty() ? 0.0 : entries[0].capture->delaysMs.front(), 2)
+                   + " ms loop)");
+        waitForDisplay (proc, [] (const MeasurementEngine::Display& x) { return x.proposal.has_value(); });
+        proc.getEngine().applyProposal();
+        idleWithMic (proc, 3e-4f);
+        {
+            SimulatedRoom room (7.0, 22, 3e-4, 0.0);
+            check (proc.startVerify().wasOk(), "verify with the delay");
+            runMeasurement (proc, room);
+        }
+        entries = proc.getEngine().getEntries();
+        check (entries.size() == 2 && entries[1].verify && std::abs (entries[1].capture->delaysMs.front() - flight - 100.0) < 0.5,
+               "Verify measured through it (" + juce::String (entries.size() < 2 ? 0.0 : entries[1].capture->delaysMs.front(), 2)
+                   + " ms loop)");
+
+        juce::MemoryBlock saved;
+        proc.getStateInformation (saved);
+        AdaptiveRoomEQProcessor restored;
+        restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+        check (restored.getZoneSettings() == ZoneSettings { 100.0, true }, "delay and polarity are saved");
+
+        setParam (proc, "zone", 3.0f);   // delay speakers
+        setParam (proc, "zoneDelay", 12.5f);
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
+        editor->setSize (1200, 820);
+        ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+        for (int i = 0; i < 5; ++i)
+            pump (proc);
+        writeSnapshot (*editor, snapshotStem + "-zone.png");
+        editor->setSize (1060, 740);
+        writeSnapshot (*editor, snapshotStem + "-zone-small.png");
+    }
 }
 
 int main (int argc, char** argv)
@@ -1535,6 +1769,7 @@ int main (int argc, char** argv)
                "and the saved session stays cleared");
     }
 
+    zoneChecks (outPath.upToLastOccurrenceOf (".", false, false));
     clockDriftChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-drift.png");
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 

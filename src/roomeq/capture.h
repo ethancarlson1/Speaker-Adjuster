@@ -56,6 +56,10 @@ WindowedResponse windowedResponse (const std::vector<double>& ir, double fs, con
 Capture analyzeSweepCapture (const std::string& name, const std::vector<std::vector<double>>& recordings,
                              const SweepConfig& sweepCfg, const AnalysisConfig& cfg = {});
 
+// Grades a capture again against other settings (a new reference band),
+// exactly as analysing it with them would have.
+void regradeCapture (Capture& c, const GradingConfig& grading);
+
 // Dual-FFT estimate against program material, graded with the same rules.
 Capture analyzeProgramCapture (const std::string& name, const std::vector<double>& reference,
                                const std::vector<double>& mic, double fs, const AnalysisConfig& cfg = {},

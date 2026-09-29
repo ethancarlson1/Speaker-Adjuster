@@ -29,6 +29,9 @@ const juce::ParameterID loudMaxHigh { "loudMaxHigh", 1 };
 const juce::ParameterID loudSpeed { "loudSpeed", 1 };
 const juce::ParameterID loudSource { "loudSource", 1 };
 const juce::ParameterID loudHighPass { "loudHighPass", 1 };
+const juce::ParameterID zone { "zone", 1 };
+const juce::ParameterID zoneDelay { "zoneDelay", 1 };
+const juce::ParameterID polarity { "polarityInvert", 1 };
 
 juce::ParameterID voicing (int band, const char* what)
 {
@@ -39,6 +42,16 @@ juce::ParameterID voicing (int band, const char* what)
 constexpr double sweepSeconds[] = { 2.0, 5.0, 10.0 };
 constexpr double noiseSeconds[] = { 10.0, 20.0, 30.0 };
 constexpr int smoothingFractions[] = { 3, 4, 6 };
+
+// Each zone's starting correction range (Hz). Choosing a zone sets these; they can be changed after.
+struct ZoneDefaults
+{
+    float rangeLo, rangeHi;
+};
+constexpr ZoneDefaults zoneDefaults[] = { { 20.0f, 20000.0f },    // mains
+                                          { 20.0f, 150.0f },      // subs
+                                          { 80.0f, 20000.0f },    // front fill
+                                          { 80.0f, 20000.0f } };  // delay
 
 bool loadedAsStandalone()
 {
@@ -127,6 +140,9 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
     lp.speed = parameters.getRawParameterValue (ParamIds::loudSpeed.getParamID());
     lp.source = parameters.getRawParameterValue (ParamIds::loudSource.getParamID());
     lp.highPass = parameters.getRawParameterValue (ParamIds::loudHighPass.getParamID());
+    zoneDelayParam = parameters.getRawParameterValue (ParamIds::zoneDelay.getParamID());
+    polarityParam = parameters.getRawParameterValue (ParamIds::polarity.getParamID());
+    parameters.addParameterListener (ParamIds::zone.getParamID(), this);
 
     loudnessControl.setEnvironmentSource ([this]
     {
@@ -148,6 +164,12 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
         env.available = ! standalone;
         return env;
     });
+}
+
+AdaptiveRoomEQProcessor::~AdaptiveRoomEQProcessor()
+{
+    parameters.removeParameterListener (ParamIds::zone.getParamID(), this);
+    cancelPendingUpdate();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::createParameterLayout()
@@ -172,6 +194,20 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
     layout.add (std::make_unique<AudioParameterChoice> (ParamIds::smoothing, "Smoothing",
                                                         StringArray { "1/3 octave", "1/4 octave", "1/6 octave" }, 2));
 
+    // Zone: what this instance drives. Sets the reference band measurements are
+    // judged against and, when chosen, the starting correction range.
+    layout.add (std::make_unique<AudioParameterChoice> (ParamIds::zone, "Zone",
+                                                        StringArray { "Mains", "Subs", "Front fill", "Delay" }, 0));
+    auto zoneGroup = std::make_unique<AudioProcessorParameterGroup> ("alignment", "Alignment", "|");
+    zoneGroup->addChild (std::make_unique<AudioParameterFloat> (
+        ParamIds::zoneDelay, "Delay", NormalisableRange<float> (0.0f, static_cast<float> (ZoneStage::maxDelayMs), 0.01f), 0.0f,
+        AudioParameterFloatAttributes()
+            .withStringFromValueFunction ([] (float v, int) { return String (zoneDelayText (v)); })
+            .withValueFromStringFunction ([] (const String& text)
+                                          { return static_cast<float> (parseZoneDelay (text.toStdString())); })));
+    zoneGroup->addChild (std::make_unique<AudioParameterBool> (ParamIds::polarity, "Invert polarity", false));
+    layout.add (std::move (zoneGroup));
+
     // Correction.
     const auto hz = AudioParameterFloatAttributes().withStringFromValueFunction (hzText);
     const auto db = AudioParameterFloatAttributes().withLabel ("dB");
@@ -186,7 +222,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
     layout.add (std::make_unique<AudioParameterFloat> (ParamIds::maxBoost, "Max boost",
                                                        NormalisableRange<float> (0.0f, 6.0f, 0.5f), 3.0f, db));
     layout.add (std::make_unique<AudioParameterFloat> (ParamIds::rangeLo, "Correct from", logRange (20.0f, 500.0f), 20.0f, hz));
-    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::rangeHi, "Correct up to", logRange (1000.0f, 20000.0f),
+    layout.add (std::make_unique<AudioParameterFloat> (ParamIds::rangeHi, "Correct up to", logRange (100.0f, 20000.0f),
                                                        20000.0f, hz));
 
     // Voicing EQ.
@@ -302,6 +338,7 @@ void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     loudness.prepare (sampleRate, samplesPerBlock, getLoudnessSettings());
     showTap.abortWhileStopped();
     spl.prepare (sampleRate);
+    zoneStage.prepare (sampleRate, getZoneSettings());
 }
 
 void AdaptiveRoomEQProcessor::releaseResources()
@@ -314,11 +351,12 @@ void AdaptiveRoomEQProcessor::releaseResources()
 bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto mainOut = layouts.getMainOutputChannelSet();
-    if (mainOut != juce::AudioChannelSet::stereo())
-        return false;
-
     if (standalone)
-        return layouts.getMainInputChannelSet() == juce::AudioChannelSet::mono();
+        return mainOut == juce::AudioChannelSet::stereo() && layouts.getMainInputChannelSet() == juce::AudioChannelSet::mono();
+
+    // Mono or stereo, as the host's track is.
+    if (mainOut != juce::AudioChannelSet::stereo() && mainOut != juce::AudioChannelSet::mono())
+        return false;
 
     if (layouts.getMainInputChannelSet() != mainOut)
         return false;
@@ -409,10 +447,14 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // Loudness compensation (the standalone app has no program to compensate).
     // Flat and not tracking while a measurement or calibration plays: at once
     // under a test signal (it starts with silence), gliding under music.
+    // Then the zone's delay and polarity, bypassed like the EQ. The taps record
+    // what the speakers finally get.
     if (! standalone)
     {
         loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), measuring,
                           recorder.replacesOutput());
+        zoneStage.process (channels, numChannels, numSamples, measuring && ! throughEq ? ZoneSettings {} : getZoneSettings());
+        loudness.recordTap (channels, numChannels, mic, numSamples);
         showTap.record (channels, numChannels, mic, numSamples);   // after all the EQ: the room's own response
     }
 
@@ -455,7 +497,7 @@ MeasurementEngine::SweepSettings AdaptiveRoomEQProcessor::getSweepSettings() con
     s.repeats = juce::jlimit (0, 2, index (ParamIds::sweepsPerPosition)) + 1;
     // Standalone: the speaker is chosen as a physical output in the editor, and
     // the sweep always plays on the first output channel.
-    s.channel = standalone ? 0 : juce::jlimit (0, 1, index (ParamIds::sweepSpeaker));
+    s.channel = standalone || isMono() ? 0 : juce::jlimit (0, 1, index (ParamIds::sweepSpeaker));
     s.levelDbfs = parameters.getRawParameterValue (ParamIds::sweepLevel.getParamID())->load();
     return s;
 }
@@ -606,8 +648,51 @@ MeasurementEngine::CorrectionSettings AdaptiveRoomEQProcessor::getCorrectionSett
     s.config.maxBoostDb = raw (ParamIds::maxBoost);
     s.config.rangeLoHz = raw (ParamIds::rangeLo);
     s.config.rangeHiHz = raw (ParamIds::rangeHi);
+    const auto [lo, hi] = getReferenceBand();
+    s.config.refBandLoHz = lo;
+    s.config.refBandHiHz = hi;
     s.fs = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
     return s;
+}
+
+// ---------------------------------------------------------------------------
+// Zone
+
+AdaptiveRoomEQProcessor::Zone AdaptiveRoomEQProcessor::getZone() const
+{
+    return static_cast<Zone> (juce::jlimit (0, 3, juce::roundToInt (raw (ParamIds::zone))));
+}
+
+std::pair<double, double> AdaptiveRoomEQProcessor::getReferenceBand() const
+{
+    return getZone() == Zone::subs ? std::pair { 40.0, 100.0 } : std::pair { 250.0, 4000.0 };
+}
+
+ZoneSettings AdaptiveRoomEQProcessor::getZoneSettings() const noexcept
+{
+    return { static_cast<double> (zoneDelayParam->load()), polarityParam->load() > 0.5f };
+}
+
+bool AdaptiveRoomEQProcessor::isMono() const
+{
+    return ! standalone && getMainBusNumOutputChannels() == 1;
+}
+
+void AdaptiveRoomEQProcessor::parameterChanged (const juce::String&, float)
+{
+    triggerAsyncUpdate();   // may be the audio thread: the defaults are set on the message thread
+}
+
+void AdaptiveRoomEQProcessor::handleAsyncUpdate()
+{
+    // Only a real change of zone sets its defaults (not a session restoring its own).
+    const auto zone = static_cast<int> (getZone());
+    if (zone == appliedZone.exchange (zone))
+        return;
+    const auto& d = zoneDefaults[zone];
+    for (const auto& [id, value] : { std::pair { ParamIds::rangeLo, d.rangeLo }, std::pair { ParamIds::rangeHi, d.rangeHi } })
+        if (auto* param = parameters.getParameter (id.getParamID()))
+            param->setValueNotifyingHost (param->convertTo0to1 (value));
 }
 
 juce::Result AdaptiveRoomEQProcessor::clearRoomData()
@@ -672,7 +757,10 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     if (! root.hasType ("AdaptiveRoomEQ"))
         return;
     if (const auto params = root.getChildWithName (parameters.state.getType()); params.isValid())
+    {
         parameters.replaceState (params);
+        appliedZone = static_cast<int> (getZone());   // its own range settings stay
+    }
     if (const auto ct = root.getChildWithName ("CustomTarget"); ct.isValid() && ct.getNumChildren() > 0)
     {
         roomeq::TargetCurve t;

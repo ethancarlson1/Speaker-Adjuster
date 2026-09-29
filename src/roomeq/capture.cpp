@@ -163,4 +163,13 @@ Capture analyzeProgramCapture (const std::string& name, const std::vector<double
     c.driftPpm = est.drift.ppm;
     return c;
 }
+
+void regradeCapture (Capture& c, const GradingConfig& grading)
+{
+    auto signal = c.power;
+    if (c.kind == "sweep")
+        for (std::size_t k = 0; k < signal.size() && k < c.noisePower.size(); ++k)
+            signal[k] -= c.noisePower[k];
+    c.grade = regrade (c.grade, c.freqs, signal, grading);
+}
 } // namespace roomeq

@@ -4,7 +4,9 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <stdexcept>
+#include <string>
 
 using namespace roomeq;
 using namespace testing;
@@ -122,4 +124,49 @@ TEST_CASE ("program capture matches the sweep capture")
     for (std::size_t i = 0; i < grid.size(); ++i)
         CHECK (std::abs (a[i] - b[i]) < 1.0);
     CHECK (prog.delaysMs.at (0) == doctest::Approx (sweepCap.delaysMs.at (0)).epsilon (0.01));
+}
+
+TEST_CASE ("regrading a sub against its own band matches grading it that way")
+{
+    // A sub: plays 30-100 Hz, nothing at 1 kHz.
+    SweepConfig cfg;
+    cfg.duration = 2.0;
+    const auto play = buildPlayback (cfg, generateSweep (cfg));
+    auto out = play;
+    for (const auto& f : { highpass (30.0, 0.5412, cfg.fs), highpass (30.0, 1.3066, cfg.fs),
+                           lowpass (100.0, 0.5412, cfg.fs), lowpass (100.0, 1.3066, cfg.fs) })
+        out = f.process (out);
+    out = delayed (out, 480);
+    const std::vector<std::vector<double>> recs { plus (out, whiteNoise (out.size(), 1e-5, 4)),
+                                                  plus (out, whiteNoise (out.size(), 1e-5, 5)) };
+    AnalysisConfig sub;
+    sub.grading.passbandLo = 40.0;
+    sub.grading.passbandHi = 100.0;
+    auto asMains = analyzeSweepCapture ("S", recs, cfg);
+    const auto asSub = analyzeSweepCapture ("S", recs, cfg, sub);
+    // Band levels are relative to the reference band: as mains, the sub's 63 Hz
+    // is far above its (nearly silent) 250 Hz-4 kHz; against 40-100 Hz it's level.
+    REQUIRE (std::string (asSub.grade.bands[1].name) == "63");
+    CHECK (asMains.grade.bands[1].levelDb > 15.0);
+    CHECK (std::abs (asSub.grade.bands[1].levelDb) < 3.0);
+
+    const auto same = [] (const CaptureGrade& a, const CaptureGrade& b)
+    {
+        CHECK (a.overall == b.overall);
+        CHECK (a.reasons == b.reasons);
+        CHECK (a.notes == b.notes);
+        REQUIRE (a.bands.size() == b.bands.size());
+        for (std::size_t i = 0; i < a.bands.size(); ++i)
+        {
+            CHECK (a.bands[i].outOfRange == b.bands[i].outOfRange);
+            CHECK (a.bands[i].grade() == b.bands[i].grade());
+            CHECK (a.bands[i].levelDb == doctest::Approx (b.bands[i].levelDb).epsilon (1e-12));
+            CHECK (a.bands[i].snrDb == b.bands[i].snrDb);
+            CHECK (a.bands[i].excessSpreadDb == b.bands[i].excessSpreadDb);
+        }
+    };
+    regradeCapture (asMains, sub.grading);
+    same (asMains.grade, asSub.grade);
+    regradeCapture (asMains, GradingConfig {});
+    same (asMains.grade, analyzeSweepCapture ("S", recs, cfg).grade);
 }

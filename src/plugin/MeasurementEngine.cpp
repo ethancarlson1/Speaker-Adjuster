@@ -66,12 +66,25 @@ juce::String captureNumberName (int n, bool verify)
 
 bool same (double a, double b) { return std::equal_to<double>() (a, b); }
 
+bool sameBand (const roomeq::CorrectionConfig& x, const roomeq::CorrectionConfig& y)
+{
+    return same (x.refBandLoHz, y.refBandLoHz) && same (x.refBandHiHz, y.refBandHiHz);
+}
+
 bool sameSettings (const MeasurementEngine::CorrectionSettings& a, const MeasurementEngine::CorrectionSettings& b)
 {
     const auto& x = a.config;
     const auto& y = b.config;
     return a.target == b.target && same (a.fs, b.fs) && same (x.maxCutDb, y.maxCutDb) && same (x.maxBoostDb, y.maxBoostDb)
-           && same (x.rangeLoHz, y.rangeLoHz) && same (x.rangeHiHz, y.rangeHiHz);
+           && same (x.rangeLoHz, y.rangeLoHz) && same (x.rangeHiHz, y.rangeHiHz) && sameBand (x, y);
+}
+
+roomeq::GradingConfig gradingFor (const roomeq::CorrectionConfig& c)
+{
+    roomeq::GradingConfig g;
+    g.passbandLo = c.refBandLoHz;
+    g.passbandHi = c.refBandHiHz;
+    return g;
 }
 
 juce::ValueTree bandsToTree (const juce::Identifier& type, const std::vector<roomeq::Band>& bands)
@@ -106,13 +119,13 @@ std::vector<roomeq::Band> bandsFromTree (const juce::ValueTree& t)
     return bands;
 }
 
-// Mean of the finite values over 250 Hz-4 kHz.
-double midbandMean (const std::vector<double>& grid, const std::vector<double>& db)
+// Mean of the finite values over the reference band.
+double bandMean (const std::vector<double>& grid, const std::vector<double>& db, const roomeq::CorrectionConfig& band)
 {
     double sum = 0.0;
     int n = 0;
     for (std::size_t i = 0; i < grid.size(); ++i)
-        if (grid[i] >= 250.0 && grid[i] <= 4000.0 && std::isfinite (db[i]))
+        if (grid[i] >= band.refBandLoHz && grid[i] <= band.refBandHiHz && std::isfinite (db[i]))
         {
             sum += db[i];
             ++n;
@@ -296,6 +309,19 @@ void MeasurementEngine::replaceCapture (int id, const std::function<void (roomeq
     sendChangeMessage();
 }
 
+void MeasurementEngine::regradeAll()
+{
+    // Exact and quick (band sums over the stored spectra), so it runs here.
+    const auto grading = gradingFor (lastSettings.value_or (CorrectionSettings {}).config);
+    const std::lock_guard<std::mutex> guard (stateLock);
+    for (auto& e : entries)
+    {
+        auto copy = std::make_shared<roomeq::Capture> (*e.capture);
+        roomeq::regradeCapture (*copy, grading);
+        e.capture = std::move (copy);
+    }
+}
+
 void MeasurementEngine::rename (int id, const juce::String& newName)
 {
     const auto trimmed = newName.trim();
@@ -403,13 +429,16 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
     ++analysesPending;
     status = "Analysing " + pendingName + "...";
     std::shared_ptr<CaptureRequest> req = std::move (request);
-    pool.addJob ([mb = mailbox, req, name = pendingName, verify = pendingVerify, correctionId = pendingCorrectionId]
+    roomeq::AnalysisConfig cfg;
+    cfg.grading = gradingFor (lastSettings.value_or (CorrectionSettings {}).config);
+    pool.addJob ([mb = mailbox, req, name = pendingName, verify = pendingVerify, correctionId = pendingCorrectionId, cfg]
     {
         AnalysisResult result;
         result.replaceId = req->replaceId;
         result.verify = verify;
         result.correctionId = correctionId;
         result.name = name;
+        result.grading = cfg.grading;
         try
         {
             roomeq::Capture c;
@@ -418,7 +447,7 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
                 std::vector<std::vector<double>> recordings;
                 for (const auto& take : req->mic)
                     recordings.emplace_back (take.begin(), take.end());
-                c = roomeq::analyzeSweepCapture (name.toStdString(), recordings, req->sweepConfig);
+                c = roomeq::analyzeSweepCapture (name.toStdString(), recordings, req->sweepConfig, cfg);
             }
             else
             {
@@ -426,11 +455,11 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
                 c = roomeq::analyzeProgramCapture (name.toStdString(),
                                                    std::vector<double> (req->reference.begin(), req->reference.end()),
                                                    std::vector<double> (req->mic[0].begin(), req->mic[0].end()),
-                                                   req->sampleRate);
+                                                   req->sampleRate, cfg);
                 if (req->kind == CaptureRequest::Kind::noise)
                     c.kind = "noise";
             }
-            c.repeatPowers.clear();   // only needed for grading
+            c.repeatPowers.clear();   // only needed for grading (a re-grade keeps the spreads it found)
             result.capture = std::make_shared<roomeq::Capture> (std::move (c));
         }
         catch (const std::exception& e)
@@ -471,7 +500,8 @@ void MeasurementEngine::requestSummary()
         // A newer request is already queued (e.g. while a target point is dragged): let that one run instead.
         if (generation != mb->latestRequested.load())
             return;
-        auto s = roomeq::summarizeSession (snapshot, fraction, g);
+        const auto& band = settings.config;
+        auto s = roomeq::summarizeSession (snapshot, fraction, g, band.refBandLoHz, band.refBandHiHz);
         std::shared_ptr<const Display> shared;
         if (s)
         {
@@ -482,17 +512,17 @@ void MeasurementEngine::requestSummary()
                 d->excluded.push_back (c->excluded);
 
             const auto& avg = d->summary.averageDb;
-            const auto offset = roomeq::anchorOffsetDb (g, avg, settings.target);
+            const auto offset = roomeq::anchorOffsetDb (g, avg, settings.target, band.refBandLoHz, band.refBandHiHz);
             d->targetDb = settings.target.db (g);
             for (auto& v : d->targetDb)
                 v += offset;
             d->fitFs = settings.fs;
             d->proposal = roomeq::designCorrection (snapshot, d->summary, settings.target, settings.fs, settings.config);
 
-            if (auto v = roomeq::summarizeSession (verifySnapshot, fraction, g))
+            if (auto v = roomeq::summarizeSession (verifySnapshot, fraction, g, band.refBandLoHz, band.refBandHiHz))
             {
                 d->verifiedDb = v->averageDb;
-                const auto shift = midbandMean (g, avg) - midbandMean (g, d->verifiedDb);
+                const auto shift = bandMean (g, avg, band) - bandMean (g, d->verifiedDb, band);
                 for (auto& x : d->verifiedDb)
                     x += std::isfinite (shift) ? shift : 0.0;
                 d->verifiedCount = v->nGood;
@@ -510,7 +540,7 @@ void MeasurementEngine::requestSummary()
                     c->excluded = true;
                     combined.push_back (std::move (c));
                 }
-                if (auto all = roomeq::summarizeSession (combined, fraction, g))
+                if (auto all = roomeq::summarizeSession (combined, fraction, g, band.refBandLoHz, band.refBandHiHz))
                     for (std::size_t i = 0; i < allVerify.size(); ++i)
                     {
                         d->verifyIds.push_back (verifyIds[i]);
@@ -539,7 +569,13 @@ void MeasurementEngine::update()
         auto s = settingsSource();
         if (! lastSettings || ! sameSettings (*lastSettings, s))
         {
+            const auto bandChanged = ! sameBand (lastSettings.value_or (CorrectionSettings {}).config, s.config);
             lastSettings = std::move (s);
+            if (bandChanged)
+            {
+                regradeAll();
+                changed = true;
+            }
             requestSummary();
         }
     }
@@ -574,6 +610,13 @@ void MeasurementEngine::update()
         {
             status = r.name + " failed: " + r.error;
             continue;
+        }
+        if (const auto now = gradingFor (lastSettings.value_or (CorrectionSettings {}).config);
+            ! same (now.passbandLo, r.grading.passbandLo) || ! same (now.passbandHi, r.grading.passbandHi))
+        {
+            auto regraded = std::make_shared<roomeq::Capture> (*r.capture);   // the zone changed while it was analysed
+            roomeq::regradeCapture (*regraded, now);
+            r.capture = std::move (regraded);
         }
         {
             const std::lock_guard<std::mutex> guard (stateLock);

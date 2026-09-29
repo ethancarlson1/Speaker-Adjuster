@@ -12,7 +12,8 @@
 //
 // A tap records the final output (mono) and the mic for calibration, the
 // re-check and the mic calibrator; it's handed over like CaptureRecorder's
-// requests (the audio thread never allocates, locks or waits).
+// requests (the audio thread never allocates, locks or waits). The processor
+// feeds it after everything else (the zone's delay included) with recordTap().
 
 #include "plugin/EqStages.h"
 #include "plugin/LatestValue.h"
@@ -73,6 +74,11 @@ public:
     // signal replaced the program and starts with silence, so it can't click).
     void process (float* const* channels, int numChannels, const float* mic, int numSamples,
                   const LoudnessSettings& settings, bool suspend, bool snap = false) noexcept;
+    // Audio thread: the final output, for the tap.
+    void recordTap (const float* const* channels, int numChannels, const float* mic, int numSamples) noexcept
+    {
+        tap.record (channels, numChannels, mic, numSamples);
+    }
 
 private:
     void updateTargets (const LoudnessSettings& settings, bool suspend) noexcept;

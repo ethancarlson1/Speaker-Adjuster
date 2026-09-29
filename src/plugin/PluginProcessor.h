@@ -9,30 +9,39 @@
 #include "plugin/ShowController.h"
 #include "plugin/SplMeter.h"
 #include "plugin/TapRecorder.h"
+#include "plugin/ZoneStage.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <utility>
 
 // Audio path: measured correction -> voicing EQ -> output level match ->
-// loudness compensation, the same on both speakers.
+// loudness compensation -> the zone's delay and polarity, the same on both speakers.
 //
-// Buses: stereo main in/out plus a mono sidechain input for the measurement
-// mic. The standalone app is a measurement tool: its only input is the mic
-// (JUCE disables sidechains there), and it outputs only the test signal, on
-// the physical output picked in the editor.
+// Buses: main in/out, mono or stereo as the host's track is, plus a mono
+// sidechain input for the measurement mic. The standalone app is a measurement
+// tool: its only input is the mic (JUCE disables sidechains there), and it
+// outputs only the test signal, on the physical output picked in the editor.
+//
+// One instance drives one zone (mains, subs, front fill or delay speakers):
+// the zone sets the reference band measurements are judged against (40-100 Hz
+// for subs, 250 Hz-4 kHz otherwise) and, when chosen, the starting correction range.
 //
 // Measurements play the test signal on one speaker, straight to the output
-// (the fit needs the PA's own response); verify measurements play it through
-// the EQ. While any measurement or calibration runs, loudness compensation is
-// flat and doesn't track. Analysis and fitting never run on the audio thread.
-class AdaptiveRoomEQProcessor final : public juce::AudioProcessor
+// (the fit needs the PA's own response), with the EQ, delay and polarity
+// bypassed; verify measurements play it through all of them. While any
+// measurement or calibration runs, loudness compensation is flat and doesn't
+// track. Analysis and fitting never run on the audio thread.
+class AdaptiveRoomEQProcessor final : public juce::AudioProcessor,
+                                      private juce::AudioProcessorValueTreeState::Listener,
+                                      private juce::AsyncUpdater
 {
 public:
     AdaptiveRoomEQProcessor();
-    ~AdaptiveRoomEQProcessor() override = default;
+    ~AdaptiveRoomEQProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -96,6 +105,13 @@ public:
     juce::Result saveCustomTarget (const juce::String& name);
     juce::Result loadTarget (const juce::File& file);             // into Custom, and selects it
 
+    // Zones.
+    enum class Zone { mains = 0, subs, frontFill, delay };
+    Zone getZone() const;
+    std::pair<double, double> getReferenceBand() const;           // Hz: what measurements are judged against
+    ZoneSettings getZoneSettings() const noexcept;                // delay and polarity as set (not bypassed)
+    bool isMono() const;                                          // a mono track: one speaker, no left / right
+
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
     std::vector<roomeq::Band> getVoicingSections() const;         // for the graph
@@ -130,6 +146,8 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     const float* findMic (juce::AudioBuffer<float>& buffer);
     float raw (const juce::ParameterID& id) const noexcept;
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void handleAsyncUpdate() override;
 
     const bool standalone;
     juce::AudioProcessorValueTreeState parameters;
@@ -138,6 +156,8 @@ private:
     EqStages eq;
     LoudnessStage loudness;
     LoudnessController loudnessControl { loudness, engine };
+    ZoneStage zoneStage;
+    std::atomic<int> appliedZone { 0 };           // the zone whose defaults were last set
     TapRecorder showTap;                          // the final output and the mic, for show tracking
     ShowController showControl { showTap };
     std::atomic<bool> showView { false };
@@ -159,6 +179,8 @@ private:
     std::atomic<float>* amountParam = nullptr;
     std::atomic<float>* voicingOnParam = nullptr;
     std::atomic<float>* levelMatchParam = nullptr;
+    std::atomic<float>* zoneDelayParam = nullptr;
+    std::atomic<float>* polarityParam = nullptr;
     std::array<VoicingParams, roomeq::numVoicingBands> voicingParams;
     struct LoudnessParams
     {

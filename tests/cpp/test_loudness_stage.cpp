@@ -29,6 +29,7 @@ std::vector<double> run (LoudnessStage& stage, const std::vector<float>& x, cons
     {
         float* ch[] = { l.data() + pos, r.data() + pos };
         stage.process (ch, 2, mic != nullptr ? mic->data() + pos : nullptr, block, s, suspend, snap);
+        stage.recordTap (ch, 2, mic != nullptr ? mic->data() + pos : nullptr, block);
     }
     return { l.begin(), l.end() };
 }

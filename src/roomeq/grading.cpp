@@ -151,77 +151,25 @@ std::vector<std::string> makeReasons (const std::vector<BandResult>& bands)
 
 std::vector<std::string> rangeNotes (const std::vector<BandResult>& bands)
 {
+    // The out-of-range runs at each end (not halves of the spectrum: a sub's
+    // range sits at the bottom, so its high run starts in the low half).
+    std::size_t nLow = 0, nHigh = 0;
+    while (nLow < bands.size() && bands[nLow].outOfRange)
+        ++nLow;
+    while (nHigh < bands.size() - nLow && bands[bands.size() - 1 - nHigh].outOfRange)
+        ++nHigh;
     std::vector<std::string> notes;
-    const auto half = bands.size() / 2;
-    const BandResult* lastLow = nullptr;
-    const BandResult* firstHigh = nullptr;
-    for (std::size_t i = 0; i < half; ++i)
-        if (bands[i].outOfRange)
-            lastLow = &bands[i];
-    for (std::size_t i = half; i < bands.size(); ++i)
-        if (bands[i].outOfRange && firstHigh == nullptr)
-            firstHigh = &bands[i];
-    if (lastLow != nullptr)
-        notes.push_back ("below the PA's range under " + formatHz (lastLow->hi) + " (not graded)");
-    if (firstHigh != nullptr)
-        notes.push_back ("above the PA's range over " + formatHz (firstHigh->lo) + " (not graded)");
+    if (nLow > 0)
+        notes.push_back ("below the PA's range under " + formatHz (bands[nLow - 1].hi) + " (not graded)");
+    if (nHigh > 0)
+        notes.push_back ("above the PA's range over " + formatHz (bands[bands.size() - nHigh].lo) + " (not graded)");
     return notes;
 }
-} // namespace
 
-const char* gradeLabel (Grade g)
+CaptureGrade verdict (std::vector<BandResult> bands, const GradingConfig& cfg)
 {
-    switch (g)
-    {
-        case Grade::pass: return "pass";
-        case Grade::marginal: return "marginal";
-        case Grade::redo: return "redo";
-    }
-    return "";
-}
-
-std::optional<Grade> BandResult::grade() const
-{
-    if (outOfRange)
-        return std::nullopt;
-    return std::max (snrGrade, consistencyGrade);
-}
-
-CaptureGrade gradeCapture (const std::vector<double>& freqs, const std::vector<double>& signalPower,
-                           const std::vector<double>& noisePower,
-                           const std::vector<std::vector<double>>* repeatPowers,
-                           const GradingConfig& cfg, double fMax)
-{
-    const auto pb = bandSum (freqs, signalPower, cfg.passbandLo, cfg.passbandHi);
-    const auto passbandDensity = std::max (pb.sum, 1e-30) / std::max (pb.count, 1);
-    const auto haveRepeats = repeatPowers != nullptr && repeatPowers->size() > 1;
-
     CaptureGrade result;
-    for (std::size_t j = 0; j < octaveCenters.size(); ++j)
-    {
-        BandResult b;
-        b.name = octaveNominal[j];
-        b.center = octaveCenters[j];
-        const auto edges = octaveEdges (b.center);
-        b.lo = edges.first;
-        b.hi = std::min (edges.second, fMax);
-
-        const auto s = bandSum (freqs, signalPower, b.lo, b.hi);
-        const auto nz = bandSum (freqs, noisePower, b.lo, b.hi).sum;
-        const auto sig = std::max (s.sum, 1e-30);
-        b.levelDb = 10.0 * std::log10 ((sig / std::max (s.count, 1)) / passbandDensity);
-        b.snrDb = 10.0 * std::log10 (sig / std::max (nz, 1e-30));
-        b.snrGrade = gradeValue (b.snrDb, cfg.snrPassDb, cfg.snrMarginalDb, true);
-
-        if (haveRepeats)
-        {
-            const auto [raw, excess] = worstThirdOctaveSpread (freqs, *repeatPowers, signalPower, noisePower, b.lo, b.hi);
-            b.spreadDb = raw;
-            b.excessSpreadDb = excess;
-            b.consistencyGrade = gradeValue (excess, cfg.consistencyPassDb, cfg.consistencyMarginalDb, false);
-        }
-        result.bands.push_back (b);
-    }
+    result.bands = std::move (bands);
 
     // Out of range = contiguous run of low-level bands at either end of the spectrum.
     for (std::size_t i = 0; i < result.bands.size() && result.bands[i].levelDb < -cfg.outOfRangeDb; ++i)
@@ -256,6 +204,86 @@ CaptureGrade gradeCapture (const std::vector<double>& freqs, const std::vector<d
             text += ", repeats within " + format ("%g", cfg.consistencyPassDb) + " dB";
         result.reasons = { text };
     }
+    return result;
+}
+} // namespace
+
+const char* gradeLabel (Grade g)
+{
+    switch (g)
+    {
+        case Grade::pass: return "pass";
+        case Grade::marginal: return "marginal";
+        case Grade::redo: return "redo";
+    }
+    return "";
+}
+
+std::optional<Grade> BandResult::grade() const
+{
+    if (outOfRange)
+        return std::nullopt;
+    return std::max (snrGrade, consistencyGrade);
+}
+
+CaptureGrade gradeCapture (const std::vector<double>& freqs, const std::vector<double>& signalPower,
+                           const std::vector<double>& noisePower,
+                           const std::vector<std::vector<double>>* repeatPowers,
+                           const GradingConfig& cfg, double fMax)
+{
+    const auto pb = bandSum (freqs, signalPower, cfg.passbandLo, cfg.passbandHi);
+    const auto passbandDensity = std::max (pb.sum, 1e-30) / std::max (pb.count, 1);
+    const auto haveRepeats = repeatPowers != nullptr && repeatPowers->size() > 1;
+
+    std::vector<BandResult> bands;
+    for (std::size_t j = 0; j < octaveCenters.size(); ++j)
+    {
+        BandResult b;
+        b.name = octaveNominal[j];
+        b.center = octaveCenters[j];
+        const auto edges = octaveEdges (b.center);
+        b.lo = edges.first;
+        b.hi = std::min (edges.second, fMax);
+
+        const auto s = bandSum (freqs, signalPower, b.lo, b.hi);
+        const auto nz = bandSum (freqs, noisePower, b.lo, b.hi).sum;
+        const auto sig = std::max (s.sum, 1e-30);
+        b.levelDb = 10.0 * std::log10 ((sig / std::max (s.count, 1)) / passbandDensity);
+        b.snrDb = 10.0 * std::log10 (sig / std::max (nz, 1e-30));
+        b.snrGrade = gradeValue (b.snrDb, cfg.snrPassDb, cfg.snrMarginalDb, true);
+
+        if (haveRepeats)
+        {
+            const auto [raw, excess] = worstThirdOctaveSpread (freqs, *repeatPowers, signalPower, noisePower, b.lo, b.hi);
+            b.spreadDb = raw;
+            b.excessSpreadDb = excess;
+            b.consistencyGrade = gradeValue (excess, cfg.consistencyPassDb, cfg.consistencyMarginalDb, false);
+        }
+        bands.push_back (b);
+    }
+    return verdict (std::move (bands), cfg);
+}
+
+CaptureGrade regrade (const CaptureGrade& grade, const std::vector<double>& freqs, const std::vector<double>& signalPower,
+                      const GradingConfig& cfg)
+{
+    const auto pb = bandSum (freqs, signalPower, cfg.passbandLo, cfg.passbandHi);
+    const auto passbandDensity = std::max (pb.sum, 1e-30) / std::max (pb.count, 1);
+    std::vector<BandResult> bands;
+    for (auto b : grade.bands)
+    {
+        const auto s = bandSum (freqs, signalPower, b.lo, b.hi);
+        b.levelDb = 10.0 * std::log10 ((std::max (s.sum, 1e-30) / std::max (s.count, 1)) / passbandDensity);
+        b.outOfRange = false;
+        b.snrGrade = gradeValue (b.snrDb, cfg.snrPassDb, cfg.snrMarginalDb, true);
+        b.consistencyGrade = b.excessSpreadDb ? gradeValue (*b.excessSpreadDb, cfg.consistencyPassDb, cfg.consistencyMarginalDb, false)
+                                              : Grade::pass;
+        bands.push_back (b);
+    }
+    auto result = verdict (std::move (bands), cfg);
+    // Notes that didn't come from grading (clock drift) follow the range notes.
+    const auto rangeCount = std::min (rangeNotes (grade.bands).size(), grade.notes.size());
+    result.notes.insert (result.notes.end(), grade.notes.begin() + static_cast<std::ptrdiff_t> (rangeCount), grade.notes.end());
     return result;
 }
 } // namespace roomeq

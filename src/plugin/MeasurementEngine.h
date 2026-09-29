@@ -142,6 +142,7 @@ private:
         bool verify = false;
         int correctionId = 0;
         std::shared_ptr<const roomeq::Capture> capture;
+        roomeq::GradingConfig grading;    // what it was graded with
         juce::String name, error;
     };
 
@@ -160,6 +161,7 @@ private:
     juce::Result startRequest (std::unique_ptr<CaptureRequest> request, int replaceId, bool verify);
     void analyse (std::unique_ptr<CaptureRequest> request);
     void requestSummary();
+    void regradeAll();   // every capture against the current reference band
     void replaceCapture (int id, const std::function<void (roomeq::Capture&)>& change);
     void playingChanged();
 

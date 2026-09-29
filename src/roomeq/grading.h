@@ -59,4 +59,11 @@ CaptureGrade gradeCapture (const std::vector<double>& freqs, const std::vector<d
                            const std::vector<double>& noisePower,
                            const std::vector<std::vector<double>>* repeatPowers,
                            const GradingConfig& cfg, double fMax);
+
+// The same capture graded against other settings (a sub's reference band):
+// exactly what gradeCapture would give with them. SNR and repeat spread don't
+// depend on the band, so they're kept; the levels, the out-of-range ends and
+// the verdict are redone. Notes that didn't come from grading (clock drift) are kept.
+CaptureGrade regrade (const CaptureGrade& grade, const std::vector<double>& freqs, const std::vector<double>& signalPower,
+                      const GradingConfig& cfg);
 } // namespace roomeq

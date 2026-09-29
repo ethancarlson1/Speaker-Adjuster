@@ -143,7 +143,6 @@ void LoudnessStage::process (float* const* channels, int numChannels, const floa
         chain.reset();
     }
     chain.process (channels, numChannels, numSamples);
-    tap.record (channels, numChannels, mic, numSamples);
 }
 
 std::vector<roomeq::Band> loudnessBands (const LoudnessStage::Status& s)

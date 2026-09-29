@@ -30,8 +30,9 @@ private:
     juce::String text;
 };
 
-// Setup view: tabs (Measure, Correct, Voicing, Loudness; the standalone app has
-// no Loudness tab) over a status area that is always visible; on the right the
+// Setup view: tabs (Zone, Measure, Correct, Voicing, Loudness; the standalone
+// app has no Loudness tab, and its Zone tab has no delay or polarity) over a
+// status area that is always visible; on the right the
 // capture list with grades, and the graph (response on top, EQ stages below).
 // Show view (the header's button, plugin only): the left panel holds show
 // tracking and the bypasses, the capture list goes, and the graph's top panel
@@ -52,7 +53,8 @@ public:
         measure = 0,
         correct,
         voicing,
-        loudness
+        loudness,
+        zone
     };
     void showTab (Tab tab);
     void selectVoicingBand (int band);
@@ -85,6 +87,7 @@ private:
     juce::String summaryLine() const;
     juce::String correctionInfo() const;
     juce::String loudnessInfo() const;
+    juce::String zoneInfo() const;
     juce::String statusText() const;
     void submitSpl();
     void updateLoudnessControls();
@@ -115,10 +118,16 @@ private:
     int splRuleY = 0;
     int showRuleY = 0;
 
-    // Tabs.
-    juce::TextButton measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" }, loudnessTab { "Loudness" };
+    // Tabs. Five share the panel's width, so their text is a little smaller than a button's.
+    struct TabLook : juce::LookAndFeel_V4
+    {
+        juce::Font getTextButtonFont (juce::TextButton&, int) override { return juce::FontOptions (tabFontHeight); }
+        static constexpr float tabFontHeight = 14.0f;
+    } tabLook;
+    juce::TextButton zoneTab { "Zone" }, measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" },
+        loudnessTab { "Loudness" };
     Tab currentTab = Tab::measure;
-    std::vector<juce::Component*> measureControls, correctControls, voicingControls, loudnessControls;
+    std::vector<juce::Component*> zoneControls, measureControls, correctControls, voicingControls, loudnessControls;
     juce::Rectangle<int> statusBounds, tipBounds, infoBounds;
     int calibrationRuleY = 0;
 
@@ -190,6 +199,16 @@ private:
     std::unique_ptr<SliderAttachment> loudRefAttachment, loudAmountAttachment, loudMaxLowAttachment, loudMaxHighAttachment,
         loudSpeedAttachment;
     LoudnessController::Step lastLoudnessStep = LoudnessController::Step::idle;
+
+    // Zone tab.
+    juce::ComboBox zone;
+    juce::Label zoneLabel, zoneDelayLabel;
+    juce::Slider zoneDelay { juce::Slider::LinearBar, juce::Slider::TextBoxRight };
+    juce::ToggleButton polarity { "Invert polarity" };
+    std::unique_ptr<ComboAttachment> zoneAttachment;
+    std::unique_ptr<SliderAttachment> zoneDelayAttachment;
+    std::unique_ptr<ButtonAttachment> polarityAttachment;
+    bool lastMono = false;
 
     CaptureList captureList;
     ResponseGraph graph { processor };

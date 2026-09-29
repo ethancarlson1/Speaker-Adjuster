@@ -111,6 +111,36 @@ def grade_capture(freqs: np.ndarray, signal_power: np.ndarray, noise_power: np.n
                                _grade(excess, cfg.consistency_pass_db, cfg.consistency_marginal_db, False)),
         ))
 
+    return _verdict(bands, cfg)
+
+
+def regrade(grade: CaptureGrade, freqs: np.ndarray, signal_power: np.ndarray,
+            cfg: GradingConfig = GradingConfig()) -> CaptureGrade:
+    """The same capture graded against other settings (a sub's reference band):
+    exactly what grade_capture would give with them. SNR and repeat spread
+    don't depend on the band, so they're kept; the levels, the out-of-range
+    ends and the verdict are redone. Notes that didn't come from grading
+    (clock drift) are kept."""
+    pb_sig, pb_n = band_sum(freqs, signal_power, *cfg.passband)
+    passband_density = max(pb_sig, 1e-30) / max(pb_n, 1)
+    bands = []
+    for b in grade.bands:
+        s, n = band_sum(freqs, signal_power, b.lo, b.hi)
+        s = max(s, 1e-30)
+        bands.append(BandResult(
+            name=b.name, center=b.center, lo=b.lo, hi=b.hi,
+            level_db=float(10 * np.log10((s / max(n, 1)) / passband_density)), snr_db=b.snr_db,
+            spread_db=b.spread_db, excess_spread_db=b.excess_spread_db, out_of_range=False,
+            snr_grade=_grade(b.snr_db, cfg.snr_pass_db, cfg.snr_marginal_db, True),
+            consistency_grade=(Grade.PASS if b.excess_spread_db is None else
+                               _grade(b.excess_spread_db, cfg.consistency_pass_db, cfg.consistency_marginal_db, False)),
+        ))
+    result = _verdict(bands, cfg)
+    result.notes += grade.notes[len(_range_notes(grade.bands)):]
+    return result
+
+
+def _verdict(bands: list[BandResult], cfg: GradingConfig) -> CaptureGrade:
     # Out of range = contiguous run of low-level bands at either end of the spectrum.
     for order in (range(len(bands)), reversed(range(len(bands)))):
         for i in order:
@@ -213,11 +243,17 @@ def _reasons(bands: list[BandResult], cfg: GradingConfig) -> list[str]:
 
 
 def _range_notes(bands: list[BandResult]) -> list[str]:
+    # The out-of-range runs at each end (not halves of the spectrum: a sub's
+    # range sits at the bottom, so its high run starts in the low half).
+    n_low = 0
+    while n_low < len(bands) and bands[n_low].out_of_range:
+        n_low += 1
+    n_high = 0
+    while n_high < len(bands) - n_low and bands[-1 - n_high].out_of_range:
+        n_high += 1
     notes = []
-    low = [b for b in bands[: len(bands) // 2] if b.out_of_range]
-    high = [b for b in bands[len(bands) // 2:] if b.out_of_range]
-    if low:
-        notes.append(f"below the PA's range under {format_hz(low[-1].hi)} (not graded)")
-    if high:
-        notes.append(f"above the PA's range over {format_hz(high[0].lo)} (not graded)")
+    if n_low:
+        notes.append(f"below the PA's range under {format_hz(bands[n_low - 1].hi)} (not graded)")
+    if n_high:
+        notes.append(f"above the PA's range over {format_hz(bands[len(bands) - n_high].lo)} (not graded)")
     return notes

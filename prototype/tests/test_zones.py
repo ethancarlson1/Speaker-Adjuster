@@ -46,6 +46,8 @@ def test_a_sub_is_graded_measured_and_corrected_on_its_own_band(sub_room):
     assert all(c.grade.overall != grading.Grade.REDO for c in caps)
     in_range = [b.name for b in caps[0].grade.bands if not b.out_of_range]
     assert "63" in in_range and "1k" not in in_range            # graded where the sub plays
+    above = [n for n in caps[0].grade.notes if n.startswith("above")]
+    assert len(above) == 1 and "kHz" not in above[0], caps[0].grade.notes    # where it stops: a few hundred Hz
 
     summary = averaging.summarize_session(caps, band=SUB_BAND)
     lo, hi = summary.usable
@@ -68,3 +70,38 @@ def test_a_sub_is_graded_measured_and_corrected_on_its_own_band(sub_room):
         return np.sqrt(np.mean((level - np.mean(level)) ** 2))
 
     assert spread(after) < 0.7 * spread(summary)
+
+
+def _same_grade(a, b):
+    assert a.overall == b.overall and a.reasons == b.reasons and a.notes == b.notes
+    for x, y in zip(a.bands, b.bands, strict=True):
+        assert x.out_of_range == y.out_of_range and x.grade == y.grade and x.name == y.name
+        assert x.level_db == pytest.approx(y.level_db, abs=1e-9) and x.snr_db == y.snr_db
+        assert x.spread_db == y.spread_db and x.excess_spread_db == y.excess_spread_db
+
+
+def test_regrading_matches_grading_with_the_new_band(sub_room):
+    rng = np.random.default_rng(33)
+    recs = [sub_room.play(PLAY, 1, NOISE, rng) for _ in range(2)]
+    as_mains = capture.analyze_sweep_capture("S", recs, SWEEP_CFG)
+    as_sub = capture.analyze_sweep_capture("S", recs, SWEEP_CFG, capture.AnalysisConfig(
+        grading=grading.GradingConfig(passband=SUB_BAND)))
+    assert as_mains.grade.overall == grading.Grade.REDO        # judged where a sub doesn't play
+    assert as_sub.grade.overall != grading.Grade.REDO
+
+    capture.regrade_capture(as_mains, grading.GradingConfig(passband=SUB_BAND))
+    _same_grade(as_mains.grade, as_sub.grade)
+    capture.regrade_capture(as_mains, grading.GradingConfig())
+    _same_grade(as_mains.grade, capture.analyze_sweep_capture("S", recs, SWEEP_CFG).grade)
+
+
+def test_regrading_a_program_capture_keeps_its_drift_note(sim):
+    rng = np.random.default_rng(34)
+    x = roomsim.synthetic_program(12.0, FS, rng)
+    y = sim.play(x, 0, roomsim.NoiseSpec(), rng, drift_ppm=40.0)
+    c = capture.analyze_program_capture("W", x, y, FS)
+    assert any("clock" in n for n in c.grade.notes)
+    band = (125.0, 2000.0)
+    direct = capture.analyze_program_capture("W", x, y, FS, capture.AnalysisConfig(grading=grading.GradingConfig(passband=band)))
+    capture.regrade_capture(c, grading.GradingConfig(passband=band))
+    _same_grade(c.grade, direct.grade)

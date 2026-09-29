@@ -8,13 +8,14 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 - **Voicing:** an 8-band voicing EQ on top of the correction.
 - **Loudness:** level calibration, level tracking and ISO 226 loudness compensation, so the balance heard at the reference level holds as the show gets quieter.
 - **Show:** a compact show view, and a warning when the room's response moves from what it was at soundcheck.
+- **Zones:** one instance per zone (mains, subs, front fill, delay speakers) on a mono or stereo track, each judged on its own band, with a delay and polarity to line it up.
 
 So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
 
 ## Measuring a room (Measure tab)
 
 1. Route the measurement mic to the plugin's **sidechain input**. In the standalone app, pick it in **Mic input** instead.
-2. Pick the speaker to measure. In the plugin that's **Speaker** (Left or Right), and the other side stays silent. In the standalone app it's **Speaker output**, any single interface output. The correction is applied to both sides.
+2. Pick the speaker to measure. In the plugin that's **Speaker** (Left or Right), and the other side stays silent. On a mono track there's only one, so the choice goes. In the standalone app it's **Speaker output**, any single interface output. The correction is applied to both sides.
 3. Pick the **Signal**:
    - **Sweep** (default): a log sine sweep. Each position plays 1–3 sweeps (2, 5 or 10 s) and averages them. It is quick, has the best signal-to-noise ratio, and keeps harmonic distortion out of the result.
    - **Pink noise**: 10, 20 or 30 s of pink noise, analysed against the exact noise that was played (dual-FFT). It needs longer for the same accuracy and doesn't separate out distortion, but a single bang or cough averages out instead of spoiling the capture. 20 s is a good default.
@@ -53,6 +54,47 @@ So these captures measure the delay in 3 s blocks along the recording and fit a 
 
 If the delay jumps around instead of sliding steadily (dropouts in an aggregate device), it says so and suggests using one interface. The loudness calibration and **Re-check** get the same correction. One interface for mic and output is still better: it also keeps the loop delay short.
 
+## Zones (Zone tab)
+
+Use one instance per zone, each on its own track or output bus:
+- **Mains**, usually stereo;
+- **Subs**, **Front fill** and **Delay** speakers, often mono tracks.
+
+The plugin runs mono or stereo, whichever the host's track is. On a mono track the test signal plays on its one channel.
+
+**Zone** sets what measurements are judged against, and a starting correction range:
+
+| Zone | Judged on | Correction range to start |
+| --- | --- | --- |
+| Mains | 250 Hz–4 kHz | 20 Hz–20 kHz |
+| Subs | 40–100 Hz | 20–150 Hz |
+| Front fill | 250 Hz–4 kHz | 80 Hz–20 kHz |
+| Delay | 250 Hz–4 kHz | 80 Hz–20 kHz |
+
+- **The reference band** is where a speaker is expected to play. A sub has nothing at 1 kHz, so it's judged on 40–100 Hz. The band is used for:
+  - grading: the band levels, and which ends are outside the speaker's range;
+  - lining the positions up with each other;
+  - finding the usable range;
+  - placing the target.
+- **Changing the zone after measuring** re-grades the captures you have, exactly as measuring them again would. SNR and repeat spread don't depend on the band, so nothing needs re-measuring.
+- **The correction range** is only a starting point: choosing a zone sets **Correct from / up to** on the Correct tab, and you can change them after. Opening a saved session keeps its own range.
+
+**Delay** (0–300 ms, in 0.01 ms steps) lines a fill or delay speaker up with the mains.
+- It shows the distance too, e.g. "12.50 ms (4.29 m / 14.1 ft)", at 343 m/s.
+- Double-click to type a time, or a distance ("25 m", "82 ft"). Hold Ctrl (Cmd on a Mac) while dragging for fine steps.
+- Start at the extra distance the mains' sound travels to reach the speaker's area, then fine-tune by ear or with **Verify**.
+- Changes crossfade over 20 ms, so moving it never clicks.
+- Fractions of a sample are band-limited, flat to within 0.002 dB up to 20 kHz at 48 kHz.
+- It isn't reported to the host as latency: it's there on purpose.
+
+**Invert polarity** flips the output, for a sub or fill that cancels the mains around the crossover. It crossfades too.
+
+Both follow the same rule as the correction:
+- **Measurements bypass them,** so the fit sees the speaker's own response and the loop delay stays short.
+- **Verify includes them,** so it measures what the audience hears. The loudness **Calibrate level** does too.
+
+The standalone app has the **Zone** choice (for grading) but no delay or polarity: it only plays test signals.
+
 ## Correcting (Correct tab)
 
 1. Pick a **Target**:
@@ -61,7 +103,7 @@ If the delay jumps around instead of sliding steadily (dropouts in an aggregate 
    - **Speech:** −6 dB at 75 Hz, +2 dB at 2–4 kHz, and −3 dB at 16 kHz.
    - **Custom:** drag its points on the graph; double-click to add or remove one. The **Targets…** menu saves it as a file, loads saved ones, or starts one from a preset.
 
-   The target is placed on the average by its 250 Hz–4 kHz level, so the correction reshapes the ends rather than moving the overall level.
+   The target is placed on the average by its level over the zone's reference band (250 Hz–4 kHz, or 40–100 Hz for subs), so the correction reshapes the ends rather than moving the overall level.
 2. The proposed correction updates as you measure. The graph shows it:
    - dashed in the EQ strip until applied;
    - as the **Predicted** curve in the top panel.
@@ -246,7 +288,7 @@ Phase 3's "done when" test:
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
 | `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, show tracking, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
-| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ and the loudness stage |
+| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ, the loudness stage and the zone's delay |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
 | `tools/plugin_harness.cpp` | Headless end-to-end run of the real processor against a simulated room; renders the UI to PNG |
 | `.github/workflows/ci.yml` | Builds on macOS, Windows and Linux; runs every test layer and pluginval |
@@ -290,13 +332,15 @@ The harness drives the real processor against a simulated room. It checks:
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - show tracking: a reference from music in a room with a crowd, the countdown to the first result and then the next, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering the change graph naming the band and its change; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
+- zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
+- delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 
 It gives the same numbers on every run: audio stops while background analyses run, so thread timing never shifts what follows. It also renders each tab to PNG.
 
 ## Routing notes
 
-- **Plugin:** stereo main in/out carries the program to the PA. The mono **Measurement Mic** sidechain carries the mic. If a host only offers stereo sidechains, the first channel is used.
+- **Plugin:** the main in/out carries the program to the PA, mono or stereo as the host's track is. The mono **Measurement Mic** sidechain carries the mic. If a host only offers stereo sidechains, the first channel is used.
 - **One interface if you can:** with the mic on one device and the PA feed on another (or a macOS aggregate device), their clocks drift. Pink noise and music correct for that (see [Two clocks](#measuring-a-room-measure-tab)), but the loop delay gets long, and an aggregate device that drops samples can't be corrected.
 - **Standalone app:** a measurement tool with one input (the mic) and one output (the speaker being swept).
   - Choose the audio device, sample rate and buffer size in **Options → Audio/MIDI Settings**.
@@ -306,7 +350,7 @@ It gives the same numbers on every run: audio stops while background analyses ru
   - **Measure from music** and loudness compensation are plugin-only, because no program passes through the app.
   - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
 
-**Latency:** none. Every EQ stage is a minimum-phase IIR filter processed in place, with no lookahead, so the plugin reports 0 samples. The round trip is set by the interface and host buffer size.
+**Latency:** none. Every EQ stage is a minimum-phase IIR filter processed in place, with no lookahead, so the plugin reports 0 samples. The round trip is set by the interface and host buffer size. The zone's **Delay** is the one exception, on purpose, and isn't reported.
 
 ## Licensing note
 

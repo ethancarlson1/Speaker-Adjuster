@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import dualfft
-from .grading import CaptureGrade, GradingConfig, grade_capture
+from .grading import CaptureGrade, GradingConfig, grade_capture, regrade
 from .spectrum import WindowConfig, ir_window, rebin_power, response_nfft
 from .sweep import SweepConfig, deconvolve, find_arrival, fractional_peak_offset, generate_sweep
 
@@ -41,6 +41,13 @@ def in_band(freqs: np.ndarray, f1: float, f2: float) -> np.ndarray:
     """Weight 1 inside the measured band, 0 outside. Keeps smoothing near
     20 Hz / 20 kHz from averaging in the band-limited roll-off."""
     return ((freqs >= f1) & (freqs <= f2)).astype(float)
+
+
+def regrade_capture(c: Capture, grading: GradingConfig) -> None:
+    """Grades a capture again against other settings (a new reference band),
+    exactly as analysing it with them would have."""
+    signal = c.power - c.noise_power if c.kind == "sweep" else c.power
+    c.grade = regrade(c.grade, c.freqs, signal, grading)
 
 
 def windowed_response(ir: np.ndarray, fs: float, cfg: AnalysisConfig = AnalysisConfig()) -> tuple[np.ndarray, np.ndarray, int]:

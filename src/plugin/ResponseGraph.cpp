@@ -228,7 +228,8 @@ void ResponseGraph::updateCurves()
     targetDb.clear();
     if (display != nullptr)
     {
-        targetOffset = roomeq::anchorOffsetDb (curves.grid, display->summary.averageDb, lastTarget);
+        const auto [bandLo, bandHi] = processor.getReferenceBand();
+        targetOffset = roomeq::anchorOffsetDb (curves.grid, display->summary.averageDb, lastTarget, bandLo, bandHi);
         targetDb = lastTarget.db (curves.grid);
         for (auto& v : targetDb)
             v += targetOffset;
