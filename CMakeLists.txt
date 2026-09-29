@@ -41,6 +41,7 @@ add_library(roomeq_core STATIC
     src/roomeq/iso226.cpp
     src/roomeq/levelmatch.cpp
     src/roomeq/loudness.cpp
+    src/roomeq/showtrack.cpp
     src/roomeq/noise.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
@@ -85,6 +86,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_grading.cpp
         tests/cpp/test_levelmatch.cpp
         tests/cpp/test_loudness.cpp
+        tests/cpp/test_showtrack.cpp
         tests/cpp/test_loudness_stage.cpp
         tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp
