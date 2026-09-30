@@ -343,7 +343,12 @@ It gives the same numbers on every run: audio stops while background analyses ru
   - **Measure from music** and level compensation are plugin-only, because no program passes through the app.
   - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
 
-**Latency:** none. Every EQ stage is a minimum-phase IIR filter processed in place, with no lookahead, so the plugin reports 0 samples. The round trip is set by the interface and host buffer size. The zone's **Delay** is the one exception, on purpose, and isn't reported.
+**Zero added plugin latency.** The plugin adds no buffering latency and reports 0 samples to the host:
+- Every EQ stage (correction, voicing, level compensation, output level match) is a minimum-phase IIR filter processed in place, sample by sample.
+- There's no lookahead, FIR or convolution, frequency-domain block processing, or resampling in the audio path.
+- Measurement analysis uses FFTs, but it runs in the background, off the audio path.
+
+The round trip is set by the interface and host buffer size. The zone's **Delay** is separate: it's there on purpose to line speakers up, so it isn't plugin processing latency and isn't reported. The harness checks the reported latency is 0 with everything on, with a 300 ms zone delay, at another sample rate and block size, on a mono track and in the standalone app.
 
 ## Licensing note
 

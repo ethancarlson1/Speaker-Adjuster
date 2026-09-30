@@ -594,6 +594,7 @@ void standaloneChecks (const juce::String& snapshotPath)
     juce::PluginHostType::jucePlugInClientCurrentWrapperType = juce::AudioProcessor::wrapperType_Undefined;
     check (proc->isStandalone(), "processor knows it's the standalone app");
     check (proc->getTotalNumInputChannels() == 1 && proc->getTotalNumOutputChannels() == 2, "mono mic input, stereo output");
+    check (proc->getLatencySamples() == 0, "standalone: 0 samples latency");
     proc->setRateAndBufferSizeDetails (fs, blockSize);
     proc->prepareToPlay (fs, blockSize);
     check (proc->startProgram().failed(), "music capture refused (no program passes through the app)");
@@ -698,8 +699,8 @@ void zoneChecks (const juce::String& snapshotStem)
         surround.inputBuses.getReference (0) = surround.outputBuses.getReference (0) = juce::AudioChannelSet::create5point1();
         check (! proc.checkBusesLayoutSupported (surround), "5.1 refused");
         check (proc.setBusesLayout (layout) && proc.isMono() && proc.getTotalNumOutputChannels() == 1
-                   && proc.getTotalNumInputChannels() == 2 && proc.isMicConnected(),
-               "mono track: one channel in and out, plus the mic");
+                   && proc.getTotalNumInputChannels() == 2 && proc.isMicConnected() && proc.getLatencySamples() == 0,
+               "mono track: one channel in and out, plus the mic; 0 samples latency");
         proc.setRateAndBufferSizeDetails (fs, blockSize);
         proc.prepareToPlay (fs, blockSize);
         const auto rangeLo = [&] { return proc.getParameters().getRawParameterValue ("rangeLo")->load(); };
@@ -1667,6 +1668,25 @@ int main (int argc, char** argv)
             file.deleteFile();
             setParam (proc, "target", 0.0f);
         }
+    }
+
+    std::cout << "Zero added latency\n";
+    {
+        // Everything on: the correction, voicing, level compensation, a zone delay and polarity.
+        check (proc.getLatencySamples() == 0, "reports 0 samples with the correction, voicing and level compensation on");
+        setParam (proc, "zoneDelay", 300.0f);
+        setParam (proc, "polarityInvert", 1.0f);
+        idleWithMic (proc, 3e-4f);
+        check (proc.getLatencySamples() == 0, "and with a 300 ms zone delay (intentional, not plugin latency)");
+        proc.releaseResources();
+        proc.setRateAndBufferSizeDetails (96000.0, 64);
+        proc.prepareToPlay (96000.0, 64);
+        check (proc.getLatencySamples() == 0, "and after re-preparing at 96 kHz / 64 samples");
+        proc.releaseResources();
+        proc.setRateAndBufferSizeDetails (fs, blockSize);
+        proc.prepareToPlay (fs, blockSize);
+        setParam (proc, "zoneDelay", 0.0f);
+        setParam (proc, "polarityInvert", 0.0f);
     }
 
     std::cout << "Clear all\n";

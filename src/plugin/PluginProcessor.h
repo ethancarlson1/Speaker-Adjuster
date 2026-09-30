@@ -17,7 +17,11 @@
 #include <utility>
 
 // Audio path: measured correction -> voicing EQ -> output level match ->
-// loudness compensation -> the zone's delay and polarity, the same on both speakers.
+// level compensation -> the zone's delay and polarity, the same on both speakers.
+// Zero added plugin latency: every stage is processed in place, sample by
+// sample (minimum-phase IIR, no lookahead, FIR, FFT blocks or resampling), so
+// the host is told 0 samples. The zone's delay is intentional, not processing
+// latency, and isn't reported. Analysis runs off the audio path.
 //
 // Buses: main in/out, mono or stereo as the host's track is, plus a mono
 // sidechain input for the measurement mic. The standalone app is a measurement
