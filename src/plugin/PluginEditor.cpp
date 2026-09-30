@@ -151,6 +151,8 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         polarity.setTooltip ("Flips this output's polarity (for a sub or fill that cancels the mains around the "
                              "crossover). Measurements bypass it; Verify includes it.");
         button (polarity, zoneControls);
+        alignment = std::make_unique<AlignmentPanel> (processor);
+        button (*alignment, zoneControls);
     }
 
     // ---- Measure tab
@@ -1475,6 +1477,7 @@ void AdaptiveRoomEQEditor::resized()
                 content.removeFromTop (6);
                 row (zoneDelayLabel, zoneDelay);
                 fullRow (polarity, 24);
+                fullRow (*alignment, AlignmentPanel::preferredHeight);
             }
             break;
         }

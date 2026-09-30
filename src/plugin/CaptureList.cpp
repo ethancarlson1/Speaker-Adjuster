@@ -44,6 +44,7 @@ public:
         row = rowNumber;
         id = entry.id;
         capture = entry.capture;
+        arrival = entry.arrival;
         verify = entry.verify;
         stale = entry.verify && entry.correctionId != owner.appliedId;
         selected = isSelected;
@@ -75,14 +76,24 @@ public:
         g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
         g.drawText (theme::gradeText (grade), badge, juce::Justification::centred);
 
-        juce::String detail = capture->kind == "program" ? "music" : capture->kind == "noise" ? "pink noise" : "sweep";
+        // Kind, and the direct sound's arrival with a dot for how far to trust it.
+        juce::String detail = capture->kind == "program" ? "music" : capture->kind == "noise" ? "noise" : "sweep";
         if (verify)
             detail = "verify " + detail;
-        else if (! capture->delaysMs.empty())
-            detail << "  " << juce::String (capture->delaysMs.front(), 1) << " ms";
+        if (std::isfinite (arrival.ms))
+            detail << "  " << juce::String (arrival.ms, 2) << " ms";
         g.setColour (theme::muted);
         g.setFont (juce::FontOptions (12.0f));
-        g.drawText (detail, juce::Rectangle<float> (12.0f, 32.0f, 104.0f, 16.0f), juce::Justification::centredLeft);
+        const auto detailArea = juce::Rectangle<float> (12.0f, 32.0f, 104.0f, 16.0f);
+        g.drawText (detail, detailArea, juce::Justification::centredLeft);
+        if (std::isfinite (arrival.ms))
+        {
+            const auto x = detailArea.getX() + juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), detail) + 5.0f;
+            g.setColour ((arrival.confidence == roomeq::Confidence::high     ? theme::good
+                          : arrival.confidence == roomeq::Confidence::medium ? theme::warning
+                                                                             : theme::critical).withAlpha (dim));
+            g.fillEllipse (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ std::min (x + 3.5f, 124.0f), detailArea.getCentreY() }));
+        }
 
         juce::StringArray lines;
         for (const auto& r : capture->grade.reasons)
@@ -124,6 +135,7 @@ private:
     juce::TextButton redo, remove;
     int id = -1, row = -1;
     std::shared_ptr<const roomeq::Capture> capture;
+    roomeq::Arrival arrival;
     bool selected = false, verify = false, stale = false;
 };
 

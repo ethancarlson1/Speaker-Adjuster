@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from roomeq import averaging, capture, loudness, roomsim, sweep
+from roomeq import alignment, averaging, capture, loudness, roomsim, sweep
 from roomeq.spectrum import log_freq_grid
 
 CLI = os.environ.get("ROOMEQ_CLI")
@@ -87,6 +87,9 @@ def test_session_matches_python(sim, tmp_path):
         name = py.name
         assert cpp["name"] == name and cpp["kind"] == py.kind and cpp["excluded"] == py.excluded
         assert np.allclose(cpp["delays_ms"], py.delays_ms, atol=1e-9), name
+        arrival = alignment.estimate_arrival(py)
+        assert cpp["arrival"]["ms"] == pytest.approx(arrival.ms, abs=1e-9), name
+        assert cpp["arrival"]["confidence"] == arrival.confidence and cpp["arrival"]["reasons"] == arrival.reasons, name
         assert cpp["overall"] == py.grade.overall.label, name
         assert cpp["reasons"] == py.grade.reasons, name
         assert cpp["notes"] == py.grade.notes, name
@@ -341,3 +344,36 @@ def test_transfer_bands_match_python(sim, tmp_path):
     y = sim.play(x, 0, roomsim.NoiseSpec(pink_dbfs=None, babble_dbfs=-45.0), rng)
     cpp = run_cli("transfer-bands", "--fs", fs, "--out", save(tmp_path, "x", x), "--mic", save(tmp_path, "y", y))
     assert_curve(cpp["bands"], loudness.transfer_bands_db(x, y, fs), "re-check bands")
+
+
+def test_arrivals_match_python(tmp_path):
+    """Direct arrivals and their confidence, on synthetic impulse responses that
+    exercise every path: clean, a louder later arrival, a direct sound under
+    the threshold, and repeats that disagree."""
+    rng = np.random.default_rng(71)
+    cfg = sweep.SweepConfig(duration=2.0)
+    play = sweep.build_playback(cfg)
+
+    def fractional_impulse(delay, n, taps=64):
+        h = np.zeros(n)
+        idx = np.arange(int(np.floor(delay)) - taps, int(np.floor(delay)) + taps + 1)
+        h[idx] = np.sinc(idx - delay) * np.kaiser(len(idx), 8.0)
+        return h
+
+    def rec(ir):
+        y = np.convolve(play, ir)[:len(play)]
+        return y + 1e-5 * rng.standard_normal(len(y))
+
+    cases = {
+        "clean": [fractional_impulse(480.37, 4096) + 0.3 * fractional_impulse(1080, 4096)] * 2,
+        "louder_later": [0.7 * fractional_impulse(480, 4096) + fractional_impulse(624, 4096)],
+        "blocked": [0.35 * fractional_impulse(480, 4096) + fractional_impulse(624, 4096)],
+        "moved": [fractional_impulse(480, 4096), fractional_impulse(500, 4096)],
+    }
+    for name, irs in cases.items():
+        recs = [rec(ir) for ir in irs]
+        files = ",".join(str(save(tmp_path, f"{name}_{i}", r)) for i, r in enumerate(recs))
+        cpp = run_cli("analyze", "--fs", cfg.fs, "--duration", cfg.duration, "--position", f"{name}={files}")["captures"][0]
+        py = alignment.estimate_arrival(capture.analyze_sweep_capture(name, recs, cfg))
+        assert cpp["arrival"]["ms"] == pytest.approx(py.ms, abs=1e-9), name
+        assert cpp["arrival"]["confidence"] == py.confidence and cpp["arrival"]["reasons"] == py.reasons, name

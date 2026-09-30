@@ -18,6 +18,7 @@
 // with --target, the fitted correction. --band-lo/--band-hi set the reference
 // band (grading, level alignment, usable range, target placement): 40-100 for a sub.
 
+#include "roomeq/alignment.h"
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
@@ -113,9 +114,12 @@ std::string captureJson (const roomeq::Capture& c)
                + ",\"out_of_range\":" + (b.outOfRange ? "true" : "false")
                + ",\"grade\":" + (g ? str (roomeq::gradeLabel (*g)) : "null") + "}";
     };
+    const auto arrival = roomeq::estimateArrival (c);
     return std::string ("{") + "\"name\":" + str (c.name) + ",\"kind\":" + str (c.kind)
            + ",\"excluded\":" + (c.excluded ? "true" : "false")
            + ",\"delays_ms\":" + numbers (c.delaysMs)
+           + ",\"arrival\":{\"ms\":" + num (arrival.ms) + ",\"confidence\":" + str (roomeq::confidenceLabel (arrival.confidence))
+           + ",\"reasons\":" + list (arrival.reasons, str) + "}"
            + ",\"drift_ppm\":" + (std::isnan (c.driftPpm) ? std::string ("null") : num (c.driftPpm))
            + ",\"overall\":" + str (roomeq::gradeLabel (c.grade.overall))
            + ",\"reasons\":" + list (c.grade.reasons, str)

@@ -31,6 +31,7 @@ FetchContent_Declare(pocketfft
 FetchContent_MakeAvailable(pocketfft)
 
 add_library(roomeq_core STATIC
+    src/roomeq/alignment.cpp
     src/roomeq/averaging.cpp
     src/roomeq/capture.cpp
     src/roomeq/correction.cpp
@@ -76,6 +77,7 @@ if(ARE_BUILD_TESTS)
 
     add_executable(roomeq_tests
         tests/cpp/main.cpp
+        tests/cpp/test_alignment.cpp
         tests/cpp/test_averaging.cpp
         tests/cpp/test_capture.cpp
         tests/cpp/test_correction.cpp
@@ -161,6 +163,7 @@ juce_add_plugin(AdaptiveRoomEQ
 
 target_sources(AdaptiveRoomEQ
     PRIVATE
+        src/plugin/AlignmentPanel.cpp
         src/plugin/CaptureList.cpp
         src/plugin/CaptureRecorder.cpp
         src/plugin/EqStages.cpp
@@ -173,6 +176,7 @@ target_sources(AdaptiveRoomEQ
         src/plugin/Spectrogram.cpp
         src/plugin/SplMeter.cpp
         src/plugin/TapRecorder.cpp
+        src/plugin/ZoneRegistry.cpp
         src/plugin/ZoneStage.cpp)
 
 target_include_directories(AdaptiveRoomEQ PRIVATE src)
@@ -202,6 +206,7 @@ if(ARE_BUILD_TESTS)
     target_sources(AdaptiveRoomEQ_Harness
         PRIVATE
             tools/plugin_harness.cpp
+            src/plugin/AlignmentPanel.cpp
             src/plugin/CaptureList.cpp
             src/plugin/CaptureRecorder.cpp
             src/plugin/EqStages.cpp
@@ -214,6 +219,7 @@ if(ARE_BUILD_TESTS)
             src/plugin/Spectrogram.cpp
             src/plugin/SplMeter.cpp
             src/plugin/TapRecorder.cpp
+            src/plugin/ZoneRegistry.cpp
             src/plugin/ZoneStage.cpp)
     target_include_directories(AdaptiveRoomEQ_Harness PRIVATE src)
     target_compile_definitions(AdaptiveRoomEQ_Harness

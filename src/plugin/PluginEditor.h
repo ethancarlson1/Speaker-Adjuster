@@ -1,5 +1,6 @@
 #pragma once
 
+#include "plugin/AlignmentPanel.h"
 #include "plugin/CaptureList.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/ResponseGraph.h"
@@ -182,6 +183,10 @@ private:
     std::unique_ptr<SliderAttachment> zoneDelayAttachment;
     std::unique_ptr<ButtonAttachment> polarityAttachment;
     bool lastMono = false;
+    std::unique_ptr<AlignmentPanel> alignment;   // plugin only
+public:
+    AlignmentPanel* getAlignmentPanel() { return alignment.get(); }   // tests
+private:
 
     CaptureList captureList;
     ResponseGraph graph { processor };

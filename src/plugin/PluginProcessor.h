@@ -7,6 +7,7 @@
 #include "plugin/MeasurementEngine.h"
 #include "plugin/SampleFifo.h"
 #include "plugin/SplMeter.h"
+#include "plugin/ZoneRegistry.h"
 #include "plugin/ZoneStage.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -69,6 +70,7 @@ public:
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
+    void updateTrackProperties (const TrackProperties& properties) override;
 
     // Message-thread helpers for the editor.
     bool isMicConnected() const;
@@ -113,6 +115,17 @@ public:
     std::pair<double, double> getReferenceBand() const;           // Hz: what measurements are judged against
     ZoneSettings getZoneSettings() const noexcept;                // delay and polarity as set (not bypassed)
     bool isMono() const;                                          // a mono track: one speaker, no left / right
+    static juce::String zoneName (Zone z);
+
+    // Alignment: other instances of the plugin in this DAW, and what this one tells them.
+    ZoneRegistry& getZoneRegistry() { return *zoneRegistry; }
+    const juce::Uuid& getInstanceId() const { return instanceId; }
+    juce::String getZoneLabel() const;                            // "Front fill", or "Front fill (Fills)" with the track name
+    void publishZone();                                           // message thread (also on a timer)
+    // System latency: a sweep through a cable from the output to the mic input
+    // (no mic check: nothing is plugged in until it plays).
+    juce::Result startLatencyMeasurement();
+    void setZoneDelayMs (double ms);                              // an engineer-approved alignment suggestion
 
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
@@ -158,6 +171,11 @@ private:
     LoudnessStage loudness;
     LoudnessController loudnessControl { loudness, engine };
     ZoneStage zoneStage;
+    juce::SharedResourcePointer<ZoneRegistry> zoneRegistry;
+    const juce::Uuid instanceId;
+    mutable std::mutex trackNameLock;
+    juce::String trackName;
+    juce::TimedCallback zonePublisher { [this] { publishZone(); } };
     std::atomic<int> appliedZone { 0 };           // the zone whose defaults were last set
     std::atomic<bool> showView { false };
     std::atomic<int> showPanel { 0 };

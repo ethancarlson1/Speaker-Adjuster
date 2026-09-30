@@ -1,6 +1,7 @@
 #pragma once
 
 #include "plugin/CaptureRecorder.h"
+#include "roomeq/alignment.h"
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
@@ -34,6 +35,7 @@ public:
         std::shared_ptr<const roomeq::Capture> capture;
         bool verify = false;
         int correctionId = 0;     // verify captures: the applied correction they measured
+        roomeq::Arrival arrival;  // the direct sound's loop delay, found when it was analysed
     };
 
     struct SweepSettings
@@ -89,6 +91,12 @@ public:
     // Loudness calibration: pink noise on both speakers through the EQ. Nothing is
     // recorded or filed here (the loudness stage's tap records what it needs).
     juce::Result startCalibration (double sampleRate, double seconds, double levelDbfs);
+    // System latency: a sweep through a cable from the output to the mic input.
+    // Its arrival is the interface and host round trip, taken off arrivals to
+    // give flight times. Nothing is filed as a capture.
+    juce::Result startLatencyMeasurement (double sampleRate, const SweepSettings& settings);
+    std::optional<double> getSystemLatencyMs() const { return systemLatencyMs; }
+    void setSystemLatencyMs (std::optional<double> ms);   // typed in, or cleared
     void cancel();
 
     Activity getActivity() const;
@@ -143,6 +151,8 @@ private:
         int correctionId = 0;
         std::shared_ptr<const roomeq::Capture> capture;
         roomeq::GradingConfig grading;    // what it was graded with
+        roomeq::Arrival arrival;
+        bool latency = false;             // a loopback for the system latency, not a capture
         juce::String name, error;
     };
 
@@ -185,6 +195,8 @@ private:
     int analysesPending = 0;
     juce::String pendingName, status;
     bool pendingVerify = false;
+    bool pendingLatency = false;
+    std::optional<double> systemLatencyMs;
     int pendingCorrectionId = 0;
     const std::vector<double> grid = roomeq::logFreqGrid (20.0, 20000.0, 48);
 

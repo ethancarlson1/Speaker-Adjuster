@@ -19,6 +19,8 @@ const juce::Identifier verify { "verify" }, correctionId { "correctionId" }, nex
 const juce::Identifier applied { "Applied" }, previous { "Previous" }, appliedId { "appliedId" };
 const juce::Identifier nextCorrectionId { "nextCorrectionId" }, correctionBand { "CorrectionBand" };
 const juce::Identifier freq { "freq" }, gain { "gain" }, q { "q" };
+const juce::Identifier arrivalMs { "arrivalMs" }, arrivalConfidence { "arrivalConfidence" }, arrivalReasons { "arrivalReasons" };
+const juce::Identifier systemLatencyMs { "systemLatencyMs" };
 } // namespace ids
 
 // Spectra are stored as float32: plenty for dB-domain data, half the size.
@@ -154,6 +156,27 @@ juce::Result MeasurementEngine::startSweep (double sampleRate, const SweepSettin
     return startRequest (makeSweepRequest (sampleRate, s.seconds, s.repeats, s.channel, s.levelDbfs), replaceId, verify);
 }
 
+juce::Result MeasurementEngine::startLatencyMeasurement (double sampleRate, const SweepSettings& s)
+{
+    if (sampleRate <= 0.0)
+        return juce::Result::fail ("Audio isn't running yet");
+    if (recorder.isBusy())
+        return juce::Result::fail ("A measurement is already running");
+    recorder.start (makeSweepRequest (sampleRate, s.seconds, s.repeats, s.channel, s.levelDbfs));
+    pendingName = "Loopback";
+    pendingVerify = false;
+    pendingLatency = true;
+    status = "Measuring the system latency (loopback)";
+    sendChangeMessage();
+    return juce::Result::ok();
+}
+
+void MeasurementEngine::setSystemLatencyMs (std::optional<double> ms)
+{
+    systemLatencyMs = ms && std::isfinite (*ms) ? std::optional<double> (juce::jlimit (0.0, 1000.0, *ms)) : std::nullopt;
+    sendChangeMessage();
+}
+
 juce::Result MeasurementEngine::startNoise (double sampleRate, double seconds, int channel, double levelDbfs, int replaceId,
                                             bool verify)
 {
@@ -218,6 +241,7 @@ juce::Result MeasurementEngine::startRequest (std::unique_ptr<CaptureRequest> re
     recorder.start (std::move (request));
     pendingName = name;
     pendingVerify = verify;
+    pendingLatency = false;
     pendingCorrectionId = appliedId;
     status = "Measuring " + name;
     sendChangeMessage();
@@ -431,7 +455,8 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
     std::shared_ptr<CaptureRequest> req = std::move (request);
     roomeq::AnalysisConfig cfg;
     cfg.grading = gradingFor (lastSettings.value_or (CorrectionSettings {}).config);
-    pool.addJob ([mb = mailbox, req, name = pendingName, verify = pendingVerify, correctionId = pendingCorrectionId, cfg]
+    pool.addJob ([mb = mailbox, req, name = pendingName, verify = pendingVerify, correctionId = pendingCorrectionId, cfg,
+                  latency = pendingLatency]
     {
         AnalysisResult result;
         result.replaceId = req->replaceId;
@@ -439,6 +464,7 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
         result.correctionId = correctionId;
         result.name = name;
         result.grading = cfg.grading;
+        result.latency = latency;
         try
         {
             roomeq::Capture c;
@@ -459,6 +485,7 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
                 if (req->kind == CaptureRequest::Kind::noise)
                     c.kind = "noise";
             }
+            result.arrival = roomeq::estimateArrival (c);   // needs the impulse response, which isn't kept with the session
             c.repeatPowers.clear();   // only needed for grading (a re-grade keeps the spreads it found)
             result.capture = std::make_shared<roomeq::Capture> (std::move (c));
         }
@@ -611,6 +638,30 @@ void MeasurementEngine::update()
             status = r.name + " failed: " + r.error;
             continue;
         }
+        if (r.latency)
+        {
+            // A cable loopback is one clean arrival, heard clearly, with a flat
+            // response (a speaker in a room never is: 63 Hz-8 kHz within 3 dB).
+            auto flat = true;
+            for (const auto& b : r.capture->grade.bands)
+                if (b.center >= 60.0 && b.center <= 8200.0)
+                    flat = flat && ! b.outOfRange && std::abs (b.levelDb) <= 3.0;
+            if (r.arrival.confidence == roomeq::Confidence::high && r.arrival.reasons.empty() && flat
+                && r.capture->grade.overall != roomeq::Grade::redo)
+            {
+                systemLatencyMs = r.arrival.ms;
+                status = "System latency: " + juce::String (r.arrival.ms, 2) + " ms (loopback)";
+            }
+            else
+            {
+                status = "That didn't look like a cable loopback (";
+                status << (! r.arrival.reasons.empty() ? juce::String::fromUTF8 (r.arrival.reasons.front().c_str())
+                           : ! flat                     ? juce::String ("the response isn't flat: a speaker, not a cable?")
+                                                        : juce::String ("not heard clearly"))
+                       << "). The system latency wasn't changed: patch the output straight into the mic input and try again.";
+            }
+            continue;
+        }
         if (const auto now = gradingFor (lastSettings.value_or (CorrectionSettings {}).config);
             ! same (now.passbandLo, r.grading.passbandLo) || ! same (now.passbandHi, r.grading.passbandHi))
         {
@@ -628,10 +679,11 @@ void MeasurementEngine::update()
                 it->capture = std::move (redone);
                 it->verify = r.verify;
                 it->correctionId = r.correctionId;
+                it->arrival = r.arrival;
             }
             else
             {
-                entries.push_back ({ nextId++, r.capture, r.verify, r.correctionId });
+                entries.push_back ({ nextId++, r.capture, r.verify, r.correctionId, r.arrival });
             }
         }
         status = r.name + " analysed: " + juce::String (roomeq::gradeLabel (r.capture->grade.overall));
@@ -660,6 +712,8 @@ juce::ValueTree MeasurementEngine::toValueTree() const
     tree.setProperty (ids::nextVerifyNumber, nextVerifyNumber, nullptr);
     tree.setProperty (ids::appliedId, appliedId, nullptr);
     tree.setProperty (ids::nextCorrectionId, nextCorrectionId, nullptr);
+    if (systemLatencyMs)
+        tree.setProperty (ids::systemLatencyMs, *systemLatencyMs, nullptr);
     tree.appendChild (bandsToTree (ids::applied, applied), nullptr);
     if (hasPreviousCorrection)
     {
@@ -687,6 +741,9 @@ juce::ValueTree MeasurementEngine::toValueTree() const
         ct.setProperty (ids::reasons, joinLines (c.grade.reasons), nullptr);
         ct.setProperty (ids::notes, joinLines (c.grade.notes), nullptr);
         ct.setProperty (ids::delays, pack (c.delaysMs), nullptr);
+        ct.setProperty (ids::arrivalMs, e.arrival.ms, nullptr);
+        ct.setProperty (ids::arrivalConfidence, static_cast<int> (e.arrival.confidence), nullptr);
+        ct.setProperty (ids::arrivalReasons, joinLines (e.arrival.reasons), nullptr);
         ct.setProperty (ids::power, pack (c.power), nullptr);
         ct.setProperty (ids::noise, pack (c.noisePower), nullptr);
         ct.setProperty (ids::weight, pack (c.weight), nullptr);
@@ -759,7 +816,21 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
         }
         const auto id = static_cast<int> (ct[ids::id]);
         maxId = std::max (maxId, id);
-        loaded.push_back ({ id, std::move (c), static_cast<bool> (ct[ids::verify]), static_cast<int> (ct[ids::correctionId]) });
+        roomeq::Arrival arrival;
+        if (ct.hasProperty (ids::arrivalMs))
+        {
+            arrival.ms = ct[ids::arrivalMs];
+            arrival.confidence = static_cast<roomeq::Confidence> (juce::jlimit (0, 2, static_cast<int> (ct[ids::arrivalConfidence])));
+            arrival.reasons = splitLines (ct[ids::arrivalReasons]);
+        }
+        else   // saved before arrivals were recorded: the loop delay, unchecked
+        {
+            arrival.ms = c->delaysMs.empty() ? std::nan ("") : c->delaysMs.front();
+            arrival.confidence = roomeq::Confidence::medium;
+            arrival.reasons = { "measured before arrival confidence was recorded" };
+        }
+        loaded.push_back ({ id, std::move (c), static_cast<bool> (ct[ids::verify]), static_cast<int> (ct[ids::correctionId]),
+                            std::move (arrival) });
     }
 
     {
@@ -767,6 +838,8 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
         entries = std::move (loaded);
     }
     nextId = maxId + 1;
+    systemLatencyMs = tree.hasProperty (ids::systemLatencyMs) ? std::optional<double> (static_cast<double> (tree[ids::systemLatencyMs]))
+                                                              : std::nullopt;
     nextNumber = std::max (static_cast<int> (tree.getProperty (ids::nextNumber, 1)), 1);
     nextVerifyNumber = std::max (static_cast<int> (tree.getProperty (ids::nextVerifyNumber, 1)), 1);
     smoothingFraction = tree.getProperty (ids::smoothing, 6);

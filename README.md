@@ -24,6 +24,8 @@ So far all of this has only been checked against simulated rooms. The next step 
 4. Set **Level** (and the mic gain) so the mic's peaks land in the Mic meter's green zone (see **Mic gain** below). The default is −12 dBFS. It's a peak level for both signals, so pink noise (about 9.5 dB crest factor) plays about 6–7 dB quieter on average than a sweep at the same setting.
 5. Press **Measure position** at 3–5 spots across the audience area, at different distances and off-axis. Avoid symmetric spots on the centre line.
 6. Each capture is graded **pass / marginal / redo** with the reason (e.g. "low-end noise too high below 180 Hz"). You can rename a capture (double-click), take it out of the average, redo it, or delete it.
+
+   Under its badge is the direct sound's arrival, e.g. "sweep 25.40 ms", with a dot for how far to trust it: green high, amber medium, red low (see [Alignment](#alignment)).
 7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
 8. Click a capture to highlight its curve: it's drawn on top, thicker, with the others dimmed and its name in the legend. Verify captures can be highlighted too. Click it again to clear the highlight.
 
@@ -93,6 +95,34 @@ Both follow the same rule as the correction:
 - **Verify includes them,** so it measures what the audience hears. The level compensation's **Calibrate level** does too.
 
 The standalone app has the **Zone** choice (for grading) but no delay or polarity: it only plays test signals.
+
+### Alignment
+
+The **Alignment** section of the Zone tab turns arrival times into a delay for this zone. It suggests; nothing changes until you press **Apply**.
+
+**Arrivals.** Every measurement records when the direct sound arrived:
+- **Sweeps:** the first peak of the impulse response within 6 dB of the strongest, refined below a sample (to about 0.004 ms). A floor bounce or a wall that's nearly as loud, arriving later, doesn't move it.
+- **Pink noise and music:** the dual-FFT's delay, to the nearest sample.
+- It's a loop delay: the interface and host round trip plus the flight time. Arrivals are compared with each other, so the round trip cancels when both zones use the same interface.
+
+**Confidence** (the dot in the capture list, and the word in the lists here):
+- **High:** a clean, repeatable arrival, well above the noise.
+- **Medium:** the repeat sweeps differ by more than 0.05 ms; a later arrival is more than 3 dB stronger than the direct sound; an earlier arrival sits within 12 dB of the strongest (the direct sound may be partly blocked); 10–20 dB SNR where the arrival is set; or it came from pink noise or music.
+- **Low:** the repeats disagree by more than 0.25 ms (something moved), or under 10 dB SNR where the arrival is set.
+
+**System latency** (optional): **Loopback** measures the round trip with a cable from the output straight into the mic input. You can also type it. It's taken off arrivals to give flight times. A measurement that isn't a clean, flat loopback (a speaker in a room) is refused and changes nothing.
+
+**Lining a fill or delay speaker up with the mains:**
+1. Put the mic where the fill (or delay) and the mains overlap.
+2. Measure the mains there, in the mains' instance.
+3. Measure this zone there, in this instance.
+4. **Line up with** lists the other instances of the plugin in this DAW, with their zone and track name ("Mains (PA)"), mains first. Pick it, its measurement (**Their arrival**) and this zone's (**This zone's**).
+5. It suggests this zone's delay: the mains' arrival (plus the mains' own zone delay, if any) minus this zone's. For example, the mains at 51.65 ms and a fill at 25.40 ms gives 26.25 ms (9.00 m / 29.5 ft).
+6. **Apply** sets this zone's **Delay** to it. Then **Verify** measures through it: the fill should arrive with the mains.
+
+Some engineers add a few milliseconds more so the mains arrive first and the sound stays anchored on the stage; add it to **Delay** by hand. If this zone already arrives after the mains at that spot, it says so and suggests nothing.
+
+**Instances the plugin can't see.** Instances share what they measured when the host runs them in the same process, which most do. Hosts that run each plugin separately keep them apart. Then choose **Type the main arrival** and type the mains' arrival as their instance showed it.
 
 ## Correcting (Correct tab)
 
@@ -326,6 +356,7 @@ The harness drives the real processor against a simulated room. It checks:
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
+- alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;
 - delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 

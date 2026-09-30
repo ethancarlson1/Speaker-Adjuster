@@ -684,6 +684,174 @@ void standaloneChecks (const juce::String& snapshotPath)
     writeSnapshot (*editor, snapshotPath);
 }
 
+// Alignment across instances: a loopback sets the system latency (a speaker in
+// a room doesn't pass as one); the mains (12 m away) and a front fill (3 m)
+// measured at the same spot; the fill instance sees the mains' arrival through
+// the shared registry, suggests the difference, applies it only when asked, and
+// Verify then arrives with the mains. A typed arrival works too.
+void alignmentChecks (const juce::String& snapshotStem)
+{
+    std::cout << "Alignment\n";
+    const auto make = []
+    {
+        auto p = std::make_unique<AdaptiveRoomEQProcessor>();
+        p->enableAllBuses();
+        p->setRateAndBufferSizeDetails (fs, blockSize);
+        p->prepareToPlay (fs, blockSize);
+        setParam (*p, "sweepLength", 0.0f);
+        return p;
+    };
+    auto mains = make();
+    auto fill = make();
+    setParam (*fill, "zone", 2.0f);   // front fill
+    juce::AudioProcessor::TrackProperties track;
+    track.name = "PA";
+    mains->updateTrackProperties (track);
+    track.name = "Fills";
+    fill->updateTrackProperties (track);
+    const auto mainsId = mains->getInstanceId();
+    const auto pumpBoth = [&] (int times)
+    {
+        for (int i = 0; i < times; ++i)
+        {
+            if (mains != nullptr)
+                pump (*mains);
+            pump (*fill);
+        }
+    };
+
+    // The system latency, through a cable: 6 ms, plus the block the harness's mic hears late.
+    struct Cable
+    {
+        std::vector<float> line = std::vector<float> (288, 0.0f);
+        std::size_t pos = 0;
+        float process (float x)
+        {
+            const auto y = line[pos];
+            line[pos] = x;
+            pos = (pos + 1) % line.size();
+            return y;
+        }
+    } cable;
+    check (fill->startLatencyMeasurement().wasOk(), "loopback: starts without a mic check (only the cable will hear it)");
+    runMeasurement (*fill, cable);
+    const auto loop = 1000.0 * (288 + blockSize) / fs;
+    auto latency = fill->getEngine().getSystemLatencyMs();
+    check (latency && std::abs (*latency - loop) < 0.01 && fill->getEngine().getEntries().empty(),
+           "loopback: system latency " + juce::String (latency ? *latency : -1.0, 2) + " ms, nothing filed as a capture");
+    {
+        SimulatedRoom room (5.0, 61, 3e-4, 0.0);
+        idleWithMic (*fill, 3e-4f);
+        check (fill->startLatencyMeasurement().wasOk(), "a speaker in a room, measured as a loopback");
+        runMeasurement (*fill, room);
+        latency = fill->getEngine().getSystemLatencyMs();
+        check (latency && std::abs (*latency - loop) < 0.01 && fill->getEngine().getStatus().contains ("didn't look like a cable loopback"),
+               "isn't taken as one: " + fill->getEngine().getStatus());
+    }
+
+    // The mains from 12 m and the fill from 3 m, heard at the same spot.
+    const auto arrivalFor = [] (double metres) { return 1000.0 * (static_cast<int> (metres / 343.0 * fs) + 288 + blockSize) / fs; };
+    {
+        SimulatedRoom room (12.0, 62, 3e-4, 0.0);
+        idleWithMic (*mains, 3e-4f);
+        check (mains->startSweep().wasOk(), "measure the mains");
+        runMeasurement (*mains, room);
+    }
+    {
+        SimulatedRoom room (3.0, 63, 3e-4, 0.0);
+        idleWithMic (*fill, 3e-4f);
+        check (fill->startSweep().wasOk(), "measure the front fill at the same spot");
+        runMeasurement (*fill, room);
+    }
+    const auto mainsEntries = mains->getEngine().getEntries(), fillEntries = fill->getEngine().getEntries();
+    if (mainsEntries.empty() || fillEntries.empty())
+    {
+        check (false, "both measured");
+        return;
+    }
+    const auto mainsArrival = mainsEntries.back().arrival, fillArrival = fillEntries.back().arrival;
+    check (std::abs (mainsArrival.ms - arrivalFor (12.0)) < 0.03 && std::abs (fillArrival.ms - arrivalFor (3.0)) < 0.03
+               && mainsArrival.confidence != roomeq::Confidence::low && fillArrival.confidence != roomeq::Confidence::low,
+           "arrivals: mains " + juce::String (mainsArrival.ms, 2) + " ms (" + roomeq::confidenceLabel (mainsArrival.confidence)
+               + "), fill " + juce::String (fillArrival.ms, 2) + " ms (" + roomeq::confidenceLabel (fillArrival.confidence) + ")");
+
+    // The fill instance sees the mains through the registry (as well as the harness's
+    // first instance, also Mains but cleared: the one with measurements comes first).
+    const auto published = [&]
+    {
+        for (const auto& z : fill->getZoneRegistry().others (fill->getInstanceId()))
+            if (z.instance == mainsId && ! z.measurements.empty())
+                return std::optional<ZoneRegistry::Zone> (z);
+        return std::optional<ZoneRegistry::Zone>();
+    };
+    for (int i = 0; i < 400 && ! published(); ++i)
+        pumpBoth (1);
+    pumpBoth (20);   // a few publishing rounds
+    const auto seen = published();
+    check (seen && seen->label == "Mains (PA)" && std::abs (seen->measurements.back().arrival.ms - mainsArrival.ms) < 1e-9
+               && seen->latencyMs == std::nullopt && fill->getZoneLabel() == "Front fill (Fills)",
+           "the fill instance sees \"Mains (PA)\" and its measurement");
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor (fill->createEditor());
+    auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
+    editor->setSize (1200, 820);
+    ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+    auto* panel = ours->getAlignmentPanel();
+    if (panel == nullptr)
+    {
+        check (false, "alignment panel");
+        return;
+    }
+    panel->refresh();
+    check (panel->getWithBox().getText() == "Mains (PA)", "it picks the mains with measurements");
+    const auto expected = mainsArrival.ms - fillArrival.ms;
+    const auto s = panel->getSuggestion();
+    check (s && std::abs (s->delayMs - expected) < 1e-9 && std::abs (s->delayMs - 1000.0 * 9.0 / 343.0) < 0.1
+               && panel->getResultText().contains ("Suggested delay"),
+           "suggests the fill's delay: " + juce::String (s ? s->delayMs : -1.0, 2) + " ms (9 m at 343 m/s is 26.24 ms)");
+    check (juce::exactlyEqual (fill->getZoneSettings().delayMs, 0.0) && panel->getApplyButton().isEnabled(),
+           "nothing changes until Apply");
+    panel->getApplyButton().onClick();
+    for (int i = 0; i < 3; ++i)
+        pumpBoth (1);
+    panel->refresh();
+    check (s && std::abs (fill->getZoneSettings().delayMs - s->delayMs) < 0.006 && ! panel->getApplyButton().isEnabled(),
+           "Apply sets the fill's Delay to " + juce::String (fill->getZoneSettings().delayMs, 2) + " ms");
+    for (int i = 0; i < 5; ++i)
+        pumpBoth (1);
+    writeSnapshot (*editor, snapshotStem + "-alignment.png");
+
+    // Verify measures through the delay: now the fill arrives with the mains.
+    {
+        SimulatedRoom room (3.0, 64, 3e-4, 0.0);
+        idleWithMic (*fill, 3e-4f);
+        check (fill->startVerify().wasOk(), "verify the fill through its delay");
+        runMeasurement (*fill, room);
+        const auto all = fill->getEngine().getEntries();
+        const auto verified = all.back().arrival.ms;
+        check (all.back().verify && std::abs (verified - mainsArrival.ms) < 0.05,
+               "the fill now arrives at " + juce::String (verified, 2) + " ms, with the mains (" + juce::String (mainsArrival.ms, 2) + " ms)");
+    }
+
+    // A typed arrival, for a main system this instance can't see.
+    auto& with = panel->getWithBox();
+    with.setSelectedId (with.getItemId (with.getNumItems() - 1), juce::sendNotificationSync);
+    panel->getTypedArrival().setText ("30", true);   // the change is announced asynchronously, as typing is
+    pumpBoth (2);
+    panel->refresh();
+    const auto typed = panel->getSuggestion();
+    check (panel->getTypedArrival().isVisible() && typed && std::abs (typed->delayMs - (30.0 - fillArrival.ms)) < 1e-9,
+           "typed main arrival 30 ms: suggests " + juce::String (typed ? typed->delayMs : -1.0, 2) + " ms");
+
+    // An instance that goes away leaves the registry.
+    editor.reset();
+    mains.reset();
+    pumpBoth (3);
+    const auto left = fill->getZoneRegistry().others (fill->getInstanceId());
+    check (std::none_of (left.begin(), left.end(), [&] (const auto& z) { return z.instance == mainsId; }),
+           "a closed instance is gone from the registry");
+}
+
 // A sub on a mono track: the zone band, its defaults, the fit, and re-grading
 // when the zone changes. Then the zone's delay and polarity on a stereo
 // instance: on the output, bypassed while measuring, included in Verify, saved.
@@ -1724,6 +1892,7 @@ int main (int argc, char** argv)
     }
 
     zoneChecks (outPath.upToLastOccurrenceOf (".", false, false));
+    alignmentChecks (outPath.upToLastOccurrenceOf (".", false, false));
     clockDriftChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-drift.png");
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 

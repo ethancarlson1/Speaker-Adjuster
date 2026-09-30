@@ -105,7 +105,10 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
     // Parameter callbacks can arrive on the audio thread, so the engine polls
     // the smoothing choice and correction settings from its message-thread timer instead.
     if (! standalone)
+    {
         splCollector.startTimerHz (10);
+        zonePublisher.startTimerHz (4);   // other instances see this zone's measurements within a quarter second
+    }
     engine.setSmoothingSource ([this] { return getSmoothingFraction(); });
     engine.setCorrectionSettingsSource ([this] { return getCorrectionSettings(); });
     engine.onPlayingCorrectionChanged = [this] (const std::vector<roomeq::Band>& bands)
@@ -159,6 +162,8 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
 
 AdaptiveRoomEQProcessor::~AdaptiveRoomEQProcessor()
 {
+    zonePublisher.stopTimer();
+    zoneRegistry->withdraw (instanceId);
     parameters.removeParameterListener (ParamIds::zone.getParamID(), this);
     cancelPendingUpdate();
 }
@@ -665,6 +670,62 @@ ZoneSettings AdaptiveRoomEQProcessor::getZoneSettings() const noexcept
 bool AdaptiveRoomEQProcessor::isMono() const
 {
     return ! standalone && getMainBusNumOutputChannels() == 1;
+}
+
+juce::String AdaptiveRoomEQProcessor::zoneName (Zone z)
+{
+    switch (z)
+    {
+        case Zone::mains: return "Mains";
+        case Zone::subs: return "Subs";
+        case Zone::frontFill: return "Front fill";
+        case Zone::delay: return "Delay";
+    }
+    return "Mains";
+}
+
+juce::String AdaptiveRoomEQProcessor::getZoneLabel() const
+{
+    const std::lock_guard<std::mutex> guard (trackNameLock);
+    const auto name = zoneName (getZone());
+    return trackName.isNotEmpty() && trackName != name ? name + " (" + trackName + ")" : name;
+}
+
+void AdaptiveRoomEQProcessor::updateTrackProperties (const TrackProperties& properties)
+{
+    const std::lock_guard<std::mutex> guard (trackNameLock);
+    trackName = properties.name.value_or (juce::String()).trim();
+}
+
+void AdaptiveRoomEQProcessor::publishZone()
+{
+    ZoneRegistry::Zone z;
+    z.instance = instanceId;
+    z.label = getZoneLabel();
+    z.zone = static_cast<int> (getZone());
+    const auto settings = getZoneSettings();
+    z.delayMs = settings.delayMs;
+    z.invert = settings.invert;
+    z.latencyMs = engine.getSystemLatencyMs();
+    for (const auto& e : engine.getEntries())
+        if (! e.verify && ! e.capture->excluded)
+            z.measurements.push_back ({ e.id, juce::String::fromUTF8 (e.capture->name.c_str()), e.arrival });
+    zoneRegistry->publish (z);
+}
+
+juce::Result AdaptiveRoomEQProcessor::startLatencyMeasurement()
+{
+    return engine.startLatencyMeasurement (getSampleRate(), getSweepSettings());
+}
+
+void AdaptiveRoomEQProcessor::setZoneDelayMs (double ms)
+{
+    if (auto* param = parameters.getParameter (ParamIds::zoneDelay.getParamID()))
+    {
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (param->convertTo0to1 (static_cast<float> (juce::jlimit (0.0, ZoneStage::maxDelayMs, ms))));
+        param->endChangeGesture();
+    }
 }
 
 void AdaptiveRoomEQProcessor::parameterChanged (const juce::String&, float)

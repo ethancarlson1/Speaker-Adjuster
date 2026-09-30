@@ -7,7 +7,9 @@
 #include <functional>
 
 // The list of captured positions: grade badge, name (double-click to rename),
-// type and loop delay, the grading reasons, and include / redo / delete.
+// type and the direct sound's arrival (a loop delay, with a dot for its
+// confidence: green high, amber medium, red low), the grading reasons, and
+// include / redo / delete.
 // Clicking a row (its name too) selects it and highlights its curve on the
 // graph; clicking the selected row again clears the selection.
 class CaptureList final : public juce::Component,
