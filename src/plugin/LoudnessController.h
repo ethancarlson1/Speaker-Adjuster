@@ -100,6 +100,10 @@ public:
 
     // The PA's low-end roll-off (the correction's fit range), for the tracking high-pass. Any thread.
     double getHighpassBase() const noexcept { return hpBase.load (std::memory_order_relaxed); }
+    // Where the PA's measured usable range starts (0: not measured), which limits the low boost. Any thread.
+    double getLowLimit() const noexcept { return lfLimit.load (std::memory_order_relaxed); }
+    // The low shelf's frequency for the reference level (0 before there's a plan). Message thread.
+    double getLowShelfHz() const noexcept { return planned ? plan.lowFreq : 0.0; }
 
     // Persistence (safe from any thread).
     juce::ValueTree toValueTree() const;
@@ -151,6 +155,7 @@ private:
     bool planned = false;
     double planFs = 0.0, planRef = 0.0;
     std::atomic<double> hpBase { 40.0 };
+    std::atomic<double> lfLimit { 0.0 };
     std::atomic<bool> modelDirty { true };
 
     // Persisted; guarded for readers on other threads.

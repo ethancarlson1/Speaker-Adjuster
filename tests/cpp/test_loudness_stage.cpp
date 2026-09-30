@@ -75,7 +75,7 @@ TEST_CASE ("loudness stage: 10 dB below the reference gets the planned shelves")
     REQUIRE (st.hasLevel.load());
     CHECK (st.splUsed.load() == doctest::Approx (85.0).epsilon (0.01));
     const auto plan = planShelves (95.0, fs);
-    const auto [low, high] = shelfGains (plan, st.splUsed.load(), s.config);
+    const auto [low, high] = shelfGains (plan, st.splUsed.load() - plan.referenceSpl, s.config);
     CHECK (st.lowGainDb.load() == doctest::Approx (low));
     CHECK (low > 4.5);
 

@@ -9,7 +9,9 @@ namespace roomeq
 {
 namespace
 {
-// ISO 226:2003 Table 1.
+// ISO 226:2003 Table 1: frequency, alpha_f (exponent for loudness perception),
+// L_U (magnitude of the linear transfer function normalised at 1 kHz, dB),
+// T_f (threshold of hearing, dB).
 const std::vector<double> freqsTable { 20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
                                        1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500 };
 const double alphaF[] { 0.532, 0.506, 0.480, 0.455, 0.432, 0.409, 0.387, 0.367, 0.349, 0.330, 0.315, 0.301, 0.288, 0.276, 0.267,

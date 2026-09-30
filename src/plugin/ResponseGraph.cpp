@@ -353,7 +353,7 @@ juce::String ResponseGraph::showHoverText (juce::Point<float> p) const
         {
             text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1) << " dB";
             if (curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated)
-                text << ", loudness " << juce::String (curves.loudness[i], 1) << " dB";
+                text << ", level comp. " << juce::String (curves.loudness[i], 1) << " dB";
         }
         return text;
     }
@@ -656,7 +656,7 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool
     legend.push_back ({ curves.voicingOn ? "Voicing EQ" : "Voicing EQ (off)", theme::magenta, ! curves.voicingOn });
     const auto loudnessActive = curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated;
     if (curves.showLoudness)
-        legend.push_back ({ ! curves.loudnessOn ? "Loudness (off)" : curves.loudnessCalibrated ? "Loudness now" : "Loudness (not calibrated)",
+        legend.push_back ({ ! curves.loudnessOn ? "Level comp. (off)" : curves.loudnessCalibrated ? "Level comp. now" : "Level comp. (not calibrated)",
                             theme::gold, ! loudnessActive });
     const auto legendEnd = drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
 
@@ -757,7 +757,7 @@ void ResponseGraph::drawHover (juce::Graphics& g) const
     text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1)
          << " dB";
     if (curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated)
-        text << ", loudness " << juce::String (curves.loudness[i], 1) << " dB";
+        text << ", level comp. " << juce::String (curves.loudness[i], 1) << " dB";
 
     g.setFont (juce::FontOptions (12.0f));
     const auto w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 16.0f;

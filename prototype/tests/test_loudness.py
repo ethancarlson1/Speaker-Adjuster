@@ -12,16 +12,39 @@ FAST = LoudnessConfig(speed_s=5.0)      # the fastest Speed setting
 # ---------------------------------------------------------------------------
 # ISO 226 and C-weighting
 
-def test_iso226_matches_published_values():
+# ISO 226:2003 contours at the standard's 29 frequencies (20 Hz-12.5 kHz), in dB
+# SPL: the standard's formula with its Table 1 parameters, to two decimals.
+# They agree with the widely used public implementations of the standard. If
+# these change, the contour math changed: update them only on purpose.
+ISO226_40_PHON = [99.85, 93.94, 88.17, 82.63, 77.78, 73.08, 68.48, 64.37, 60.59, 56.70, 53.41, 50.40, 47.58, 44.98,
+                  43.05, 41.34, 40.06, 40.01, 41.82, 42.51, 39.23, 36.51, 35.61, 36.65, 40.01, 45.83, 51.80, 54.28,
+                  51.49]
+ISO226_80_PHON = [118.99, 114.23, 109.65, 105.34, 101.72, 98.36, 95.17, 92.48, 90.09, 87.82, 85.92, 84.31, 82.89,
+                  81.68, 80.86, 80.17, 79.67, 80.01, 82.48, 83.74, 80.59, 77.88, 77.07, 78.31, 81.62, 86.81, 91.41,
+                  91.74, 85.41]
+
+
+def test_iso226_matches_the_standards_contours():
+    assert list(iso226.FREQS) == [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
+                                  1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500]
+    assert iso226.contour_at_table(40) == pytest.approx(ISO226_40_PHON, abs=0.005)
+    assert iso226.contour_at_table(80) == pytest.approx(ISO226_80_PHON, abs=0.005)
+    # Between the table frequencies: linear in log frequency; held outside.
+    mid = float(iso226.contour(np.array([np.sqrt(100 * 125)]), 40)[0])
+    assert mid == pytest.approx((64.37 + 60.59) / 2, abs=0.01)
+    assert float(iso226.contour(np.array([10.0]), 40)[0]) == pytest.approx(99.85, abs=0.005)
+    assert float(iso226.contour(np.array([16000.0]), 40)[0]) == pytest.approx(51.49, abs=0.005)
+
+
+def test_iso226_properties():
     def at(f, phon):
         return float(iso226.contour(np.array([f]), phon)[0])
-    assert at(20, 40) == pytest.approx(99.85, abs=0.05)
-    assert at(20, 60) == pytest.approx(109.51, abs=0.05)
-    assert at(20, 80) == pytest.approx(118.99, abs=0.05)
     for phon in (20, 40, 60, 80, 90):
-        assert at(1000, phon) == pytest.approx(phon, abs=0.05)       # 1 kHz defines the phon
+        assert at(1000, phon) == pytest.approx(phon, abs=0.02)       # 1 kHz defines the phon
+        assert iso226.relative_contour(np.array([1000.0]), phon)[0] == pytest.approx(0.0, abs=1e-12)
     # Contours flatten as level rises: at low frequencies, loudness grows faster than level.
     assert at(50, 90) - at(50, 60) < 30 - 5
+    assert at(20, 80) - at(20, 40) < at(1000, 80) - at(1000, 40)
 
 
 @pytest.mark.parametrize("fs", [44100, 48000, 96000])
@@ -50,19 +73,32 @@ def test_a_weighting_within_iec_61672_class_1(fs):
 
 def test_no_compensation_at_or_above_reference():
     f = np.geomspace(20, 20000, 50)
-    assert np.all(loudness.compensation_target(f, 95.0, 95.0) == 0)
-    assert np.all(loudness.compensation_target(f, 100.0, 95.0) == 0)
+    assert np.all(loudness.compensation_target(f, 95.0, 0.0) == 0)
+    assert np.all(loudness.compensation_target(f, 95.0, 5.0) == 0)
     plan = loudness.plan_shelves(95.0)
-    assert loudness.shelf_gains(plan, 95.0, CFG) == (0.0, 0.0)
-    assert loudness.shelf_gains(plan, 97.0, CFG) == (0.0, 0.0)
+    assert loudness.shelf_gains(plan, 0.0, CFG) == (0.0, 0.0)
+    assert loudness.shelf_gains(plan, 2.0, CFG) == (0.0, 0.0)
 
 
 def test_compensation_boosts_the_ends_and_scales_with_the_drop():
     f = np.array([31.5, 100.0, 1000.0, 12500.0])
-    d10 = loudness.compensation_target(f, 85.0, 95.0)
-    d20 = loudness.compensation_target(f, 75.0, 95.0)
+    d10 = loudness.compensation_target(f, 95.0, -10.0)
+    d20 = loudness.compensation_target(f, 95.0, -20.0)
     assert d10[0] > d10[1] > 1.0 and abs(d10[2]) < 1e-9 and d10[3] > 1.0
     assert d20 == pytest.approx(2 * d10, rel=0.15)
+    # It's the contours' change in shape: at 85 of 95, the 40-phon-style numbers from the standard.
+    expected = (iso226.relative_contour(f, 85.0) - iso226.relative_contour(f, 95.0))
+    assert d10 == pytest.approx(expected, abs=1e-12)
+
+
+def test_the_level_change_sets_the_amount_and_the_reference_only_picks_the_region():
+    # The same 8 dB drop asks for nearly the same tonal change from any reference in the usual range...
+    f = np.array([31.5, 12500.0])
+    drops = {ref: loudness.compensation_target(f, ref, -8.0) for ref in (80.0, 90.0, 95.0, 100.0)}
+    for ref, d in drops.items():
+        assert d == pytest.approx(drops[95.0], rel=0.1), ref
+    # ...while twice the drop asks for about twice as much.
+    assert loudness.compensation_target(f, 95.0, -16.0) == pytest.approx(2 * drops[95.0], rel=0.15)
 
 
 def test_fitted_shelves_follow_the_contour_difference():
@@ -73,20 +109,41 @@ def test_fitted_shelves_follow_the_contour_difference():
         high = float(np.interp(drop, plan.deltas, plan.high_gain))
         fit = filters.response_db([filters.Band(filters.LOW_SHELF, plan.low_freq, low, plan.low_q),
                                    filters.Band(filters.HIGH_SHELF, plan.high_freq, high, plan.high_q)], grid, 48000)
-        err = fit - loudness.compensation_target(grid, 95.0 - drop, 95.0)
+        err = fit - loudness.compensation_target(grid, 95.0, -drop)
         assert np.max(np.abs(err)) < 0.9, drop
     assert np.all(np.diff(plan.low_gain) >= 0) and np.all(np.diff(plan.high_gain) >= 0)
 
 
 def test_limits_amount_and_ceiling():
     plan = loudness.plan_shelves(95.0)
-    low, high = loudness.shelf_gains(plan, 65.0, CFG)                  # 30 dB down wants ~16 / 6 dB
+    low, high = loudness.shelf_gains(plan, -30.0, CFG)                 # 30 dB down wants ~16 / 6 dB
     assert (low, high) == (CFG.max_low_db, CFG.max_high_db)
     wild = LoudnessConfig(max_low_db=20.0, max_high_db=20.0)
-    assert loudness.shelf_gains(plan, 55.0, wild)[0] == CFG.low_ceiling_db   # the ceiling can't be raised
+    assert loudness.shelf_gains(plan, -40.0, wild)[0] == CFG.low_ceiling_db   # the ceiling can't be raised
     half = LoudnessConfig(amount=0.5)
-    full = loudness.shelf_gains(plan, 88.0, CFG)
-    assert loudness.shelf_gains(plan, 88.0, half) == pytest.approx((full[0] / 2, full[1] / 2))
+    full = loudness.shelf_gains(plan, -7.0, CFG)
+    assert loudness.shelf_gains(plan, -7.0, half) == pytest.approx((full[0] / 2, full[1] / 2))
+
+
+def test_low_boost_shrinks_as_the_pa_low_end_nears_the_shelf():
+    plan = loudness.plan_shelves(95.0)
+    shelf = plan.low_freq
+    assert loudness.low_boost_allowance(0.0, shelf) == 1.0                     # not measured
+    assert loudness.low_boost_allowance(shelf / 4, shelf) == 1.0               # subs: well below
+    assert loudness.low_boost_allowance(shelf / 2, shelf) == pytest.approx(1.0)
+    assert loudness.low_boost_allowance(shelf / np.sqrt(2), shelf) == pytest.approx(0.5)
+    assert loudness.low_boost_allowance(shelf, shelf) == 0.0
+    assert loudness.low_boost_allowance(2 * shelf, shelf) == 0.0
+
+    deep = loudness.shelf_gains(plan, -30.0, LoudnessConfig(lf_limit_hz=35.0))
+    small_top = loudness.shelf_gains(plan, -30.0, LoudnessConfig(lf_limit_hz=shelf / np.sqrt(2)))
+    no_lows = loudness.shelf_gains(plan, -30.0, LoudnessConfig(lf_limit_hz=shelf * 1.2))
+    assert deep == (CFG.max_low_db, CFG.max_high_db)
+    assert small_top == pytest.approx((CFG.max_low_db / 2, CFG.max_high_db))
+    assert no_lows == (0.0, CFG.max_high_db)                                   # the high shelf is untouched
+    # Only the ceiling moves: a small boost that fits under it is left alone.
+    gentle = loudness.shelf_gains(plan, -3.0, CFG)
+    assert loudness.shelf_gains(plan, -3.0, LoudnessConfig(lf_limit_hz=shelf / np.sqrt(2))) == gentle
 
 
 def test_tracking_highpass_rises_half_an_octave_at_full_boost():

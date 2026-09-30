@@ -288,6 +288,13 @@ def test_loudness_plan_matches_python():
         assert cpp["high_freq"] == pytest.approx(py.high_freq, rel=1e-9)
         assert np.max(np.abs(np.array(cpp["low_gain"]) - py.low_gain)) < 1e-6
         assert np.max(np.abs(np.array(cpp["high_gain"]) - py.high_gain)) < 1e-6
+    # Gains for a level change, with the amount and the PA's low end limiting them.
+    for delta, lf_limit, amount in ((-8.0, 0.0, 1.0), (-25.0, 90.0, 0.75), (-12.0, 60.0, 1.0), (3.0, 0.0, 1.0)):
+        cpp = run_cli("loudness-plan", "--ref", 95.0, "--fs", 48000, "--delta", delta, "--lf-limit", lf_limit, "--amount", amount)
+        plan = loudness.plan_shelves(95.0, 48000)
+        cfg = loudness.LoudnessConfig(lf_limit_hz=lf_limit, amount=amount)
+        assert cpp["max_low_boost"] == pytest.approx(loudness.max_low_boost(plan, cfg), abs=1e-9)
+        assert cpp["gains"] == pytest.approx(list(loudness.shelf_gains(plan, delta, cfg)), abs=1e-6)
 
 
 def test_level_tracker_and_deadband_match_python(tmp_path):

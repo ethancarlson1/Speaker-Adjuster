@@ -1,7 +1,13 @@
 #pragma once
 
-// Level calibration, level tracking and ISO 226 loudness compensation.
+// Level calibration, level tracking and level compensation.
 // Port of prototype/roomeq/loudness.py; see there for the reasoning.
+//
+// The model is relative: the system was approved at a reference level, and
+// levelDelta = current SPL - reference SPL (dB(C) at the mix position) sets
+// the compensation, from the change in shape of the ISO 226:2003 contours.
+// The reference only picks the region of the contour family (it stands in for
+// a loudness level in phon, an approximation: broadband dB(C) of music isn't phon).
 //
 // The tracker and deadband allocate nothing after prepare(), so the audio
 // thread can run them. The shelf plan and the re-check are message-thread work.
@@ -35,6 +41,7 @@ struct LoudnessConfig
     double hpRiseOctaves = 0.5;
     double deadbandDb = 2.0;        // level changes smaller than this don't move the EQ...
     double driftS = 30.0;           // ...except by a slow drift that lands it on the level
+    double lfLimitHz = 0.0;         // the PA's measured usable low end (0: not measured)
 };
 
 // IEC 61672 C-weighting as two RBJ sections (Q 0.5) plus a gain for 0 dB at 1 kHz.
@@ -48,8 +55,14 @@ double cWeightedLevelDbfs (const std::vector<double>& x, double fs);
 std::array<Band, 3> aWeightingBands();
 double aWeightingGain (double fs);
 
-// ISO 226 contour difference (dB) keeping the balance heard at the reference; zero at or above it.
-std::vector<double> compensationTarget (const std::vector<double>& freqs, double currentSpl, double referenceSpl);
+// The tonal change (dB) equal-loudness behaviour predicts for playing levelDeltaDb
+// (current - reference) away from the reference level; zero unless quieter.
+std::vector<double> compensationTarget (const std::vector<double>& freqs, double referenceSpl, double levelDeltaDb);
+
+// Share (0-1) of the low boost allowed for a PA whose usable range starts at
+// lfLimitHz: all of it an octave or more below the low shelf's frequency, none
+// at or above it, linear in octaves between. 1 when it hasn't been measured (0).
+double lowBoostAllowance (double lfLimitHz, double shelfHz);
 
 // Shelf frequency/Q fitted once per reference level, gains tabulated per dB below it (0..60).
 struct ShelfPlan
@@ -62,8 +75,12 @@ struct ShelfPlan
 
 ShelfPlan planShelves (double referenceSpl, double fs);
 
-// Low and high shelf gains (dB) at the current level, with amount and limits applied.
-std::pair<double, double> shelfGains (const ShelfPlan& plan, double currentSpl, const LoudnessConfig& cfg);
+// The most low boost allowed: the setting, the fixed ceiling, and what the PA's low end allows.
+double maxLowBoost (const ShelfPlan& plan, const LoudnessConfig& cfg);
+
+// Low and high shelf gains (dB) for playing levelDeltaDb (current - reference)
+// from the reference level, with amount and limits applied.
+std::pair<double, double> shelfGains (const ShelfPlan& plan, double levelDeltaDb, const LoudnessConfig& cfg);
 
 // 24 dB/octave Butterworth at the PA's roll-off, up to hpRiseOctaves higher at the max low boost.
 std::array<Band, 2> trackingHighpass (double baseHz, double lowGainDb, const LoudnessConfig& cfg);

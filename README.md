@@ -6,7 +6,7 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 - **Measure:** positions measured with log sweeps or pink noise (or from program material), each capture graded, and every position, the power average and the target shown.
 - **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
 - **Voicing:** an 8-band voicing EQ on top of the correction.
-- **Loudness:** level calibration, level tracking and ISO 226 loudness compensation, so the balance heard at the reference level holds as the show gets quieter.
+- **Level compensation:** level calibration, level tracking and equal-loudness compensation (ISO 226:2003), so the balance approved at the reference level holds as the show gets quieter.
 - **Show:** a compact show view with the mic's spectrogram, the EQ over it, and an SPL meter.
 - **Zones:** one instance per zone (mains, subs, front fill, delay speakers) on a mono or stereo track, each judged on its own band, with a delay and polarity to line it up.
 
@@ -32,16 +32,16 @@ So far all of this has only been checked against simulated rooms. The next step 
 **Clear all…** (under the measure buttons) starts the room over. After a confirmation, it deletes:
 - every measurement (positions and verify captures), so numbering starts again at 1;
 - the applied and previous corrections, so the correction goes flat;
-- the loudness level calibration, so the compensation stays flat until you calibrate again.
+- the level calibration, so the compensation stays flat until you calibrate again.
 
 The voicing EQ, targets, the mic calibration (it belongs to the mic, not the room) and all settings stay. It can't be undone, and it waits until nothing is measuring or calibrating.
 
 **Nothing plays unless the mic can hear.** Before a sweep, pink noise, a verify, a music capture, the mic calibrator or a re-check starts, the plugin checks that the mic input carried signal (above −100 dBFS) in the last second. If it's dead (not routed, muted, no phantom power), a popup says so and nothing plays.
 
 **The correction is off while measuring.** Every measurement except **Verify** bypasses the correction, the voicing EQ and the level-match make-up, so the fit always sees the PA's own response. The status line says "correction bypassed".
-- **Sweeps and pink noise** replace the program with the test signal, played straight to the speaker. The loudness shelves and high-pass go flat at once, under the silence the signal starts with, so it plays exactly as generated.
-- **Measure from music** keeps the music playing. The correction, voicing and loudness glide out over 1.5 s, and the 30 s recording starts after that. The audience hears the uncorrected mix for those ~32 s, then everything glides back.
-- **Verify** and the loudness **Calibrate level** play through the correction and voicing on purpose: they measure the corrected system, as the audience hears it. The loudness stage is flat for them too.
+- **Sweeps and pink noise** replace the program with the test signal, played straight to the speaker. The level compensation's shelves and high-pass go flat at once, under the silence the signal starts with, so it plays exactly as generated.
+- **Measure from music** keeps the music playing. The correction, voicing and level compensation glide out over 1.5 s, and the 30 s recording starts after that. The audience hears the uncorrected mix for those ~32 s, then everything glides back.
+- **Verify** and the level compensation's **Calibrate level** play through the correction and voicing on purpose: they measure the corrected system, as the audience hears it. The level compensation is flat for them too.
 
 **Measure from music (30 s)** estimates the response from walk-in music or soundcheck when a sweep isn't possible. It's a dual-FFT against the plugin's output. Both speakers play during it.
 
@@ -51,7 +51,7 @@ Uncorrected, a drift of just 10 ppm (0.001%) makes the high frequencies cancel. 
 
 So these captures measure the delay in 3 s blocks along the recording and fit a line through them. A drift of 0.2 ppm or more is resampled out before the analysis. The capture then says "output and mic clocks differ by 18.3 ppm (corrected)".
 
-If the delay jumps around instead of sliding steadily (dropouts in an aggregate device), it says so and suggests using one interface. The loudness calibration and **Re-check** get the same correction. One interface for mic and output is still better: it also keeps the loop delay short.
+If the delay jumps around instead of sliding steadily (dropouts in an aggregate device), it says so and suggests using one interface. The level calibration and **Re-check** get the same correction. One interface for mic and output is still better: it also keeps the loop delay short.
 
 ## Zones (Zone tab)
 
@@ -90,7 +90,7 @@ The plugin runs mono or stereo, whichever the host's track is. On a mono track t
 
 Both follow the same rule as the correction:
 - **Measurements bypass them,** so the fit sees the speaker's own response and the loop delay stays short.
-- **Verify includes them,** so it measures what the audience hears. The loudness **Calibrate level** does too.
+- **Verify includes them,** so it measures what the audience hears. The level compensation's **Calibrate level** does too.
 
 The standalone app has the **Zone** choice (for grading) but no delay or polarity: it only plays test signals.
 
@@ -141,11 +141,20 @@ It updates the moment the EQ changes and glides with it, never pumps, and adds n
 
 It's exact for pink noise and typical music, and within about a dB for unusually bass-heavy or thin material. It follows the EQ, not the music's level: a quiet song stays quiet.
 
-Loudness compensation isn't levelled. Its boosts are meant to make a quieter show sound fuller. Levelling them would pull the mids down as the boost grows and fight the level tracking.
+Level compensation isn't levelled. Its boosts are meant to make a quieter show sound fuller. Levelling them would pull the mids down as the boost grows and fight the level tracking.
 
-## Loudness compensation (Loudness tab)
+## Level compensation (Level comp tab)
 
-At lower levels we hear less bass and treble (the ISO 226 equal-loudness contours). This stage, after the correction and voicing, raises them as the level drops below the **Reference**, by the difference between the contours at the current level and at the reference. It uses two smooth shelves. Above the reference it does nothing.
+At lower levels we hear less bass and treble than at higher ones: equal-loudness behaviour. This stage, after the correction and voicing, keeps the tonal balance you approved at the **Reference level** similar when the show plays quieter:
+- It measures the **current level** (dB C at the mix position, from the calibration) and the change from the reference, e.g. 95 → 87 dB(C) is −8 dB.
+- For that change it applies the change in shape of the ISO 226:2003 equal-loudness contours, as two smooth shelves (low and high).
+- At or above the reference it does nothing.
+
+**What it models, and what it assumes:**
+- **Contours:** ISO 226:2003 (the second edition; the 2023 edition isn't encoded). They're the standard's formula with its Table 1 parameters at its 29 frequencies, 20 Hz–12.5 kHz. Between those they're interpolated in log frequency, and beyond them held. The tests pin the 40 and 80 phon contours to 0.01 dB.
+- **The reference picks the region, the level change sets the amount.** ISO 226 is about pure tones in phon, and a broadband dB(C) reading of music isn't a phon value. So the reference level in dB(C) is used only to choose where on the contour family to read the change. That's an approximation, but a mild one: from any reference between 80 and 100 dB(C), an 8 dB drop asks for the same boost within about 0.1 dB.
+- **Range:** the formula is specified for 20–90 phon (20–80 phon from 5 kHz up). Outside that it's used as is, and anything below 20 phon is treated as 20.
+- **Two shelves, not a full contour:** the shelves' frequency and Q are fitted once per reference level, and only their gains follow the level. No FIR, no lookahead: the stage adds no latency and very little CPU.
 
 It needs the volume turned down **before** the plugin (in the DAW, or on the console feeding it), so the plugin can tell the level from its own output.
 
@@ -159,9 +168,10 @@ The plugin stores the output level that gave that SPL. With the mic connected, i
 **Optional: a calibrated mic.** Put a sound level calibrator (94 or 114 dB) on the mic and press **Calibrate mic**. From then on, a level calibration fills in the SPL the mic heard. That's correct if the mic is at the mix position.
 
 **Settings:**
-- **Reference** (95 dB C): the level where the mix sounds right with no compensation.
-- **Amount** (100%): how much of the ISO 226 difference to apply.
+- **Reference level** (95 dB C): the level where you approved the system's sound.
+- **Amount** (75%, **Natural**): how much of the predicted change to apply. The presets are **Subtle** 50%, **Natural** 75% and **Full** 100%; any other value reads Custom. The full theoretical change doesn't always sound best on mastered music, so the default is 75% until listening tests say otherwise.
 - **Max boost** (low 8 dB, high 4 dB): the most each shelf ever adds. Low boost never exceeds 12 dB, whatever the setting.
+- **The PA's low end limits the bass boost.** With measurements, the usable range's low end (where the measured response is 10 dB down) is compared with the low shelf's frequency (about 134 Hz at a 95 dB reference). An octave or more below it, the full boost is allowed. Closer than that, the allowance shrinks in proportion (in octaves), to none when the PA's range starts at the shelf's frequency. For example, tops whose usable range starts at 95 Hz get about half their bass boost; the sub instance, playing down to 30 Hz, gets all of its own. The tab says when this is limiting. Without measurements the settings apply as they are.
 - **Level from**:
   - **Plugin output** (default): steady and deaf to the crowd.
   - **Mic**: the level the mic actually hears, counted only while music plays. It needs a calibration made with the mic connected.
@@ -172,25 +182,25 @@ The plugin stores the output level that gave that SPL. With the mic connected, i
 
 **Re-check level from the music** is for when the gain after the plugin (amp, console fader) changed since calibration. It listens to ~12 s of the show through the mic, with no test signal, and compares the output-to-mic transfer with the calibration, band by band. If the system is louder or quieter by 0.5 dB or more, the calibration follows. If too little of the music reached the mic clearly (crowd, quiet passage), it says so and changes nothing.
 
-The EQ strip shows the compensation at the current level in gold. The tab shows the level, the boosts, and when it was calibrated and re-checked. The calibration is saved with the session.
+The EQ strip shows the compensation at the current level in gold. The tab shows the current level and its change from the reference, the boosts, any limit from the PA's low end, and when it was calibrated and re-checked. The calibration is saved with the session.
 
 ## Show view
 
 **Show view** (the header button, plugin only) is a compact layout for the show. Click it again for the setup view. The choice is saved with the session.
 
 The left panel has:
-- the bypasses (**Correction**, **Voicing EQ**, **Loudness**, **Match output level**);
-- the loudness readout and **Re-check level**;
+- the bypasses (**Correction**, **Voicing EQ**, **Level comp.**, **Match output level**);
+- the level compensation readout (current level, change from the reference, boosts) and **Re-check level**;
 - the SPL meter.
 
 The capture list goes, and the graph side shows **the mic's spectrogram with the EQ over it**, 20 Hz–20 kHz. A **Both / Spectrogram / EQ** switch at the right of its legend row picks what's shown, and the choice is saved with the session.
-- **Both** (the default) draws the correction, voicing and loudness curves and the voicing handles over the spectrogram. Drag a handle straight to where you see a build-up. Hovering reads out the frequency and the EQ there.
+- **Both** (the default) draws the correction, voicing and level compensation curves and the voicing handles over the spectrogram. Drag a handle straight to where you see a build-up. Hovering reads out the frequency and the EQ there.
 - **Spectrogram** shows it alone, with its time labels and colour key; the handles step aside.
 - **EQ** shows the curves alone, as in the setup view.
 
 The spectrogram covers the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
 
-**SPL at the mic** reads dB SPL from the measurement mic, so it needs the mic calibration (calibrator, Loudness tab). Until then it says so. It shows:
+**SPL at the mic** reads dB SPL from the measurement mic, so it needs the mic calibration (calibrator, Level comp tab). Until then it says so. It shows:
 - the live **dB(A) fast** (125 ms) level, and its max;
 - **LAeq** and **LCeq** over the last 15 minutes (or as much as it has heard so far);
 - **Reset**, which starts the Leqs and the max over.
@@ -262,7 +272,7 @@ Phase 2's "done when" test:
 Phase 3's "done when" test:
 - Calibrate (meter at the mix position), and set **Reference** to the level the system sounds right at.
 - Play speech, then music, at the reference. Then turn down 10–15 dB before the plugin.
-- A/B **Loudness compensation on** at the lower level. With it on, the balance should sound like it did at the reference: the bass shouldn't thin out, and speech shouldn't lose its presence. The tab shows the boosts it's applying.
+- A/B **Level compensation on** at the lower level. With it on, the balance should sound like it did at the reference: the bass shouldn't thin out, and speech shouldn't lose its presence. The tab shows the boosts it's applying.
 - Change the amp gain a few dB during music and press **Re-check level**: it should report the change.
 
 ## Layout
@@ -270,9 +280,9 @@ Phase 3's "done when" test:
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, the zone's delay, background analysis and fitting, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and level compensation EQ (state-variable filters that glide), output level match, level tracking, calibration, the zone's delay, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
-| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ, the loudness stage and the zone's delay |
+| `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ, the level compensation stage and the zone's delay |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
 | `tools/plugin_harness.cpp` | Headless end-to-end run of the real processor against a simulated room; renders the UI to PNG |
 | `.github/workflows/ci.yml` | Builds on macOS, Windows and Linux; runs every test layer and pluginval |
@@ -311,9 +321,9 @@ The harness drives the real processor against a simulated room. It checks:
 - dragging handles and target points on the graph works;
 - a dead mic input refuses every test signal and nothing plays;
 - Clear all: refused mid-measurement; afterwards no measurements, corrections or level calibration, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
-- measurements bypass the correction: with correction, voicing, loudness shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
+- measurements bypass the correction: with correction, voicing, level compensation shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
 - selecting a capture (a position or a verify capture) highlights its curve;
-- loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
+- level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;
@@ -330,7 +340,7 @@ It gives the same numbers on every run: audio stops while background analyses ru
   - Pick the channels with the app's own **Mic input** and **Speaker output** menus. They list every channel individually, whereas JUCE's settings dialog only offers stereo pairs.
   - The app only ever outputs the test signal and never sends the mic to the speakers, so it turns off JUCE's default input mute.
   - Measurements play the signal straight out; **Verify** plays it through the correction and voicing EQ.
-  - **Measure from music** and loudness compensation are plugin-only, because no program passes through the app.
+  - **Measure from music** and level compensation are plugin-only, because no program passes through the app.
   - The **Test** button in JUCE's settings dialog plays a tone on whichever outputs are active. After picking a **Speaker output**, that's just the chosen one.
 
 **Latency:** none. Every EQ stage is a minimum-phase IIR filter processed in place, with no lookahead, so the plugin reports 0 samples. The round trip is set by the interface and host buffer size. The zone's **Delay** is the one exception, on purpose, and isn't reported.

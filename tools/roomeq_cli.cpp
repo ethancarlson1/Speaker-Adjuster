@@ -5,7 +5,7 @@
 // Recordings are raw little-endian float64 files.
 //
 //   roomeq_cli sweep   --fs 48000 --duration 5 [--level -12] --out sweep.f64
-//   roomeq_cli loudness-plan --fs 48000 --ref 95
+//   roomeq_cli loudness-plan --fs 48000 --ref 95 [--delta -8 --lf-limit 90 --amount 0.75]
 //   roomeq_cli track --fs 48000 --in output.f64 [--mic mic.f64] [--speed 5] [--block 512]
 //   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
@@ -225,10 +225,16 @@ int run (int argc, char** argv)
     if (args.command == "loudness-plan")
     {
         const auto plan = roomeq::planShelves (args.get ("ref", 95.0), cfg.fs);
+        roomeq::LoudnessConfig lcfg;
+        lcfg.lfLimitHz = args.get ("lf-limit", 0.0);
+        lcfg.amount = args.get ("amount", 1.0);
+        const auto [low, high] = roomeq::shelfGains (plan, args.get ("delta", 0.0), lcfg);
         std::cout << "{\"low_freq\":" << num (plan.lowFreq) << ",\"low_q\":" << num (plan.lowQ)
                   << ",\"high_freq\":" << num (plan.highFreq) << ",\"high_q\":" << num (plan.highQ)
                   << ",\"low_gain\":" << numbers ({ plan.lowGain.begin(), plan.lowGain.end() })
-                  << ",\"high_gain\":" << numbers ({ plan.highGain.begin(), plan.highGain.end() }) << "}\n";
+                  << ",\"high_gain\":" << numbers ({ plan.highGain.begin(), plan.highGain.end() })
+                  << ",\"max_low_boost\":" << num (roomeq::maxLowBoost (plan, lcfg))
+                  << ",\"gains\":" << numbers ({ low, high }) << "}\n";
         return 0;
     }
     if (args.command == "track")

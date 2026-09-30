@@ -1,17 +1,37 @@
-"""Phase 3: level calibration, level tracking and loudness compensation.
+"""Phase 3: level calibration, level tracking and level compensation.
+
+The model is relative. The system was approved at a reference playback
+level; the current level differs from it by
+
+    level_delta = current SPL - reference SPL      (dB, both dB(C) at the mix position)
+
+and the compensation is the tonal change that equal-loudness behaviour
+(ISO 226:2003, see iso226) predicts for that change, applied as a low shelf
+and a high shelf.
 
 Chain: the plugin output (after correction and voicing, before this stage)
 is C-weighted and its level tracked; a calibration maps that level to SPL
-at the mix position; the ISO 226 contour difference between the current
-SPL and the reference SPL is applied as a low shelf and a high shelf.
+at the mix position; level_delta drives the shelves.
 
-- Compensation target: D(f) = [Lp(f, now) - now] - [Lp(f, ref) - ref], zero
-  at or above the reference. It keeps almost the same shape as the level
-  drops and scales with the drop, so the shelves' frequency and Q are fitted
-  once per reference level and only their gains follow the level (a table of
-  gains against dB below reference). Gains glide; nothing is refitted live.
-- Limits: amount, max low boost, max high boost, and a fixed low-boost
-  ceiling nothing can exceed.
+- Compensation target: the change in the contours' shape between the
+  reference level and reference + level_delta,
+      D(f) = [Lp(f, P + delta) - (P + delta)] - [Lp(f, P) - P],
+  zero for delta >= 0 (only quieter playback is compensated).
+- P, where on the contour family the reference sits, is taken as the
+  reference SPL in dB(C). That's an approximation: a broadband dB(C)
+  reading of music isn't a loudness level in phon (ISO 226 phon are for
+  pure tones, and music's dB(C) is dominated by its low end). It only
+  chooses the region of the family; the level change, which is measured,
+  is what sets the amount.
+- D keeps almost the same shape as the level drops and scales with the
+  drop, so the shelves' frequency and Q are fitted once per reference level
+  and only their gains follow the level (a table of gains against dB below
+  reference). Gains glide; nothing is refitted live.
+- Limits: amount, max low boost, max high boost, a fixed low-boost ceiling
+  nothing can exceed, and the PA's measured low end: when its usable range
+  starts less than an octave below the low shelf's frequency, the low boost
+  allowed shrinks, to none when it starts at the shelf's frequency (linear
+  in octaves in between).
 - Tracking: 400 ms C-weighted momentary level, averaged over `speed` (30 s by
   default) both ways: rising as an energy average (Leq-like), falling in dB,
   so a song's dynamics barely move the EQ. A big jump that lasts (a loud song
@@ -67,6 +87,7 @@ class LoudnessConfig:
     hp_rise_octaves: float = 0.5
     deadband_db: float = 2.0          # level changes smaller than this don't move the EQ...
     drift_s: float = 30.0             # ...except by a slow drift that lands it on the level
+    lf_limit_hz: float = 0.0          # the PA's measured usable low end (0: not measured)
 
 
 # ---------------------------------------------------------------------------
@@ -100,12 +121,25 @@ def a_weighting_sos(fs: float) -> np.ndarray:
     return sos
 
 
-def compensation_target(freqs: np.ndarray, current_spl: float, reference_spl: float) -> np.ndarray:
-    """ISO 226 contour difference (dB) to keep the balance heard at the reference level."""
-    if current_spl >= reference_spl:
+def compensation_target(freqs: np.ndarray, reference_spl: float, level_delta_db: float) -> np.ndarray:
+    """The tonal change (dB) equal-loudness behaviour predicts for playing
+    level_delta_db (current - reference) away from the reference level;
+    zero unless quieter. The reference picks the region of the contour
+    family (see the module notes)."""
+    if level_delta_db >= 0:
         return np.zeros(len(freqs))
-    now = max(current_spl, 20.0)            # the contours aren't defined below 20 phon
+    now = max(reference_spl + level_delta_db, 20.0)   # the contours aren't defined below 20 phon
     return iso226.relative_contour(freqs, now) - iso226.relative_contour(freqs, reference_spl)
+
+
+def low_boost_allowance(lf_limit_hz: float, shelf_hz: float) -> float:
+    """Share (0-1) of the low boost allowed for a PA whose usable range starts
+    at lf_limit_hz: all of it an octave or more below the low shelf's
+    frequency, none at or above it, linear in octaves between. 1 when the
+    low end hasn't been measured (0)."""
+    if lf_limit_hz <= 0:
+        return 1.0
+    return float(np.clip(np.log2(shelf_hz / lf_limit_hz), 0.0, 1.0))
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +180,8 @@ def plan_shelves(reference_spl: float, fs: float = 48000.0) -> ShelfPlan:
     """Fit shelf frequency/Q at a typical drop, then the gains for every drop."""
     low_grid = np.geomspace(*LOW_FIT, 60)
     high_grid = np.geomspace(*HIGH_FIT, 30)
-    t_low = compensation_target(low_grid, reference_spl - PLAN_FIT_DELTA, reference_spl)
-    t_high = compensation_target(high_grid, reference_spl - PLAN_FIT_DELTA, reference_spl)
+    t_low = compensation_target(low_grid, reference_spl, -PLAN_FIT_DELTA)
+    t_high = compensation_target(high_grid, reference_spl, -PLAN_FIT_DELTA)
 
     best = None
     for f0 in np.geomspace(60.0, 600.0, 41):
@@ -168,21 +202,27 @@ def plan_shelves(reference_spl: float, fs: float = 48000.0) -> ShelfPlan:
     low_gains, high_gains = [], []
     for d in PLAN_DELTAS:
         low_gains.append(_fit_gain(LOW_SHELF, low_f, low_q,
-                                   compensation_target(low_grid, reference_spl - d, reference_spl), low_grid, fs) if d > 0 else 0.0)
+                                   compensation_target(low_grid, reference_spl, -d), low_grid, fs) if d > 0 else 0.0)
         high_gains.append(_fit_gain(HIGH_SHELF, high_f, filters.SHELF_Q,
-                                    compensation_target(high_grid, reference_spl - d, reference_spl), high_grid, fs) if d > 0 else 0.0)
+                                    compensation_target(high_grid, reference_spl, -d), high_grid, fs) if d > 0 else 0.0)
     return ShelfPlan(reference_spl, float(low_f), float(low_q), float(high_f), filters.SHELF_Q,
                      PLAN_DELTAS.copy(), np.array(low_gains), np.array(high_gains))
 
 
-def shelf_gains(plan: ShelfPlan, current_spl: float, cfg: LoudnessConfig) -> tuple[float, float]:
-    """Low and high shelf gains (dB) at the current level, with amount and limits applied."""
-    delta = plan.reference_spl - current_spl
-    if delta <= 0:
+def max_low_boost(plan: ShelfPlan, cfg: LoudnessConfig) -> float:
+    """The most low boost allowed: the setting, the fixed ceiling, and what the PA's low end allows."""
+    return min(cfg.max_low_db, cfg.low_ceiling_db) * low_boost_allowance(cfg.lf_limit_hz, plan.low_freq)
+
+
+def shelf_gains(plan: ShelfPlan, level_delta_db: float, cfg: LoudnessConfig) -> tuple[float, float]:
+    """Low and high shelf gains (dB) for playing level_delta_db (current -
+    reference) from the reference level, with amount and limits applied."""
+    drop = -level_delta_db
+    if drop <= 0:
         return 0.0, 0.0
-    low = float(np.interp(delta, plan.deltas, plan.low_gain)) * cfg.amount
-    high = float(np.interp(delta, plan.deltas, plan.high_gain)) * cfg.amount
-    return min(low, cfg.max_low_db, cfg.low_ceiling_db), min(high, cfg.max_high_db)
+    low = float(np.interp(drop, plan.deltas, plan.low_gain)) * cfg.amount
+    high = float(np.interp(drop, plan.deltas, plan.high_gain)) * cfg.amount
+    return min(low, max_low_boost(plan, cfg)), min(high, cfg.max_high_db)
 
 
 def loudness_bands(plan: ShelfPlan, low_gain: float, high_gain: float, cfg: LoudnessConfig,

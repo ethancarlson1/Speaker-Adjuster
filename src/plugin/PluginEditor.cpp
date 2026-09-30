@@ -39,9 +39,11 @@ const char* const zoneTip =
     "the extra distance the mains' sound travels to it, then fine-tune.";
 
 const char* const loudnessTip =
-    "Keeps the balance you hear at the reference level as the show gets quieter: bass and treble come up "
-    "as the level drops (ISO 226). Turn the volume down before the plugin. Calibrate once per setup; "
-    "re-check if the amp gain changes.";
+    "When the show plays quieter than the reference level, bass and treble come up by what equal-loudness "
+    "behaviour (ISO 226:2003) predicts for that change, so the balance you approved stays similar. Turn the "
+    "volume down before the plugin. Calibrate once per setup; re-check if the amp gain changes.";
+
+constexpr float strengthPresets[] = { 50.0f, 75.0f, 100.0f };   // Subtle, Natural, Full (Amount %)
 
 juce::String signedDb (double v)
 {
@@ -178,13 +180,13 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     };
     clearAllButton.setColour (juce::TextButton::textColourOffId, theme::critical);
     clearAllButton.setTooltip ("Start the room over: forgets every measurement and correction"
-                               + juce::String (processor.isStandalone() ? "." : ", and the loudness level calibration."));
+                               + juce::String (processor.isStandalone() ? "." : ", and the level calibration."));
     clearAllButton.onClick = [this]
     {
         const auto what = processor.isStandalone()
                               ? juce::String ("Every measurement, and the applied and previous corrections, are deleted.")
-                              : juce::String ("Every measurement, the applied and previous corrections and the loudness "
-                                              "level calibration are deleted. The correction and loudness compensation go flat.");
+                              : juce::String ("Every measurement, the applied and previous corrections and the level "
+                                              "calibration are deleted. The correction and level compensation go flat.");
         // Made here rather than in the inner capture: MSVC reads `this` there as the outer lambda.
         juce::Component::SafePointer<AdaptiveRoomEQEditor> editor (this);
         juce::AlertWindow::showAsync (juce::MessageBoxOptions()
@@ -217,7 +219,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     levelMatchAttachment = std::make_unique<ButtonAttachment> (params, "levelMatch", levelMatch);
     levelMatch.setTooltip ("Adds a make-up gain so the correction and voicing leave the music's loudness where it was "
                            "(worked out from their curves, weighted like a LUFS meter). Switching Correction on and "
-                           "off is then a level-matched comparison. Loudness compensation isn't levelled.");
+                           "off is then a level-matched comparison. Level compensation isn't levelled.");
     button (levelMatch, correctControls);
     slider (amount, amountLabel, "Amount", "correctionAmount", amountAttachment, correctControls);
     slider (maxCut, maxCutLabel, "Max cut", "maxCut", maxCutAttachment, correctControls);
@@ -274,11 +276,28 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
         button (*l, voicingControls);
     graph.onVoicingBandSelected = [this] (int b) { selectVoicingBand (b); };
 
-    // ---- Loudness tab
+    // ---- Level compensation tab
     loudOnAttachment = std::make_unique<ButtonAttachment> (params, "loudOn", loudOn);
+    loudOn.setTooltip ("Uses equal-loudness behaviour to help keep a similar perceived tonal balance when the playback "
+                       "level differs from the calibrated reference level.");
     button (loudOn, loudnessControls);
-    slider (loudRef, loudRefLabel, "Reference", "loudRef", loudRefAttachment, loudnessControls);
+    slider (loudRef, loudRefLabel, "Reference level", "loudRef", loudRefAttachment, loudnessControls);
     slider (loudAmount, loudAmountLabel, "Amount", "loudAmount", loudAmountAttachment, loudnessControls);
+    loudStrength.addItemList ({ "Subtle", "Natural", "Full" }, 1);
+    loudStrength.setTextWhenNothingSelected ("Custom");
+    loudStrength.setTooltip ("Presets for Amount: Subtle 50%, Natural 75%, Full 100%. Full theoretical compensation "
+                             "doesn't always sound best on mastered music.");
+    loudStrength.onChange = [this]
+    {
+        const auto id = loudStrength.getSelectedId();
+        if (auto* param = processor.getParameters().getParameter ("loudAmount"); param != nullptr && id >= 1 && id <= 3)
+        {
+            param->beginChangeGesture();
+            param->setValueNotifyingHost (param->convertTo0to1 (strengthPresets[id - 1]));
+            param->endChangeGesture();
+        }
+    };
+    button (loudStrength, loudnessControls);
     slider (loudMaxLow, loudMaxLabel, "Max boost", "loudMaxLow", loudMaxLowAttachment, loudnessControls);
     loudMaxHighAttachment = std::make_unique<SliderAttachment> (params, "loudMaxHigh", loudMaxHigh);
     styleBar (loudMaxHigh);
@@ -297,9 +316,9 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     loudMaxHigh.valueFromTextFunction = numberIn;
     loudMaxLow.updateText();
     loudMaxHigh.updateText();
-    loudRef.setTooltip ("The level (dB C at the mix position) where the mix sounds right with no compensation. "
-                        "Below it, bass and treble are raised to keep that balance.");
-    loudAmount.setTooltip ("How much of the ISO 226 compensation to apply.");
+    loudRef.setTooltip ("The level (dB C at the mix position) where you approved the system's sound. The compensation "
+                        "follows how far the current level is below it.");
+    loudAmount.setTooltip ("How much of the equal-loudness compensation to apply.");
     loudMaxLow.setTooltip ("Most low-shelf boost, however quiet it gets (never more than 12 dB).");
     loudMaxHigh.setTooltip ("Most high-shelf boost, however quiet it gets.");
     loudSource.setTooltip ("Plugin output: the level is worked out from what the plugin sends (steady, ignores the crowd). "
@@ -353,7 +372,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     if (! processor.isStandalone())
         addAndMakeVisible (showViewButton);
 
-    showRecheckButton.setTooltip ("Listens to ~12 s of the music through the mic and updates the loudness calibration "
+    showRecheckButton.setTooltip ("Listens to ~12 s of the music through the mic and updates the level calibration "
                                   "if the gain after the plugin changed.");
     showRecheckButton.onClick = [this] { if (micReady()) showResult (processor.getLoudness().startRecheck()); };
     splResetButton.setTooltip ("Start the Leqs and the max over.");
@@ -703,6 +722,15 @@ void AdaptiveRoomEQEditor::updateLoudnessControls()
     calibratorLevel.setEnabled (ready);
     recheckButton.setEnabled (step == Step::idle && ! measuring && info.canRecheck);
 
+    // The strength presets follow Amount (host automation included); anything else reads "Custom".
+    const auto percent = processor.getLoudnessSettings().config.amount * 100.0;
+    auto preset = 0;
+    for (int i = 0; i < 3; ++i)
+        if (std::abs (percent - static_cast<double> (strengthPresets[i])) < 0.5)
+            preset = i + 1;
+    if (loudStrength.getSelectedId() != preset)
+        loudStrength.setSelectedId (preset, juce::dontSendNotification);
+
     // A calibration just finished playing: put the mic's suggestion (if any) in the box.
     if (step == Step::awaitingSpl && lastLoudnessStep != Step::awaitingSpl)
     {
@@ -730,7 +758,7 @@ void AdaptiveRoomEQEditor::drawSpl (juce::Graphics& g, juce::Rectangle<int> area
     {
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (12.5f));
-        g.drawFittedText ("Calibrate the mic with a calibrator (Loudness tab, in the setup view) to read dB SPL here.", r,
+        g.drawFittedText ("Calibrate the mic with a calibrator (Level comp tab, in the setup view) to read dB SPL here.", r,
                           juce::Justification::topLeft, 3);
         return;
     }
@@ -767,16 +795,21 @@ juce::String AdaptiveRoomEQEditor::showLoudnessText() const
     const auto settings = processor.getLoudnessSettings();
     const auto& st = processor.getLoudnessStatus();
     const auto info = processor.getLoudness().getInfo();
-    juce::String text = "Loudness: ";
+    juce::String text = "Level compensation: ";
     if (! settings.on)
         text << "off.";
     else if (! info.calibrated)
-        text << "not calibrated (Loudness tab, in the setup view).";
+        text << "not calibrated (Level comp tab, in the setup view).";
     else if (! st.hasLevel.load())
         text << "waiting for music.";
     else
-        text << juce::String (st.splNow.load(), 1) << " dB(C); boost low " << signedDb (st.lowGainDb.load()) << " / high "
-             << signedDb (st.highGainDb.load()) << " dB.";
+    {
+        const auto delta = static_cast<double> (st.splUsed.load()) - settings.config.referenceSpl;
+        text << juce::String (st.splNow.load(), 1) << " dB(C)";
+        if (delta < -0.05)
+            text << ", " << juce::String (-delta, 1) << " dB under the reference";
+        text << "; boost low " << signedDb (st.lowGainDb.load()) << " / high " << signedDb (st.highGainDb.load()) << " dB.";
+    }
     text << "\nOutput level match: ";
     if (processor.getEqSettings().levelMatch)
         text << signedDb (processor.getMakeupDb()) << " dB.";
@@ -846,6 +879,7 @@ juce::String AdaptiveRoomEQEditor::loudnessInfo() const
     const auto settings = processor.getLoudnessSettings();
     const auto& st = processor.getLoudnessStatus();
     const auto dot = juce::String::fromUTF8 (" \xc2\xb7 ");
+    const auto minus = juce::String::fromUTF8 ("\xe2\x88\x92");
     juce::String text;
 
     if (loud.getStep() == Step::awaitingSpl)
@@ -865,20 +899,32 @@ juce::String AdaptiveRoomEQEditor::loudnessInfo() const
     else
     {
         if (! settings.on)
-            text << "Loudness compensation is off.\n";
+            text << "Level compensation is off.\n";
         else if (! st.hasLevel.load())
-            text << "Level: waiting for music.\n";
+            text << "Current level: waiting for music.\n";
         else
         {
             const auto used = static_cast<double> (st.splUsed.load());
-            const auto below = settings.config.referenceSpl - used;
-            text << "Level " << juce::String (st.splNow.load(), 1) << " dB(C), EQ at " << juce::String (used, 1)
-                 << (below > 0.05 ? " (" + juce::String (below, 1) + " below the reference).\n" : " (at the reference or above).\n");
+            const auto delta = used - settings.config.referenceSpl;
+            text << "Current level " << juce::String (st.splNow.load(), 1) << " dB(C); the EQ follows "
+                 << juce::String (used, 1) << ": "
+                 << (delta < -0.05 ? minus + juce::String (-delta, 1) + " dB from the reference.\n"
+                                   : juce::String ("at the reference or above, no compensation.\n"));
             text << "Boost: low " << signedDb (st.lowGainDb.load()) << " dB (" << theme::formatHz (st.lowFreq.load()) << ")"
                  << dot << "high " << signedDb (st.highGainDb.load()) << " dB (" << theme::formatHz (st.highFreq.load()) << ")";
             if (st.hpFreq.load() > 0.0f)
                 text << dot << "high-pass " << theme::formatHz (st.hpFreq.load());
             text << ".\n";
+        }
+        // The PA's low end limits the bass boost when it starts close to the low shelf.
+        const auto limit = loud.getLowLimit(), shelf = loud.getLowShelfHz();
+        if (settings.on && limit > 0.0 && shelf > 0.0)
+        {
+            const auto allowance = roomeq::lowBoostAllowance (limit, shelf);
+            const auto most = std::min (settings.config.maxLowDb, settings.config.lowCeilingDb);
+            if (allowance < 0.995)
+                text << "Bass boost limited to " << juce::String (most * allowance, 1) << " dB: the PA's usable range starts at "
+                     << theme::formatHz (limit) << ", close to the low shelf (" << theme::formatHz (shelf) << ").\n";
         }
         if (settings.useMic && ! info.calibration.hasMic)
             text << "Mic tracking needs a calibration with the mic connected; following the plugin output.\n";
@@ -1381,7 +1427,14 @@ void AdaptiveRoomEQEditor::resized()
             };
             fullRow (loudOn, 22);
             tightRow (loudRefLabel, loudRef);
-            tightRow (loudAmountLabel, loudAmount);
+            {
+                auto r = content.removeFromTop (26);
+                loudAmountLabel.setBounds (r.removeFromLeft (120));
+                loudStrength.setBounds (r.removeFromLeft (92));
+                r.removeFromLeft (6);
+                loudAmount.setBounds (r);
+                content.removeFromTop (6);
+            }
             {
                 auto r = content.removeFromTop (26);
                 loudMaxLabel.setBounds (r.removeFromLeft (120));

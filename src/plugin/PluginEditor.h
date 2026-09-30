@@ -83,7 +83,7 @@ private:
     bool showViewOn = false;
     std::vector<juce::Component*> showControls;
     juce::TextButton showRecheckButton { "Re-check level" }, splResetButton { "Reset" };
-    juce::ToggleButton showCorrectionOn { "Correction on" }, showVoicingOn { "Voicing EQ on" }, showLoudOn { "Loudness on" },
+    juce::ToggleButton showCorrectionOn { "Correction on" }, showVoicingOn { "Voicing EQ on" }, showLoudOn { "Level comp. on" },
         showLevelMatch { "Match output level" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showCorrectionAttachment, showVoicingAttachment,
         showLoudAttachment, showLevelMatchAttachment;
@@ -97,7 +97,7 @@ private:
         static constexpr float tabFontHeight = 14.0f;
     } tabLook;
     juce::TextButton zoneTab { "Zone" }, measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" },
-        loudnessTab { "Loudness" };
+        loudnessTab { "Level comp" };
     Tab currentTab = Tab::measure;
     std::vector<juce::Component*> zoneControls, measureControls, correctControls, voicingControls, loudnessControls;
     juce::Rectangle<int> statusBounds, tipBounds, infoBounds;
@@ -155,7 +155,8 @@ private:
     int selectedBand = 0;
 
     // Loudness tab.
-    juce::ToggleButton loudOn { "Loudness compensation on" }, loudHighPass { "Protective high-pass (follows the boost)" };
+    juce::ToggleButton loudOn { "Level compensation on" }, loudHighPass { "Protective high-pass (follows the boost)" };
+    juce::ComboBox loudStrength;   // Subtle / Natural / Full: presets for Amount
     juce::Slider loudRef { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         loudAmount { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         loudMaxLow { juce::Slider::LinearBar, juce::Slider::TextBoxRight },

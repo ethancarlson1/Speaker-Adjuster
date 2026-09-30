@@ -110,11 +110,11 @@ double cWeightedLevelDbfs (const std::vector<double>& x, double fs)
     return 10.0 * std::log10 (acc / static_cast<double> (std::max<std::size_t> (x.size(), 1)) + 1e-30);
 }
 
-std::vector<double> compensationTarget (const std::vector<double>& freqs, double currentSpl, double referenceSpl)
+std::vector<double> compensationTarget (const std::vector<double>& freqs, double referenceSpl, double levelDeltaDb)
 {
-    if (currentSpl >= referenceSpl)
+    if (! (levelDeltaDb < 0.0))
         return std::vector<double> (freqs.size(), 0.0);
-    const auto now = std::max (currentSpl, 20.0);   // the contours aren't defined below 20 phon
+    const auto now = std::max (referenceSpl + levelDeltaDb, 20.0);   // the contours aren't defined below 20 phon
     auto out = iso226RelativeContour (freqs, now);
     const auto ref = iso226RelativeContour (freqs, referenceSpl);
     for (std::size_t i = 0; i < out.size(); ++i)
@@ -127,8 +127,8 @@ ShelfPlan planShelves (double referenceSpl, double fs)
     constexpr double fitDelta = 15.0;
     const auto lowGrid = geomspace (20.0, 1000.0, 60);
     const auto highGrid = geomspace (2000.0, 16000.0, 30);
-    const auto tLow = compensationTarget (lowGrid, referenceSpl - fitDelta, referenceSpl);
-    const auto tHigh = compensationTarget (highGrid, referenceSpl - fitDelta, referenceSpl);
+    const auto tLow = compensationTarget (lowGrid, referenceSpl, -fitDelta);
+    const auto tHigh = compensationTarget (highGrid, referenceSpl, -fitDelta);
 
     ShelfPlan plan;
     plan.referenceSpl = referenceSpl;
@@ -163,21 +163,33 @@ ShelfPlan planShelves (double referenceSpl, double fs)
         if (d == 0)
             continue;
         plan.lowGain[i] = fitGain (BandKind::lowShelf, plan.lowFreq, plan.lowQ,
-                                   compensationTarget (lowGrid, referenceSpl - d, referenceSpl), lowGrid, fs);
+                                   compensationTarget (lowGrid, referenceSpl, -d), lowGrid, fs);
         plan.highGain[i] = fitGain (BandKind::highShelf, plan.highFreq, plan.highQ,
-                                    compensationTarget (highGrid, referenceSpl - d, referenceSpl), highGrid, fs);
+                                    compensationTarget (highGrid, referenceSpl, -d), highGrid, fs);
     }
     return plan;
 }
 
-std::pair<double, double> shelfGains (const ShelfPlan& plan, double currentSpl, const LoudnessConfig& cfg)
+double lowBoostAllowance (double lfLimitHz, double shelfHz)
 {
-    const auto delta = plan.referenceSpl - currentSpl;
-    if (! (delta > 0.0))
+    if (! (lfLimitHz > 0.0))
+        return 1.0;
+    return std::clamp (std::log2 (shelfHz / lfLimitHz), 0.0, 1.0);
+}
+
+double maxLowBoost (const ShelfPlan& plan, const LoudnessConfig& cfg)
+{
+    return std::min (cfg.maxLowDb, cfg.lowCeilingDb) * lowBoostAllowance (cfg.lfLimitHz, plan.lowFreq);
+}
+
+std::pair<double, double> shelfGains (const ShelfPlan& plan, double levelDeltaDb, const LoudnessConfig& cfg)
+{
+    const auto drop = -levelDeltaDb;
+    if (! (drop > 0.0))
         return { 0.0, 0.0 };
-    const auto low = interpGain (plan.lowGain, delta) * cfg.amount;
-    const auto high = interpGain (plan.highGain, delta) * cfg.amount;
-    return { std::min ({ low, cfg.maxLowDb, cfg.lowCeilingDb }), std::min (high, cfg.maxHighDb) };
+    const auto low = interpGain (plan.lowGain, drop) * cfg.amount;
+    const auto high = interpGain (plan.highGain, drop) * cfg.amount;
+    return { std::min (low, maxLowBoost (plan, cfg)), std::min (high, cfg.maxHighDb) };
 }
 
 std::array<Band, 2> trackingHighpass (double baseHz, double lowGainDb, const LoudnessConfig& cfg)

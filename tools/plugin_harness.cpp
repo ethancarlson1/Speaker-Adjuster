@@ -1145,10 +1145,20 @@ int main (int argc, char** argv)
         pump (proc);
     entries = engine.getEntries();
 
-    std::cout << "Loudness compensation\n";
+    std::cout << "Level compensation\n";
     auto& loud = proc.getLoudness();
     using Step = LoudnessController::Step;
     const auto& status = proc.getLoudnessStatus();
+    {
+        const auto shown = engine.getDisplay();
+        for (int i = 0; i < 3; ++i)
+            pump (proc);
+        const auto settings = proc.getLoudnessSettings();
+        check (juce::exactlyEqual (settings.config.amount, 0.75), "Amount defaults to 75% (Natural)");
+        check (shown != nullptr && settings.config.lfLimitHz > 20.0
+                   && std::abs (settings.config.lfLimitHz - shown->summary.usable.first) < 1e-9,
+               "the PA's measured low end (" + juce::String (settings.config.lfLimitHz, 1) + " Hz) reaches the compensation");
+    }
     const auto correctionAndVoicing = [&]
     {
         auto bands = engine.getApplied();
@@ -1264,7 +1274,7 @@ int main (int argc, char** argv)
         setParam (proc, "loudOn", 1.0f);
         show.play (&music, 2.0);
         const auto plan = roomeq::planShelves (95.0, fs);
-        const auto want = roomeq::shelfGains (plan, status.splUsed.load(), proc.getLoudnessSettings().config);
+        const auto want = roomeq::shelfGains (plan, status.splUsed.load() - plan.referenceSpl, proc.getLoudnessSettings().config);
         check (status.lowGainDb.load() > 4.0 && std::abs (status.lowGainDb.load() - want.first) < 0.01
                    && std::abs (status.highGainDb.load() - want.second) < 0.01,
                "about 12 dB below the reference: low " + juce::String (status.lowGainDb.load(), 2) + " dB, high "
@@ -1463,6 +1473,28 @@ int main (int argc, char** argv)
         ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
         writeSnapshot (*editor, stem + "-voicing.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::loudness);
+        {
+            // The strength presets set Amount, and follow it.
+            juce::ComboBox* strength = nullptr;
+            for (auto* c : editor->getChildren())
+                if (auto* box = dynamic_cast<juce::ComboBox*> (c); box != nullptr && box->getItemText (0) == "Subtle")
+                    strength = box;
+            check (strength != nullptr && strength->getText() == "Natural", "strength shows Natural at 75%");
+            if (strength != nullptr)
+            {
+                strength->setSelectedId (3, juce::sendNotificationSync);   // Full, as a click does
+                const auto full = proc.getLoudnessSettings().config.amount;
+                setParam (proc, "loudAmount", 60.0f);
+                for (int i = 0; i < 3; ++i)
+                    pump (proc);
+                check (juce::exactlyEqual (full, 1.0) && strength->getSelectedId() == 0 && strength->getTextWhenNothingSelected() == "Custom",
+                       "Full sets 100%; 60% reads Custom");
+                setParam (proc, "loudAmount", 75.0f);
+                for (int i = 0; i < 40 && strength->getSelectedId() != 2; ++i)   // the editor's timer catches up
+                    pump (proc);
+                check (strength->getText() == "Natural", "back to 75%: Natural");
+            }
+        }
         writeSnapshot (*editor, stem + "-loudness.png");
         ours->setShowView (true);
         for (int i = 0; i < 5; ++i)

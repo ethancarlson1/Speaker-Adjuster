@@ -14,7 +14,7 @@ bool sameSettings (const LoudnessSettings& a, const LoudnessSettings& b) noexcep
     const auto& y = b.config;
     return a.on == b.on && a.useMic == b.useMic && same (a.hpBaseHz, b.hpBaseHz) && same (x.referenceSpl, y.referenceSpl)
            && same (x.amount, y.amount) && same (x.maxLowDb, y.maxLowDb) && same (x.maxHighDb, y.maxHighDb)
-           && same (x.speedS, y.speedS) && x.hpTrack == y.hpTrack;
+           && same (x.speedS, y.speedS) && x.hpTrack == y.hpTrack && same (x.lfLimitHz, y.lfLimitHz);
 }
 } // namespace
 
@@ -45,7 +45,7 @@ void LoudnessStage::updateTargets (const LoudnessSettings& settings, bool suspen
     {
         if (model.hasPlan && model.calibrated && deadband.hasLevel())
         {
-            const auto [low, high] = roomeq::shelfGains (model.plan, deadband.level(), cfg);
+            const auto [low, high] = roomeq::shelfGains (model.plan, deadband.level() - model.plan.referenceSpl, cfg);
             lowGain = low;
             highGain = high;
         }

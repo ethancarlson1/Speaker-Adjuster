@@ -240,14 +240,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout AdaptiveRoomEQProcessor::cre
         layout.add (std::move (group));
     }
 
-    // Loudness compensation.
-    auto loud = std::make_unique<AudioProcessorParameterGroup> ("loudness", "Loudness", "|");
-    loud->addChild (std::make_unique<AudioParameterBool> (ParamIds::loudOn, "Loudness compensation", true));
+    // Level compensation (the IDs keep their original names so saved sessions still load).
+    auto loud = std::make_unique<AudioProcessorParameterGroup> ("loudness", "Level compensation", "|");
+    loud->addChild (std::make_unique<AudioParameterBool> (ParamIds::loudOn, "Level compensation", true));
     loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudRef, "Reference level",
                                                            NormalisableRange<float> (60.0f, 110.0f, 0.5f), 95.0f,
                                                            AudioParameterFloatAttributes().withLabel ("dB(C)")));
-    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudAmount, "Loudness amount",
-                                                           NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
+    loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudAmount, "Compensation amount",
+                                                           NormalisableRange<float> (0.0f, 100.0f, 1.0f), 75.0f,
                                                            AudioParameterFloatAttributes().withLabel ("%")));
     loud->addChild (std::make_unique<AudioParameterFloat> (ParamIds::loudMaxLow, "Max low boost",
                                                            NormalisableRange<float> (0.0f, 12.0f, 0.5f), 8.0f, db));
@@ -296,6 +296,7 @@ LoudnessSettings AdaptiveRoomEQProcessor::getLoudnessSettings() const noexcept
     s.useMic = p.source->load() > 0.5f;
     s.hpBaseHz = loudnessControl.getHighpassBase();
     auto& c = s.config;
+    c.lfLimitHz = loudnessControl.getLowLimit();
     c.referenceSpl = p.reference->load();
     c.amount = juce::jlimit (0.0, 1.0, static_cast<double> (p.amount->load()) / 100.0);
     c.maxLowDb = p.maxLow->load();
@@ -689,7 +690,7 @@ juce::Result AdaptiveRoomEQProcessor::clearRoomData()
     if (engine.getActivity() != MeasurementEngine::Activity::idle)
         return juce::Result::fail ("Wait for the measurement to finish (or stop it), then clear");
     if (const auto step = loudnessControl.getStep(); (step != Step::idle && step != Step::awaitingSpl) || loudnessControl.isAnalysing())
-        return juce::Result::fail ("Wait for the loudness calibration or re-check to finish (or stop it), then clear");
+        return juce::Result::fail ("Wait for the level calibration or re-check to finish (or stop it), then clear");
     engine.clearAll();
     loudnessControl.clearCalibration();
     return juce::Result::ok();

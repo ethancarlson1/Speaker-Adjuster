@@ -37,14 +37,33 @@ std::vector<double> run (LevelTracker& t, const std::vector<float>& x, int block
 }
 } // namespace
 
-TEST_CASE ("ISO 226 contours match the published values")
+// ISO 226:2003 contours at the standard's 29 frequencies (20 Hz-12.5 kHz), in dB
+// SPL: the standard's formula with its Table 1 parameters, to two decimals (the
+// same as prototype/tests/test_loudness.py). They agree with the widely used
+// public implementations of the standard. If these change, the contour math
+// changed: update them only on purpose.
+TEST_CASE ("ISO 226:2003 contours match the standard's")
 {
+    const std::vector<double> phon40 { 99.85, 93.94, 88.17, 82.63, 77.78, 73.08, 68.48, 64.37, 60.59, 56.70, 53.41, 50.40,
+                                       47.58, 44.98, 43.05, 41.34, 40.06, 40.01, 41.82, 42.51, 39.23, 36.51, 35.61, 36.65,
+                                       40.01, 45.83, 51.80, 54.28, 51.49 };
+    const std::vector<double> phon80 { 118.99, 114.23, 109.65, 105.34, 101.72, 98.36, 95.17, 92.48, 90.09, 87.82, 85.92,
+                                       84.31, 82.89, 81.68, 80.86, 80.17, 79.67, 80.01, 82.48, 83.74, 80.59, 77.88, 77.07,
+                                       78.31, 81.62, 86.81, 91.41, 91.74, 85.41 };
+    REQUIRE (iso226Freqs().size() == 29);
+    const auto at40 = iso226ContourAtTable (40.0), at80 = iso226ContourAtTable (80.0);
+    for (std::size_t i = 0; i < 29; ++i)
+    {
+        CAPTURE (iso226Freqs()[i]);
+        CHECK (std::abs (at40[i] - phon40[i]) < 0.005);
+        CHECK (std::abs (at80[i] - phon80[i]) < 0.005);
+    }
     const auto at = [] (double f, double phon) { return iso226Contour ({ f }, phon).front(); };
-    CHECK (at (20.0, 40.0) == doctest::Approx (99.85).epsilon (0.0006));
-    CHECK (at (20.0, 60.0) == doctest::Approx (109.51).epsilon (0.0005));
-    CHECK (at (20.0, 80.0) == doctest::Approx (118.99).epsilon (0.0005));
+    CHECK (at (std::sqrt (100.0 * 125.0), 40.0) == doctest::Approx ((64.37 + 60.59) / 2).epsilon (0.0002));   // log-f interpolation
+    CHECK (at (10.0, 40.0) == doctest::Approx (99.85).epsilon (0.0001));                                      // held outside
+    CHECK (at (16000.0, 40.0) == doctest::Approx (51.49).epsilon (0.0001));
     for (double phon : { 20.0, 40.0, 60.0, 80.0, 90.0 })
-        CHECK (at (1000.0, phon) == doctest::Approx (phon).epsilon (0.002));
+        CHECK (std::abs (at (1000.0, phon) - phon) < 0.02);   // 1 kHz defines the phon
 }
 
 TEST_CASE ("C-weighting is within IEC 61672 class 1")
@@ -97,23 +116,48 @@ TEST_CASE ("shelf plan follows the ISO 226 difference; limits and ceiling")
         const auto fit = responseDb ({ { BandKind::lowShelf, plan.lowFreq, plan.lowGain[i], plan.lowQ },
                                        { BandKind::highShelf, plan.highFreq, plan.highGain[i], plan.highQ } },
                                      grid, fs);
-        const auto target = compensationTarget (grid, 95.0 - drop, 95.0);
+        const auto target = compensationTarget (grid, 95.0, -drop);
         for (std::size_t k = 0; k < grid.size(); ++k)
             CHECK (std::abs (fit[k] - target[k]) < 0.9);
     }
     LoudnessConfig cfg;
-    CHECK (shelfGains (plan, 95.0, cfg) == std::pair<double, double> { 0.0, 0.0 });
-    CHECK (shelfGains (plan, 100.0, cfg) == std::pair<double, double> { 0.0, 0.0 });
-    CHECK (shelfGains (plan, 65.0, cfg) == std::pair<double, double> { cfg.maxLowDb, cfg.maxHighDb });
+    CHECK (shelfGains (plan, 0.0, cfg) == std::pair<double, double> { 0.0, 0.0 });
+    CHECK (shelfGains (plan, 5.0, cfg) == std::pair<double, double> { 0.0, 0.0 });
+    CHECK (shelfGains (plan, -30.0, cfg) == std::pair<double, double> { cfg.maxLowDb, cfg.maxHighDb });
     cfg.maxLowDb = 20.0;
-    CHECK (shelfGains (plan, 55.0, cfg).first == cfg.lowCeilingDb);
+    CHECK (shelfGains (plan, -40.0, cfg).first == cfg.lowCeilingDb);
     LoudnessConfig half;
     half.amount = 0.5;
-    const auto full = shelfGains (plan, 88.0, LoudnessConfig {});
-    CHECK (shelfGains (plan, 88.0, half).first == doctest::Approx (full.first / 2));
+    const auto full = shelfGains (plan, -7.0, LoudnessConfig {});
+    CHECK (shelfGains (plan, -7.0, half).first == doctest::Approx (full.first / 2));
+
+    // The same drop asks for nearly the same change from any usual reference: the level change sets it.
+    const auto from95 = compensationTarget ({ 31.5 }, 95.0, -8.0).front(), from80 = compensationTarget ({ 31.5 }, 80.0, -8.0).front();
+    CHECK (from80 == doctest::Approx (from95).epsilon (0.1));
 
     const auto hp = trackingHighpass (45.0, LoudnessConfig {}.maxLowDb, LoudnessConfig {});
     CHECK (hp[0].freq == doctest::Approx (45.0 * std::sqrt (2.0)));
+}
+
+TEST_CASE ("the low boost shrinks as the PA's low end nears the low shelf")
+{
+    const auto plan = planShelves (95.0, fs);
+    const auto shelf = plan.lowFreq;
+    CHECK (lowBoostAllowance (0.0, shelf) == 1.0);   // not measured
+    CHECK (lowBoostAllowance (shelf / 4.0, shelf) == 1.0);
+    CHECK (lowBoostAllowance (shelf / 2.0, shelf) == doctest::Approx (1.0));
+    CHECK (lowBoostAllowance (shelf / std::sqrt (2.0), shelf) == doctest::Approx (0.5));
+    CHECK (lowBoostAllowance (shelf, shelf) == 0.0);
+    CHECK (lowBoostAllowance (2.0 * shelf, shelf) == 0.0);
+
+    LoudnessConfig deep, smallTop, noLows;
+    deep.lfLimitHz = 35.0;
+    smallTop.lfLimitHz = shelf / std::sqrt (2.0);
+    noLows.lfLimitHz = shelf * 1.2;
+    CHECK (shelfGains (plan, -30.0, deep) == std::pair<double, double> { deep.maxLowDb, deep.maxHighDb });
+    CHECK (shelfGains (plan, -30.0, smallTop).first == doctest::Approx (smallTop.maxLowDb / 2.0));
+    CHECK (shelfGains (plan, -30.0, noLows) == std::pair<double, double> { 0.0, noLows.maxHighDb });
+    CHECK (shelfGains (plan, -3.0, smallTop) == shelfGains (plan, -3.0, LoudnessConfig {}));   // only the ceiling moves
 }
 
 double secondsUntilWithin (const std::vector<double>& est, double target, double db)

@@ -1,12 +1,29 @@
-"""ISO 226:2003 equal-loudness contours.
+"""ISO 226:2003 normal equal-loudness-level contours.
+
+Revision: ISO 226:2003 (second edition). The current edition is ISO
+226:2023; its parameters aren't encoded here.
 
 Lp(f, Ln) is the sound pressure level at frequency f that sounds as loud as
-a 1 kHz tone at Ln dB (Ln phon). The standard tabulates three parameters at
-29 frequencies from 20 Hz to 12.5 kHz; between them the contour is
-interpolated in log frequency, and beyond 12.5 kHz it is held (the standard
-stops there). Valid for 20-90 phon (20-80 phon above 4 kHz); outside that
-the formula is used as is, which is what loudness compensation needs to stay
-smooth.
+a 1 kHz tone at Ln dB (Ln phon), for pure tones heard frontally in a free
+field by otologically normal listeners aged 18-25.
+
+How it's encoded:
+- The three parameters of Table 1 (alpha_f, L_U, T_f) at the standard's 29
+  frequencies, 20 Hz-12.5 kHz, typed from the table.
+- Lp is the standard's formula (clause 4.1) evaluated at those frequencies,
+  so the contours are exactly the standard's at its frequencies. The tests
+  pin the 40 and 80 phon contours to two decimals; they agree with the
+  widely used public implementations of the same formula.
+
+Approximations and assumptions:
+- Between the table frequencies the contour is interpolated linearly in log
+  frequency; below 20 Hz and above 12.5 kHz it's held at the end values (the
+  standard stops there).
+- The formula is specified for 20-90 phon (20-80 phon from 5 kHz up).
+  Outside that it's used as is, which keeps loudness compensation smooth;
+  the compensation clamps anything below 20 phon to 20.
+- At 1 kHz the formula gives Ln to within 0.02 dB, not exactly; the
+  relative contours subtract their own 1 kHz value, so that doesn't matter.
 """
 
 from __future__ import annotations

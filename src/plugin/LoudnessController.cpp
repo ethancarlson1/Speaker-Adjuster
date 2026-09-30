@@ -99,7 +99,7 @@ juce::Result LoudnessController::startCalibration()
 {
     const auto env = environment();
     if (! env.available)
-        return juce::Result::fail ("Loudness compensation runs in the plugin inside your DAW, so calibrate it there.");
+        return juce::Result::fail ("Level compensation runs in the plugin inside your DAW, so calibrate it there.");
     if (env.fs <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
     if (step != Step::idle && step != Step::awaitingSpl)
@@ -143,7 +143,7 @@ juce::Result LoudnessController::startMicCalibration (double splOfCalibrator)
 {
     const auto env = environment();
     if (! env.available)
-        return juce::Result::fail ("Loudness compensation runs in the plugin inside your DAW, so calibrate it there.");
+        return juce::Result::fail ("Level compensation runs in the plugin inside your DAW, so calibrate it there.");
     if (env.fs <= 0.0)
         return juce::Result::fail ("Audio isn't running yet");
     if (! env.micConnected || ! env.micSignal)
@@ -168,7 +168,7 @@ juce::Result LoudnessController::startRecheck()
 {
     const auto env = environment();
     if (! env.available)
-        return juce::Result::fail ("Loudness compensation runs in the plugin inside your DAW");
+        return juce::Result::fail ("Level compensation runs in the plugin inside your DAW");
     if (! getInfo().canRecheck)
         return juce::Result::fail ("Calibrate with the mic connected first: the re-check compares what the mic hears "
                                    "now with what it heard then");
@@ -263,7 +263,7 @@ void LoudnessController::clearCalibration()
         calibratedAt = recheckedAt = 0;
         recheckChangeDb = 0.0;
     }
-    status = "Level calibration cleared: loudness compensation stays flat until you calibrate again";
+    status = "Level calibration cleared: level compensation stays flat until you calibrate again";
     publishModel();
     sendChangeMessage();
 }
@@ -296,10 +296,16 @@ void LoudnessController::update()
         modelDirty = true;
     }
 
-    auto base = 40.0;
-    if (const auto d = engine.getDisplay(); d != nullptr && d->proposal)
-        base = juce::jlimit (20.0, 200.0, d->proposal->fitRange.first);
+    auto base = 40.0, lowLimit = 0.0;
+    if (const auto d = engine.getDisplay(); d != nullptr)
+    {
+        if (d->proposal)
+            base = juce::jlimit (20.0, 200.0, d->proposal->fitRange.first);
+        if (d->summary.nGood > 0 && d->summary.usable.first > 0.0)
+            lowLimit = d->summary.usable.first;   // where the measured response is 10 dB down at the low end
+    }
     hpBase.store (base, std::memory_order_relaxed);
+    lfLimit.store (lowLimit, std::memory_order_relaxed);
 
     // Stop recording if what's being recorded changed under it.
     if (stage.isTapBusy())

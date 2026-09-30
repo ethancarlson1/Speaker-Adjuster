@@ -45,12 +45,12 @@ def plot_contours_and_shelves():
     ax2.axhline(0, color=AXIS, lw=0.8)
     ax2.axhspan(-20, 0, color=WASH, lw=0, zorder=0)
     for drop, color in zip((5, 10, 15, 20), shades):
-        target = loudness.compensation_target(f, REF - drop, REF)
+        target = loudness.compensation_target(f, REF, -drop)
         low = float(np.interp(drop, PLAN.deltas, PLAN.low_gain))
         high = float(np.interp(drop, PLAN.deltas, PLAN.high_gain))
         ax2.plot(f, target, color=color, lw=2.0, label=f"{drop} dB below: ISO 226 difference")
         ax2.plot(f, filters.response_db(stage_bands(low, high), f, FS), color=color, lw=1.2, ls=(0, (4, 3)))
-    low, high = loudness.shelf_gains(PLAN, REF - 20, CFG)
+    low, high = loudness.shelf_gains(PLAN, -20.0, CFG)
     ax2.plot(f, filters.response_db(stage_bands(low, high), f, FS), color=ORANGE, lw=2.6,
              label=f"20 dB below, as applied (max {CFG.max_low_db:g} / {CFG.max_high_db:g} dB)")
     ax2.set_ylim(-2, 12)
@@ -112,7 +112,7 @@ def plot_tracking():
             est_mic.append(cal.spl_from_mic(mic_tr.estimate) if mic_tr.estimate is not None else np.nan)
             seg = y[max(0, i - int(0.4 * FS)):i + 1]
             momentary.append(cal.spl_from_output(10 * np.log10(np.mean(seg ** 2) + 1e-30)) if len(seg) > 10 else np.nan)
-            low, high = loudness.shelf_gains(PLAN, held_spl, CFG) if np.isfinite(held_spl) else (0.0, 0.0)
+            low, high = loudness.shelf_gains(PLAN, held_spl - REF, CFG) if np.isfinite(held_spl) else (0.0, 0.0)
             lows.append(low)
             highs.append(high)
     times = np.array(times) / 60.0
@@ -166,7 +166,7 @@ def plot_limits_and_highpass():
     shades = ["#9ec5f2", "#5f9ee8", BLUE, "#16427f"]
     ax.axhline(0, color=AXIS, lw=0.8)
     for drop, color in zip((5, 10, 15, 20), shades):
-        low, high = loudness.shelf_gains(PLAN, REF - drop, hp_cfg)
+        low, high = loudness.shelf_gains(PLAN, -drop, hp_cfg)
         bands = loudness.loudness_bands(PLAN, low, high, hp_cfg, base)
         ax.plot(f, filters.response_db(bands, f, FS), color=color, lw=2.0,
                 label=f"{drop} dB below: HP at {bands[2].freq:.0f} Hz")
@@ -181,8 +181,8 @@ def plot_limits_and_highpass():
     drops = np.linspace(0, 40, 161)
     fitted_low = np.interp(drops, PLAN.deltas, PLAN.low_gain)
     fitted_high = np.interp(drops, PLAN.deltas, PLAN.high_gain)
-    applied = np.array([loudness.shelf_gains(PLAN, REF - d, CFG) for d in drops])
-    gentle = np.array([loudness.shelf_gains(PLAN, REF - d, loudness.LoudnessConfig(amount=0.7)) for d in drops])
+    applied = np.array([loudness.shelf_gains(PLAN, -d, CFG) for d in drops])
+    gentle = np.array([loudness.shelf_gains(PLAN, -d, loudness.LoudnessConfig(amount=0.7)) for d in drops])
     ax2.plot(drops, fitted_low, color=CONTEXT, lw=1.4, label="Low, unlimited (ISO 226)")
     ax2.plot(drops, fitted_high, color=CONTEXT, lw=1.4, ls=(0, (4, 3)), label="High, unlimited")
     ax2.plot(drops, applied[:, 0], color=BLUE, lw=2.4, label=f"Low as applied (max {CFG.max_low_db:g} dB)")
