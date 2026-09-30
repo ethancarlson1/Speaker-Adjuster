@@ -709,7 +709,7 @@ void AdaptiveRoomEQProcessor::publishZone()
     z.latencyMs = engine.getSystemLatencyMs();
     for (const auto& e : engine.getEntries())
         if (! e.verify && ! e.capture->excluded)
-            z.measurements.push_back ({ e.id, juce::String::fromUTF8 (e.capture->name.c_str()), e.arrival });
+            z.measurements.push_back ({ e.id, juce::String::fromUTF8 (e.capture->name.c_str()), e.arrival, e.capture });
     zoneRegistry->publish (z);
 }
 
@@ -724,6 +724,16 @@ void AdaptiveRoomEQProcessor::setZoneDelayMs (double ms)
     {
         param->beginChangeGesture();
         param->setValueNotifyingHost (param->convertTo0to1 (static_cast<float> (juce::jlimit (0.0, ZoneStage::maxDelayMs, ms))));
+        param->endChangeGesture();
+    }
+}
+
+void AdaptiveRoomEQProcessor::setZonePolarity (bool invert)
+{
+    if (auto* param = parameters.getParameter (ParamIds::polarity.getParamID()))
+    {
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (invert ? 1.0f : 0.0f);
         param->endChangeGesture();
     }
 }

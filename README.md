@@ -124,6 +124,22 @@ Some engineers add a few milliseconds more so the mains arrive first and the sou
 
 **Instances the plugin can't see.** Instances share what they measured when the host runs them in the same process, which most do. Hosts that run each plugin separately keep them apart. Then choose **Type the main arrival** and type the mains' arrival as their instance showed it.
 
+**Lining a sub up with the mains.** A sub's impulse response has a broad peak, so its arrival says little. A Subs zone lines up by phase instead:
+1. Put the mic where the mains and the sub overlap. That's usually a typical listening spot, not right against either box.
+2. Sweep the mains there, in the mains' instance (with the sub muted).
+3. Sweep the sub there, in the sub's instance (with the mains muted).
+4. Pick the mains' instance, **Their sweep** and **This sub's**. Pink noise and music don't keep the phase this needs, so only sweeps are listed.
+5. It finds the crossover region: where the two are within 10 dB of each other around the frequency where they cross, in 30–300 Hz (1/6-octave smoothed).
+6. It predicts the sum there for every sub delay from −20 to +20 ms (0.01 ms steps), in both polarities. It suggests the loudest one, e.g. "Crossover 71–135 Hz (crossing at 82 Hz). Suggested: delay 10.89 ms, polarity normal. Over the crossover: 1.6 dB louder than now, 1.3 dB short of a perfect sum."
+7. **Apply** sets the sub's **Delay** and **Invert polarity**.
+
+How it chooses and what it tells you:
+- **Near-ties:** when choices sum within 0.25 dB of each other (half a period apart with the polarity flipped, or a whole period apart), it prefers a delay the sub can apply itself, then normal polarity, then the smallest delay.
+- **Sub arriving late:** if the best answer is a negative delay, it says to delay the mains by that much instead (and anything lined up with them).
+- **Confidence:** medium under 20 dB SNR over the crossover, low under 10 dB. Also medium when the two overlap over less than a third of an octave, or when a delay a whole period away sums within 0.3 dB (the overlap doesn't pin the timing down).
+- **What it uses:** each sweep keeps its complex response from 20 Hz to 1 kHz. It's taken from the start of the loop to 500 ms after the peak, so it holds the direct sound even when the room modes build up to a louder peak later. The response is saved with the session.
+- **What it needs:** the mains' instance in this DAW (a response can't be typed in). When both instances have a measured system latency it's taken off each; otherwise the two are assumed to share an interface.
+
 ## Correcting (Correct tab)
 
 1. Pick a **Target**:
@@ -357,6 +373,7 @@ The harness drives the real processor against a simulated room. It checks:
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;
+- sub alignment: the mains (high-passed at 90 Hz, 1.5 ms of processing, 9 m) and a sub (low-passed at 90 Hz, 6 m) swept at the same spot; the sub's panel suggesting about 10.9 ms, normal polarity; then the mains' sweep fed through the sub instance too, so the two are measured together as they were and with the suggestion applied: the measured gain over the crossover matches the prediction (+1.62 dB against +1.64 dB), and the sub's response is saved with the session;
 - delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.
 

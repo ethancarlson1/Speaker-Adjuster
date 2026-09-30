@@ -8,6 +8,8 @@
 //   roomeq_cli loudness-plan --fs 48000 --ref 95 [--delta -8 --lf-limit 90 --amount 0.75]
 //   roomeq_cli track --fs 48000 --in output.f64 [--mic mic.f64] [--speed 5] [--block 512]
 //   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
+//   roomeq_cli align-sub --fs 48000 --duration 5 --position MAINS=a.f64,b.f64 --position SUB=c.f64,d.f64
+//                        [--main-delay 0 --main-invert 0 --sub-delay 0 --sub-invert 0]
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
 //                      --position P1=a.f64,b.f64 [--position ...]
 //                      [--program P2=reference.f64:mic.f64] [--exclude P1] [--band-lo 250 --band-hi 4000]
@@ -102,6 +104,11 @@ std::string list (const std::vector<T>& items, F&& f)
 
 std::string numbers (const std::vector<double>& v) { return list (v, num); }
 
+std::string complexes (const std::vector<roomeq::cplx>& v)
+{
+    return list (v, [] (const roomeq::cplx& z) { return "[" + num (z.real()) + "," + num (z.imag()) + "]"; });
+}
+
 std::string captureJson (const roomeq::Capture& c)
 {
     const auto band = [] (const roomeq::BandResult& b)
@@ -118,6 +125,7 @@ std::string captureJson (const roomeq::Capture& c)
     return std::string ("{") + "\"name\":" + str (c.name) + ",\"kind\":" + str (c.kind)
            + ",\"excluded\":" + (c.excluded ? "true" : "false")
            + ",\"delays_ms\":" + numbers (c.delaysMs)
+           + ",\"low\":" + (c.low.empty() ? std::string ("null") : complexes (c.low))
            + ",\"arrival\":{\"ms\":" + num (arrival.ms) + ",\"confidence\":" + str (roomeq::confidenceLabel (arrival.confidence))
            + ",\"reasons\":" + list (arrival.reasons, str) + "}"
            + ",\"drift_ppm\":" + (std::isnan (c.driftPpm) ? std::string ("null") : num (c.driftPpm))
@@ -279,6 +287,48 @@ int run (int argc, char** argv)
         std::cout << "{\"bands\":"
                   << numbers (roomeq::transferBandsDb (readF64 (args.values.at ("out")), readF64 (args.values.at ("mic")), cfg.fs))
                   << "}\n";
+        return 0;
+    }
+    if (args.command == "align-sub")
+    {
+        if (args.positions.size() != 2)
+            throw std::runtime_error ("align-sub needs two --position: the mains, then the sub");
+        std::vector<roomeq::Capture> caps;
+        for (const auto& p : args.positions)
+        {
+            const auto [name, files] = nameAndSpec (p);
+            std::vector<std::vector<double>> recordings;
+            for (const auto& f : split (files, ','))
+                recordings.push_back (readF64 (f));
+            roomeq::AnalysisConfig acfg;
+            if (caps.size() == 1)
+            {
+                acfg.grading.passbandLo = 40.0;
+                acfg.grading.passbandHi = 100.0;
+            }
+            caps.push_back (roomeq::analyzeSweepCapture (name, recordings, cfg, acfg));
+        }
+        const auto main = roomeq::lowResponse (caps[0]), sub = roomeq::lowResponse (caps[1]);
+        roomeq::SubSettings s;
+        s.mainDelayMs = args.get ("main-delay", 0.0);
+        s.mainInvert = args.get ("main-invert", 0.0) != 0.0;
+        s.subDelayMs = args.get ("sub-delay", 0.0);
+        s.subInvert = args.get ("sub-invert", 0.0) != 0.0;
+        std::string region = "null";
+        if (const auto r = roomeq::crossoverRegion (main, sub))
+        {
+            s.mainSnrDb = roomeq::bandSnr (caps[0].grade.bands, r->first, r->second);
+            s.subSnrDb = roomeq::bandSnr (caps[1].grade.bands, r->first, r->second);
+            region = "[" + num (r->first) + "," + num (r->second) + "]";
+        }
+        const auto a = roomeq::alignSub (main, sub, s);
+        std::cout << "{\"region\":" << region << ",\"main_snr_db\":" << num (s.mainSnrDb) << ",\"sub_snr_db\":" << num (s.subSnrDb)
+                  << ",\"ok\":" << (a.ok ? "true" : "false") << ",\"region_hz\":[" << num (a.regionLoHz) << "," << num (a.regionHiHz)
+                  << "],\"crossing_hz\":" << num (a.crossingHz) << ",\"delay_ms\":" << num (a.delayMs)
+                  << ",\"invert\":" << (a.invert ? "true" : "false") << ",\"summed_db\":" << num (a.summedDb)
+                  << ",\"improvement_db\":" << num (a.improvementDb) << ",\"efficiency_db\":" << num (a.efficiencyDb)
+                  << ",\"confidence\":" << str (roomeq::confidenceLabel (a.confidence))
+                  << ",\"reasons\":" << list (a.reasons, str) << ",\"note\":" << str (a.note) << "}\n";
         return 0;
     }
     if (args.command != "analyze")

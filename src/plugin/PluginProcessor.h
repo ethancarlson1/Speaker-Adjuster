@@ -126,6 +126,7 @@ public:
     // (no mic check: nothing is plugged in until it plays).
     juce::Result startLatencyMeasurement();
     void setZoneDelayMs (double ms);                              // an engineer-approved alignment suggestion
+    void setZonePolarity (bool invert);                           // ... and a sub's polarity
 
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now

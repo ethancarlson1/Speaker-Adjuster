@@ -35,11 +35,23 @@ struct Capture
     std::vector<std::vector<double>> repeatPowers;
     std::vector<double> delaysMs;
     std::vector<double> ir;                   // windowed, aligned, averaged IR (sweeps only)
+    std::vector<cplx> low;                    // complex response on lfGrid() from the loop start (sweeps only)
     bool excluded = false;
     double driftPpm = std::numeric_limits<double>::quiet_NaN();   // program: output/mic clock difference corrected (0 if none)
 };
 
 std::vector<double> inBand (const std::vector<double>& freqs, double f1, double f2);
+
+// Where a sweep keeps its complex response (sub alignment): 20 Hz-1 kHz, 24 points per octave.
+const std::vector<double>& lfGrid();
+
+// The complex response on lfGrid() of h from the loop start (time 0) to the end
+// of the analysis window after the arrival, tapered like it. Everything the
+// speaker sent is in it, however late the strongest peak: a sub's direct sound
+// can come tens of ms before the room modes build up to the peak the analysis
+// window is placed on.
+std::vector<cplx> lowFrequencyResponse (const std::vector<double>& h, std::size_t loopStart, std::size_t arrival,
+                                        double fs, const WindowConfig& window = {});
 
 struct WindowedResponse
 {

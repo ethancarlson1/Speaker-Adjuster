@@ -27,6 +27,40 @@ std::vector<double> inBand (const std::vector<double>& freqs, double f1, double 
     return w;
 }
 
+const std::vector<double>& lfGrid()
+{
+    static const auto grid = logFreqGrid (20.0, 1000.0, 24);
+    return grid;
+}
+
+std::vector<cplx> lowFrequencyResponse (const std::vector<double>& h, std::size_t loopStart, std::size_t arrival,
+                                        double fs, const WindowConfig& window)
+{
+    const auto stop = std::min (h.size(), arrival + static_cast<std::size_t> (std::llround (window.post * fs)));
+    std::vector<double> x (h.begin() + static_cast<std::ptrdiff_t> (std::min (loopStart, stop)),
+                           h.begin() + static_cast<std::ptrdiff_t> (stop));
+    const auto nb = std::min (x.size(), std::max<std::size_t> (1, static_cast<std::size_t> (std::llround (window.post * fs * window.taperPost))));
+    for (std::size_t i = 0; i < nb; ++i)
+        x[x.size() - nb + i] *= 0.5 * (1.0 + std::cos (pi * static_cast<double> (i) / static_cast<double> (nb)));
+
+    std::vector<cplx> out;
+    out.reserve (lfGrid().size());
+    for (const auto f : lfGrid())
+    {
+        // A rotating phasor, reset exactly every 4096 samples so rounding can't build up.
+        const auto w = -2.0 * pi * f / fs;
+        const auto step = std::polar (1.0, w);
+        cplx acc {}, z {};
+        for (std::size_t n = 0; n < x.size(); ++n)
+        {
+            z = n % 4096 == 0 ? std::polar (1.0, w * static_cast<double> (n)) : z * step;
+            acc += x[n] * z;
+        }
+        out.push_back (acc);
+    }
+    return out;
+}
+
 WindowedResponse windowedResponse (const std::vector<double>& ir, double fs, const AnalysisConfig& cfg)
 {
     const auto win = irWindow (cfg.window, fs);
@@ -59,6 +93,7 @@ Capture analyzeSweepCapture (const std::string& name, const std::vector<std::vec
 
     std::vector<std::vector<double>> segments;
     std::vector<std::vector<double>> noiseSpectra;
+    std::vector<std::vector<cplx>> lows;
     Capture c;
     c.name = name;
     c.kind = "sweep";
@@ -76,6 +111,7 @@ Capture analyzeSweepCapture (const std::string& name, const std::vector<std::vec
         for (std::size_t i = 0; i < nw; ++i)
             seg[i] = dec.h[start + i] * win.w[i];
         segments.push_back (seg);
+        lows.push_back (lowFrequencyResponse (dec.h, dec.zero + sweepCfg.nPreroll(), arrival, fs, cfg.window));
 
         // Noise: same window, as late as the tail allows. IR time t (from sweep
         // start) is valid at every frequency only up to t = tail.
@@ -127,6 +163,10 @@ Capture analyzeSweepCapture (const std::string& name, const std::vector<std::vec
     c.weight = inBand (freqs, sweepCfg.f1, sweepCfg.f2);
     c.ir = irfft (H, nfft);
     c.ir.resize (nw);
+    c.low.assign (lfGrid().size(), cplx {});
+    for (const auto& l : lows)
+        for (std::size_t k = 0; k < l.size(); ++k)
+            c.low[k] += l[k] / n;
     return c;
 }
 

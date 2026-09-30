@@ -20,7 +20,7 @@ const juce::Identifier applied { "Applied" }, previous { "Previous" }, appliedId
 const juce::Identifier nextCorrectionId { "nextCorrectionId" }, correctionBand { "CorrectionBand" };
 const juce::Identifier freq { "freq" }, gain { "gain" }, q { "q" };
 const juce::Identifier arrivalMs { "arrivalMs" }, arrivalConfidence { "arrivalConfidence" }, arrivalReasons { "arrivalReasons" };
-const juce::Identifier systemLatencyMs { "systemLatencyMs" };
+const juce::Identifier systemLatencyMs { "systemLatencyMs" }, low { "low" };
 } // namespace ids
 
 // Spectra are stored as float32: plenty for dB-domain data, half the size.
@@ -41,6 +41,28 @@ std::vector<double> unpack (const juce::var& v)
         const auto* in = static_cast<const float*> (block->getData());
         values.assign (in, in + block->getSize() / sizeof (float));
     }
+    return values;
+}
+
+// A sweep's complex low-frequency response (sub alignment): re, im interleaved.
+juce::MemoryBlock packComplex (const std::vector<roomeq::cplx>& values)
+{
+    std::vector<double> flat;
+    for (const auto& z : values)
+    {
+        flat.push_back (z.real());
+        flat.push_back (z.imag());
+    }
+    return pack (flat);
+}
+
+std::vector<roomeq::cplx> unpackComplex (const juce::var& v)
+{
+    const auto flat = unpack (v);
+    std::vector<roomeq::cplx> values;
+    if (flat.size() == 2 * roomeq::lfGrid().size())
+        for (std::size_t i = 0; i < flat.size(); i += 2)
+            values.emplace_back (flat[i], flat[i + 1]);
     return values;
 }
 
@@ -747,6 +769,8 @@ juce::ValueTree MeasurementEngine::toValueTree() const
         ct.setProperty (ids::power, pack (c.power), nullptr);
         ct.setProperty (ids::noise, pack (c.noisePower), nullptr);
         ct.setProperty (ids::weight, pack (c.weight), nullptr);
+        if (! c.low.empty())
+            ct.setProperty (ids::low, packComplex (c.low), nullptr);
         for (const auto& b : c.grade.bands)
         {
             juce::ValueTree bt (ids::band);
@@ -790,6 +814,7 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
         c->noisePower = unpack (ct[ids::noise]);
         c->weight = unpack (ct[ids::weight]);
         c->delaysMs = unpack (ct[ids::delays]);
+        c->low = unpackComplex (ct[ids::low]);
         if (c->power.size() < 2 || c->noisePower.size() != c->power.size() || c->weight.size() != c->power.size() || c->fs <= 0.0)
             continue;   // damaged entry
         c->freqs = roomeq::rfftFreqs (2 * (c->power.size() - 1), c->fs);

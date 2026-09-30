@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
+#include <tuple>
 
 namespace roomeq
 {
@@ -152,5 +154,218 @@ DelaySuggestion suggestZoneDelay (double mainMs, double zoneMs, double mainZoneD
         return { diff, diff, {} };
     return { 0.0, diff, "this zone already arrives " + format ("%.2f", -diff)
                             + " ms after the main system here: delay the main system instead, or measure where the two overlap" };
+}
+
+LowResponse lowResponse (const Capture& c)
+{
+    return { c.low, 0.0 };
+}
+
+double bandSnr (const std::vector<BandResult>& bands, double lo, double hi)
+{
+    auto worst = std::numeric_limits<double>::infinity();
+    for (const auto& b : bands)
+        if (! b.outOfRange && b.hi > lo && b.lo < hi)
+            worst = std::min (worst, b.snrDb);
+    return worst;
+}
+
+namespace
+{
+constexpr double pi = 3.14159265358979323846;
+
+// 1/6 octave (+-2 points at 24 per octave) power average, in dB.
+std::vector<double> smoothedDb (const std::vector<cplx>& h)
+{
+    std::vector<double> out (h.size());
+    for (std::size_t i = 0; i < h.size(); ++i)
+    {
+        const auto lo = i >= 2 ? i - 2 : 0;
+        const auto hi = std::min (i + 3, h.size());
+        auto sum = 0.0;
+        for (auto k = lo; k < hi; ++k)
+            sum += std::norm (h[k]);
+        out[i] = 10.0 * std::log10 (std::max (sum / static_cast<double> (hi - lo), 1e-30));
+    }
+    return out;
+}
+
+struct Candidate
+{
+    double level, delay;
+    bool invert;
+};
+
+struct Crossover
+{
+    std::size_t lo = 0, crossing = 0, hi = 0;   // on lfGrid()
+    std::string none;                           // why there's no crossover (empty when there is one)
+};
+
+// Only the magnitudes count, so delays and polarity don't move it.
+Crossover findCrossover (const std::vector<cplx>& hm, const std::vector<cplx>& hs)
+{
+    const auto& f = lfGrid();
+    const auto dm = smoothedDb (hm), ds = smoothedDb (hs);
+    std::vector<double> d (f.size());
+    for (std::size_t i = 0; i < f.size(); ++i)
+        d[i] = dm[i] - ds[i];
+    std::vector<std::size_t> inside;
+    for (std::size_t i = 0; i < f.size(); ++i)
+        if (f[i] >= 30.0 && f[i] <= 300.0)
+            inside.push_back (i);
+    Crossover x;
+    auto found = false;
+    for (std::size_t j = 1; j < inside.size() && ! found; ++j)
+        if (d[inside[j] - 1] < 0.0 && d[inside[j]] >= 0.0)
+        {
+            x.crossing = inside[j];
+            found = true;
+        }
+    if (! found)
+    {
+        const auto allBelow = std::all_of (inside.begin(), inside.end(), [&] (std::size_t i) { return d[i] < 0.0; });
+        const auto allAbove = std::all_of (inside.begin(), inside.end(), [&] (std::size_t i) { return d[i] >= 0.0; });
+        x.none = allBelow   ? "the sub is louder than the mains all the way up to 300 Hz"
+                 : allAbove ? "the mains are louder than the sub all the way down to 30 Hz"
+                            : "the mains and the sub never cross over between 30 and 300 Hz";
+        return x;
+    }
+    x.lo = x.hi = x.crossing;
+    while (x.lo > inside.front() && std::abs (d[x.lo - 1]) <= subRegionDb)
+        --x.lo;
+    while (x.hi < inside.back() && std::abs (d[x.hi + 1]) <= subRegionDb)
+        ++x.hi;
+    return x;
+}
+
+bool usable (const LowResponse& r) { return r.h.size() == lfGrid().size(); }
+} // namespace
+
+std::optional<std::pair<double, double>> crossoverRegion (const LowResponse& main, const LowResponse& sub)
+{
+    if (! usable (main) || ! usable (sub))
+        return std::nullopt;
+    const auto x = findCrossover (main.h, sub.h);
+    if (! x.none.empty())
+        return std::nullopt;
+    return std::make_pair (lfGrid()[x.lo], lfGrid()[x.hi]);
+}
+
+SubAlignment alignSub (const LowResponse& main, const LowResponse& sub, const SubSettings& s)
+{
+    SubAlignment out;
+    const auto& f = lfGrid();
+    if (! usable (main) || ! usable (sub))
+    {
+        out.note = "Both need a sweep measurement (pink noise and music don't keep the phase this needs).";
+        return out;
+    }
+    std::vector<cplx> hm (f.size()), hs (f.size());
+    for (std::size_t i = 0; i < f.size(); ++i)
+    {
+        const auto w = 2.0 * pi * f[i] * 1e-3;
+        hm[i] = main.h[i] * std::polar (s.mainInvert ? -1.0 : 1.0, -w * (main.refMs + s.mainDelayMs));
+        hs[i] = sub.h[i] * std::polar (1.0, -w * sub.refMs);
+    }
+
+    // The crossover: where they cross (sub louder below, mains louder above), and within 10 dB around it.
+    const auto x = findCrossover (hm, hs);
+    if (! x.none.empty())
+    {
+        out.note = "No crossover to align: " + x.none + ". Check both were measured at the same spot.";
+        return out;
+    }
+    const auto lo = x.lo, hi = x.hi;
+
+    // Mean summed level (dB) over the region for a sub delay and polarity.
+    const auto summed = [&] (double delayMs, bool invert)
+    {
+        auto total = 0.0;
+        for (auto i = lo; i <= hi; ++i)
+        {
+            const auto v = hm[i] + hs[i] * std::polar (invert ? -1.0 : 1.0, -2.0 * pi * f[i] * delayMs * 1e-3);
+            total += 20.0 * std::log10 (std::max (std::abs (v), 1e-30));
+        }
+        return total / static_cast<double> (hi - lo + 1);
+    };
+
+    const auto steps = static_cast<int> (std::lround (subSearchMs * 100.0));   // 0.01 ms steps
+    std::vector<Candidate> candidates;                                         // local maxima
+    for (const auto invert : { false, true })
+    {
+        std::vector<double> delays, level;
+        for (auto i = -steps; i <= steps; ++i)
+        {
+            delays.push_back (static_cast<double> (i) / 100.0);
+            level.push_back (summed (delays.back(), invert));
+        }
+        for (std::size_t i = 0; i < level.size(); ++i)
+        {
+            const auto left = i > 0 ? level[i - 1] : -std::numeric_limits<double>::infinity();
+            const auto right = i + 1 < level.size() ? level[i + 1] : -std::numeric_limits<double>::infinity();
+            if (level[i] >= left && level[i] > right)
+                candidates.push_back ({ level[i], delays[i], invert });
+        }
+    }
+    auto bestLevel = -std::numeric_limits<double>::infinity();
+    for (const auto& c : candidates)
+        bestLevel = std::max (bestLevel, c.level);
+    // Among the near-best: not a negative delay, then normal polarity, then the smallest delay.
+    const auto key = [] (const Candidate& c) { return std::make_tuple (c.delay < 0.0, c.invert, std::abs (c.delay)); };
+    const Candidate* pick = nullptr;
+    for (const auto& c : candidates)
+        if (c.level >= bestLevel - subNearDb && (pick == nullptr || key (c) < key (*pick)))
+            pick = &c;
+
+    const auto now = summed (s.subDelayMs, s.subInvert);
+    auto ideal = 0.0;
+    for (auto i = lo; i <= hi; ++i)
+        ideal += 20.0 * std::log10 (std::abs (hm[i]) + std::abs (hs[i]));
+    ideal /= static_cast<double> (hi - lo + 1);
+
+    out.ok = true;
+    out.regionLoHz = f[lo];
+    out.regionHiHz = f[hi];
+    out.crossingHz = f[x.crossing];
+    out.delayMs = pick->delay;
+    out.invert = pick->invert;
+    out.summedDb = pick->level;
+    out.improvementDb = pick->level - now;
+    out.efficiencyDb = pick->level - ideal;
+
+    // How far to trust it.
+    const auto snr = std::min (s.mainSnrDb, s.subSnrDb);
+    if (snr < 10.0)
+    {
+        out.confidence = worse (out.confidence, Confidence::low);
+        out.reasons.push_back ("noisy: " + format ("%.0f", snr) + " dB SNR over the crossover");
+    }
+    else if (snr < 20.0)
+    {
+        out.confidence = worse (out.confidence, Confidence::medium);
+        out.reasons.push_back (format ("%.0f", snr) + " dB SNR over the crossover");
+    }
+    if (std::log2 (f[hi] / f[lo]) < 1.0 / 3.0)
+    {
+        out.confidence = worse (out.confidence, Confidence::medium);
+        out.reasons.push_back ("the mains and the sub overlap over less than a third of an octave");
+    }
+    // A delay a whole period away summing about as well: the overlap doesn't pin the timing down.
+    const auto periodMs = 1000.0 / out.crossingHz;
+    const Candidate* alt = nullptr;
+    for (const auto& c : candidates)
+        if (c.invert == pick->invert && std::abs (c.delay - pick->delay) >= 0.75 * periodMs && (alt == nullptr || c.level > alt->level))
+            alt = &c;
+    if (alt != nullptr && pick->level - alt->level < 0.3)
+    {
+        out.confidence = worse (out.confidence, Confidence::medium);
+        out.reasons.push_back (format ("%.2f", alt->delay) + " ms, a period away, sums about as well ("
+                               + format ("%.1f", pick->level - alt->level) + " dB less)");
+    }
+    if (pick->delay < 0.0)
+        out.note = "The sub arrives " + format ("%.2f", -pick->delay) + " ms late here: delay the mains by "
+                   + format ("%.2f", -pick->delay) + " ms instead (and anything lined up with them)";
+    return out;
 }
 } // namespace roomeq

@@ -21,6 +21,17 @@ juce::String measurementText (const juce::String& name, const roomeq::Arrival& a
            + roomeq::confidenceLabel (a.confidence);
 }
 
+// Subs line up with sweeps: pink noise and music don't keep the phase.
+bool hasPhase (const std::shared_ptr<const roomeq::Capture>& c)
+{
+    return c != nullptr && ! c->low.empty();
+}
+
+juce::String db1 (double db)
+{
+    return juce::String (db, 1) + " dB";
+}
+
 double numberIn (const juce::String& text)
 {
     return text.replaceCharacter (',', '.').retainCharacters ("0123456789.").getDoubleValue();
@@ -96,11 +107,21 @@ AlignmentPanel::AlignmentPanel (AdaptiveRoomEQProcessor& p) : processor (p)
     typedArrival.onTextChange = [this] { update(); };
 
     applyButton.setColour (juce::TextButton::buttonColourId, theme::blue);
-    applyButton.setTooltip ("Sets this zone's Delay to the suggestion. Nothing changes until you press it.");
+    applyButton.setTooltip ("Sets this zone's Delay (and a sub's polarity) to the suggestion. Nothing changes until you press it.");
     applyButton.onClick = [this]
     {
-        if (suggestion && suggestion->delayMs > 0.0)
+        if (subMode())
+        {
+            if (subSuggestion && subSuggestion->ok && subSuggestion->delayMs >= 0.0)
+            {
+                processor.setZoneDelayMs (subSuggestion->delayMs);
+                processor.setZonePolarity (subSuggestion->invert);
+            }
+        }
+        else if (suggestion && suggestion->delayMs > 0.0)
+        {
             processor.setZoneDelayMs (suggestion->delayMs);
+        }
         update();
     };
 
@@ -124,10 +145,11 @@ void AlignmentPanel::refresh()
     }
 
     // Rebuild the lists only when what's in them changed, keeping the selections.
-    juce::String fingerprint;
+    juce::String fingerprint (subMode() ? "subs|" : "arrivals|");
     for (const auto& z : processor.getZoneRegistry().others (processor.getInstanceId()))
     {
-        fingerprint << z.instance.toString() << z.label << "|";
+        fingerprint << z.instance.toString() << z.label << "|" << z.delayMs << "|" << static_cast<int> (z.invert) << "|"
+                    << (z.latencyMs ? juce::String (*z.latencyMs) : "-") << "|";
         for (const auto& m : z.measurements)
             fingerprint << m.id << ":" << m.arrival.ms << ",";
     }
@@ -150,14 +172,26 @@ void AlignmentPanel::rebuildLists()
                                   ? std::optional<juce::Uuid> (zones[static_cast<std::size_t> (withBox.getSelectedId() - 1)].instance)
                                   : std::nullopt;
     const auto wasTyped = withBox.getSelectedId() == typedId() && typedId() > 0;
+    const auto subs = subMode();
+    theirLabel.setText (subs ? "Their sweep" : "Their arrival", juce::dontSendNotification);
+    ownLabel.setText (subs ? "This sub's" : "This zone's", juce::dontSendNotification);
+    withBox.setTooltip (subs ? "The mains' instance of the plugin in this DAW (its zone and track)."
+                             : "The main system's instance of the plugin in this DAW (its zone and track), or type its "
+                               "arrival if it runs somewhere this one can't see.");
+    theirBox.setTooltip (subs ? "The mains' sweep, from the same mic spot as the sub's: near where they cross over."
+                              : "The main system's measurement, from the same mic spot as this zone's.");
+    ownBox.setTooltip (subs ? "The sub's sweep, from the same spot as the mains' one."
+                            : "This zone's measurement, from the spot where it and the main system overlap.");
     zones = processor.getZoneRegistry().others (processor.getInstanceId());
     const auto rank = [] (const ZoneRegistry::Zone& z) { return (z.measurements.empty() ? 2 : 0) + (z.zone == 0 ? 0 : 1); };
     std::stable_sort (zones.begin(), zones.end(), [&] (const auto& a, const auto& b) { return rank (a) < rank (b); });
     withBox.clear (juce::dontSendNotification);
     for (std::size_t i = 0; i < zones.size(); ++i)
         withBox.addItem (zones[i].label, static_cast<int> (i) + 1);
-    withBox.addItem ("Type the main arrival", typedId());
-    auto pick = zones.empty() ? typedId() : 1;
+    if (! subs)
+        withBox.addItem ("Type the main arrival", typedId());
+    withBox.setTextWhenNoChoicesAvailable ("No mains instance in this DAW");
+    auto pick = zones.empty() ? (subs ? 0 : typedId()) : 1;
     for (std::size_t i = 0; i < zones.size(); ++i)
         if (previousZone && zones[i].instance == *previousZone)
             pick = static_cast<int> (i) + 1;
@@ -172,28 +206,32 @@ void AlignmentPanel::rebuildLists()
     {
         const auto& z = zones[static_cast<std::size_t> (pick - 1)];
         for (auto it = z.measurements.rbegin(); it != z.measurements.rend(); ++it)
-            theirBox.addItem (measurementText (it->name, it->arrival), it->id);
+            if (! subs || hasPhase (it->capture))
+                theirBox.addItem (subs ? it->name : measurementText (it->name, it->arrival), it->id);
         if (theirBox.indexOfItemId (previousTheir) >= 0)
             theirBox.setSelectedId (previousTheir, juce::dontSendNotification);
         else if (theirBox.getNumItems() > 0)
             theirBox.setSelectedItemIndex (0, juce::dontSendNotification);
     }
-    theirBox.setTextWhenNoChoicesAvailable ("No measurements there yet");
+    theirBox.setTextWhenNoChoicesAvailable (subs ? "No sweeps there yet" : "No measurements there yet");
 
     // This zone's measurements, newest first.
     const auto previousOwn = ownBox.getSelectedId();
     own.clear();
     for (const auto& e : processor.getEngine().getEntries())
-        if (! e.verify)
+        if (! e.verify && (! subs || hasPhase (e.capture)))
             own.insert (own.begin(), e);
     ownBox.clear (juce::dontSendNotification);
     for (const auto& e : own)
-        ownBox.addItem (measurementText (juce::String::fromUTF8 (e.capture->name.c_str()), e.arrival), e.id);
+    {
+        const auto name = juce::String::fromUTF8 (e.capture->name.c_str());
+        ownBox.addItem (subs ? name : measurementText (name, e.arrival), e.id);
+    }
     if (ownBox.indexOfItemId (previousOwn) >= 0)
         ownBox.setSelectedId (previousOwn, juce::dontSendNotification);
     else if (ownBox.getNumItems() > 0)
         ownBox.setSelectedItemIndex (0, juce::dontSendNotification);
-    ownBox.setTextWhenNoChoicesAvailable ("Measure this zone first");
+    ownBox.setTextWhenNoChoicesAvailable (subs ? "Sweep the sub first" : "Measure this zone first");
 
     const auto typed = pick == typedId();
     theirBox.setVisible (! typed);
@@ -204,6 +242,13 @@ void AlignmentPanel::update()
 {
     suggestion.reset();
     result.clear();
+    if (subMode())
+    {
+        updateSub();
+        return;
+    }
+    subSuggestion.reset();
+    subInputs.clear();
     const auto withId = withBox.getSelectedId();
     const auto typed = withId == typedId();
 
@@ -273,12 +318,87 @@ void AlignmentPanel::update()
         result << juce::String::fromUTF8 (s.note.c_str()) << ".\n";
     }
     result << "Confidence: " << roomeq::confidenceLabel (weaker) << ".";
-    if (processor.getZone() == AdaptiveRoomEQProcessor::Zone::subs)
-        result << " Sub arrivals are approximate: the low end's peak is broad.";
 
     const auto current = processor.getZoneSettings().delayMs;
     applyButton.setButtonText ("Apply " + ms2 (s.delayMs));
     applyButton.setEnabled (s.delayMs > 0.0 && std::abs (s.delayMs - current) > 0.005);
+    repaint();
+}
+
+void AlignmentPanel::updateSub()
+{
+    // The mains' sweep and this sub's.
+    const ZoneRegistry::Zone* mains = nullptr;
+    std::shared_ptr<const roomeq::Capture> theirs;
+    const auto withId = withBox.getSelectedId();
+    if (withId >= 1 && withId <= static_cast<int> (zones.size()))
+    {
+        mains = &zones[static_cast<std::size_t> (withId - 1)];
+        for (const auto& m : mains->measurements)
+            if (m.id == theirBox.getSelectedId() && hasPhase (m.capture))
+                theirs = m.capture;
+    }
+    std::shared_ptr<const roomeq::Capture> mine;
+    for (const auto& e : own)
+        if (e.id == ownBox.getSelectedId())
+            mine = e.capture;
+
+    if (mains == nullptr || theirs == nullptr || mine == nullptr)
+    {
+        subSuggestion.reset();
+        subInputs.clear();
+        result = "Sweep the mains and the sub from the same spot, near where they cross over (each on its own, with the "
+                 "mains' instance in this DAW), and pick both. Pink noise and music don't keep the phase this needs.";
+        applyButton.setButtonText ("Apply");
+        applyButton.setEnabled (false);
+        repaint();
+        return;
+    }
+
+    // Worked out again only when something it depends on changed.
+    const auto settings = processor.getZoneSettings();
+    const auto ownLatency = processor.getEngine().getSystemLatencyMs();
+    juce::String inputs;
+    inputs << juce::String::toHexString (reinterpret_cast<juce::pointer_sized_int> (theirs.get())) << "|"
+           << juce::String::toHexString (reinterpret_cast<juce::pointer_sized_int> (mine.get())) << "|" << mains->delayMs << "|"
+           << static_cast<int> (mains->invert) << "|" << (mains->latencyMs ? juce::String (*mains->latencyMs) : "-") << "|"
+           << settings.delayMs << "|" << static_cast<int> (settings.invert) << "|" << (ownLatency ? juce::String (*ownLatency) : "-");
+    if (inputs != subInputs || ! subSuggestion)
+    {
+        subInputs = inputs;
+        subSuggestion = suggestSubAlignment (*theirs, mains->latencyMs, mains->delayMs, mains->invert, *mine, ownLatency,
+                                             settings.delayMs, settings.invert);
+    }
+    const auto& s = *subSuggestion;
+    if (! s.ok)
+    {
+        result = juce::String::fromUTF8 (s.note.c_str());
+        applyButton.setButtonText ("Apply");
+        applyButton.setEnabled (false);
+        repaint();
+        return;
+    }
+
+    const auto hz = [] (double f) { return juce::String (juce::roundToInt (f)); };
+    const auto shortOf = s.efficiencyDb > -0.5 ? juce::String ("close to a perfect sum")
+                                               : db1 (-s.efficiencyDb) + " short of a perfect sum";
+    result << "Crossover " << hz (s.regionLoHz) << "-" << hz (s.regionHiHz) << " Hz (crossing at " << hz (s.crossingHz) << " Hz).\n";
+    if (! s.note.empty())
+        result << juce::String::fromUTF8 (s.note.c_str()) << ".\n";
+    else if (s.improvementDb < 0.05)
+        result << "As set now: " << shortOf << " over the crossover.\n";
+    else
+        result << "Suggested: delay " << ms2 (s.delayMs) << ", polarity " << (s.invert ? "inverted" : "normal") << ".\n"
+               << "Over the crossover: " << db1 (s.improvementDb) << " louder than now, " << shortOf << ".\n";
+    result << "Confidence: " << roomeq::confidenceLabel (s.confidence);
+    if (! s.reasons.empty())
+        result << " (" << juce::String::fromUTF8 (s.reasons.front().c_str()) << ")";
+    result << ".";
+
+    const auto canApply = s.delayMs >= 0.0 && s.delayMs <= ZoneStage::maxDelayMs;
+    const auto changes = std::abs (s.delayMs - settings.delayMs) > 0.005 || s.invert != settings.invert;
+    applyButton.setButtonText ("Apply " + ms2 (s.delayMs) + (s.invert ? ", inverted" : ""));
+    applyButton.setEnabled (canApply && changes);
     repaint();
 }
 
@@ -288,7 +408,7 @@ void AlignmentPanel::paint (juce::Graphics& g)
     g.drawHorizontalLine (0, 0.0f, static_cast<float> (getWidth()));
     g.setColour (theme::ink2);
     g.setFont (juce::FontOptions (12.5f));
-    g.drawFittedText (result, resultBounds, juce::Justification::topLeft, 4, 0.9f);
+    g.drawFittedText (result, resultBounds, juce::Justification::topLeft, 5, 0.9f);
 }
 
 void AlignmentPanel::resized()

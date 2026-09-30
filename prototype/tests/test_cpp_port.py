@@ -90,6 +90,11 @@ def test_session_matches_python(sim, tmp_path):
         arrival = alignment.estimate_arrival(py)
         assert cpp["arrival"]["ms"] == pytest.approx(arrival.ms, abs=1e-9), name
         assert cpp["arrival"]["confidence"] == arrival.confidence and cpp["arrival"]["reasons"] == arrival.reasons, name
+        if py.low is None:
+            assert cpp["low"] is None, name
+        else:
+            low = np.array([complex(*z) for z in cpp["low"]])
+            assert np.max(np.abs(low - py.low)) < 1e-9 * np.max(np.abs(py.low)), name
         assert cpp["overall"] == py.grade.overall.label, name
         assert cpp["reasons"] == py.grade.reasons, name
         assert cpp["notes"] == py.grade.notes, name
@@ -377,3 +382,40 @@ def test_arrivals_match_python(tmp_path):
         py = alignment.estimate_arrival(capture.analyze_sweep_capture(name, recs, cfg))
         assert cpp["arrival"]["ms"] == pytest.approx(py.ms, abs=1e-9), name
         assert cpp["arrival"]["confidence"] == py.confidence and cpp["arrival"]["reasons"] == py.reasons, name
+
+
+def test_sub_alignment_matches_python(tmp_path):
+    """The mains (high-passed at 80 Hz) and a sub measured at the same spot: the
+    crossover, each one's SNR over it, and the suggested delay and polarity."""
+    from roomeq import grading
+
+    rng = np.random.default_rng(83)
+    play = sweep.build_playback(CFG)
+    tops = roomsim.SimulatedRoom(pa=roomsim.PASpec(hp_hz=80.0, hp_order=4, latency_ms=10.0))
+    sub = roomsim.SimulatedRoom(pa=roomsim.PASpec(hp_hz=25.0, hp_order=4, lp_hz=80.0, lp_order=4, peq=(), latency_ms=6.0))
+    noise = roomsim.NoiseSpec(pink_dbfs=-55.0)
+    args, caps = [], []
+    for name, room, band in (("M", tops, (250.0, 4000.0)), ("S", sub, (40.0, 100.0))):
+        recs = [room.play(play, 2, noise, rng) for _ in range(2)]
+        files = ",".join(str(save(tmp_path, f"{name}_{i}", r)) for i, r in enumerate(recs))
+        args += ["--position", f"{name}={files}"]
+        acfg = capture.AnalysisConfig(grading=grading.GradingConfig(passband=band))
+        caps.append(capture.analyze_sweep_capture(name, recs, CFG, acfg))
+    main, low = alignment.low_response(caps[0]), alignment.low_response(caps[1])
+    lo, hi = alignment.crossover_region(main, low)
+    snrs = [alignment.band_snr(c.grade.bands, lo, hi) for c in caps]
+
+    for settings in ((0.0, False, 0.0, False), (1.5, True, 2.0, False), (0.0, False, 3.0, True)):
+        md, mi, sd, si = settings
+        cpp = run_cli("align-sub", "--fs", CFG.fs, "--duration", CFG.duration, *args, "--main-delay", md,
+                      "--main-invert", int(mi), "--sub-delay", sd, "--sub-invert", int(si))
+        py = alignment.align_sub(main, low, md, mi, sd, si, *snrs)
+        assert cpp["region"] == pytest.approx([lo, hi], abs=1e-9)
+        assert [cpp["main_snr_db"], cpp["sub_snr_db"]] == pytest.approx(snrs, abs=TOL_DB)
+        assert cpp["ok"] == py.ok and cpp["invert"] == py.invert, settings
+        assert cpp["region_hz"] == pytest.approx(list(py.region_hz), abs=1e-9)
+        assert cpp["crossing_hz"] == pytest.approx(py.crossing_hz, abs=1e-9)
+        assert cpp["delay_ms"] == pytest.approx(py.delay_ms, abs=1e-9), settings
+        for key in ("summed_db", "improvement_db", "efficiency_db"):
+            assert cpp[key] == pytest.approx(getattr(py, key), abs=TOL_DB), key
+        assert cpp["confidence"] == py.confidence and cpp["reasons"] == py.reasons and cpp["note"] == py.note, settings

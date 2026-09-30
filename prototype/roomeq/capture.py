@@ -8,7 +8,7 @@ import numpy as np
 
 from . import dualfft
 from .grading import CaptureGrade, GradingConfig, grade_capture, regrade
-from .spectrum import WindowConfig, ir_window, rebin_power, response_nfft
+from .spectrum import WindowConfig, ir_window, log_freq_grid, rebin_power, response_nfft
 from .sweep import SweepConfig, deconvolve, find_arrival, fractional_peak_offset, generate_sweep
 
 
@@ -18,6 +18,9 @@ class AnalysisConfig:
     grading: GradingConfig = GradingConfig()
     max_delay_s: float = 1.0        # longest loop delay searched (latency + flight time)
     noise_margin_s: float = 0.05    # gap between noise window and end of valid tail
+
+
+LF_GRID = log_freq_grid(20.0, 1000.0, 24)   # where a sweep keeps its complex response (sub alignment)
 
 
 @dataclass
@@ -33,8 +36,28 @@ class Capture:
     repeat_powers: list[np.ndarray] = field(default_factory=list)
     delays_ms: list[float] = field(default_factory=list)
     ir: np.ndarray | None = None     # windowed, aligned, averaged IR (sweeps only)
+    low: np.ndarray | None = None    # complex response on LF_GRID from the loop start (sweeps only)
     excluded: bool = False
     drift_ppm: float = float("nan")  # program captures: output/mic clock difference that was corrected (0 if none)
+
+
+def low_frequency_response(h: np.ndarray, loop_start: int, arrival: int, fs: float,
+                           window: WindowConfig = WindowConfig()) -> np.ndarray:
+    """The complex response on LF_GRID of h from the loop start (time 0) to the
+    end of the analysis window after the arrival, tapered like it.
+
+    Everything the speaker sent is in it, however late the strongest peak: a
+    sub's direct sound can come tens of ms before the room modes build up to
+    the peak the analysis window is placed on. Time 0 is the loop start, so
+    responses from the same interface can be summed as they are.
+    """
+    stop = min(len(h), arrival + int(round(window.post * fs)))
+    x = np.asarray(h[loop_start:stop], dtype=float).copy()
+    n_b = max(1, int(round(window.post * fs * window.taper_post)))
+    n_b = min(n_b, len(x))
+    x[len(x) - n_b:] *= 0.5 * (1 + np.cos(np.pi * np.arange(n_b) / n_b))
+    n = np.arange(len(x))
+    return np.array([np.dot(x, np.exp(-2j * np.pi * f * n / fs)) for f in LF_GRID])
 
 
 def in_band(freqs: np.ndarray, f1: float, f2: float) -> np.ndarray:
@@ -76,12 +99,13 @@ def analyze_sweep_capture(name: str, recordings: list[np.ndarray], sweep_cfg: Sw
     freqs = np.fft.rfftfreq(nfft, 1 / fs)
     margin = int(round(cfg.noise_margin_s * fs))
 
-    segments, noise_spectra, delays = [], [], []
+    segments, noise_spectra, delays, lows = [], [], [], []
     for rec in recordings:
         dec = deconvolve(rec, sweep, fs, sweep_cfg.f1, sweep_cfg.f2)
         arrival = find_arrival(dec, sweep_cfg.n_preroll, cfg.max_delay_s)
         start = arrival - n_pre
         segments.append(dec.h[start:start + len(w)] * w)
+        lows.append(low_frequency_response(dec.h, dec.zero + sweep_cfg.n_preroll, arrival, fs, cfg.window))
 
         # Noise: same window, as late as the tail allows. IR time t (from sweep
         # start) is valid at every frequency only up to t = tail.
@@ -112,7 +136,7 @@ def analyze_sweep_capture(name: str, recordings: list[np.ndarray], sweep_cfg: Sw
                           cfg.grading, f_max=min(sweep_cfg.f2, fs / 2))
     return Capture(name=name, kind="sweep", fs=fs, freqs=freqs, power=power, noise_power=noise,
                    weight=in_band(freqs, sweep_cfg.f1, sweep_cfg.f2), grade=grade, repeat_powers=repeat_powers,
-                   delays_ms=delays, ir=np.fft.irfft(H, nfft)[:len(w)])
+                   delays_ms=delays, ir=np.fft.irfft(H, nfft)[:len(w)], low=np.mean(lows, axis=0))
 
 
 def analyze_program_capture(name: str, reference: np.ndarray, mic: np.ndarray, fs: float,

@@ -25,6 +25,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <array>
 #include <complex>
 #include <iostream>
 #include <random>
@@ -850,6 +851,205 @@ void alignmentChecks (const juce::String& snapshotStem)
     const auto left = fill->getZoneRegistry().others (fill->getInstanceId());
     check (std::none_of (left.begin(), left.end(), [&] (const auto& z) { return z.instance == mainsId; }),
            "a closed instance is gone from the registry");
+}
+
+// A speaker behind a Linkwitz-Riley 4th-order crossover half (and its own
+// processing latency), in a simulated room.
+struct CrossoverSpeaker
+{
+    CrossoverSpeaker (bool highpass, double hz, int latencySamples, double distance, unsigned seed, double noise)
+        : room (distance, seed, noise, 0.0), wait (static_cast<std::size_t> (latencySamples) + 1, 0.0)
+    {
+        for (auto& b : filters)
+            b = highpass ? Biquad::highpass (hz, 0.7071) : Biquad::lowpass (hz, 0.7071);
+    }
+
+    float process (float x)
+    {
+        double y = x;
+        for (auto& b : filters)
+            y = b.process (y);
+        wait[pos] = y;
+        pos = (pos + 1) % wait.size();
+        return room.process (static_cast<float> (wait[pos]));
+    }
+
+    SimulatedRoom room;
+    std::array<Biquad, 2> filters {};
+    std::vector<double> wait;
+    std::size_t pos = 0;
+};
+
+// Mains and a sub, two instances in one DAW: each is swept from the same spot
+// on its own; the sub's panel suggests its delay and polarity from the two
+// low-frequency responses. Then the mains' sweep is fed through the sub
+// instance too (one program into both), so the mains' next measurement hears
+// them together: as they are, then with the suggestion applied. The measured
+// sums over the crossover must be what was predicted.
+void subAlignmentChecks (const juce::String& snapshotStem)
+{
+    std::cout << "Sub alignment\n";
+    const auto make = [] (float zone, const juce::String& trackName)
+    {
+        auto p = std::make_unique<AdaptiveRoomEQProcessor>();
+        p->enableAllBuses();
+        p->setRateAndBufferSizeDetails (fs, blockSize);
+        p->prepareToPlay (fs, blockSize);
+        setParam (*p, "sweepLength", 0.0f);
+        setParam (*p, "zone", zone);
+        juce::AudioProcessor::TrackProperties track;
+        track.name = trackName;
+        p->updateTrackProperties (track);
+        return p;
+    };
+    auto mains = make (0.0f, "Tops");
+    auto sub = make (1.0f, "Subs");
+    const auto pumpBoth = [&] (int times)
+    {
+        for (int i = 0; i < times; ++i)
+        {
+            pump (*mains);
+            pump (*sub);
+        }
+    };
+    pumpBoth (5);
+    for (auto* p : { mains.get(), sub.get() })
+        setParam (*p, "loudOn", 0.0f);   // program through both unchanged but for the sub's delay and polarity
+
+    // The mains 9 m away with 1.5 ms of processing; the sub 6 m away. Crossed over at 90 Hz.
+    const auto tops = [] (double noise) { return CrossoverSpeaker (true, 90.0, 72, 9.0, 71, noise); };
+    const auto lows = [] (double noise) { return CrossoverSpeaker (false, 90.0, 0, 6.0, 72, noise); };
+    {
+        auto speaker = tops (3e-4);
+        idleWithMic (*mains, 3e-4f);
+        check (mains->startSweep().wasOk(), "sweep the mains");
+        runMeasurement (*mains, speaker);
+    }
+    {
+        auto speaker = lows (3e-4);
+        idleWithMic (*sub, 3e-4f);
+        check (sub->startSweep().wasOk(), "sweep the sub at the same spot");
+        runMeasurement (*sub, speaker);
+    }
+    const auto mainsEntries = mains->getEngine().getEntries(), subEntries = sub->getEngine().getEntries();
+    if (mainsEntries.empty() || subEntries.empty())
+    {
+        check (false, "both measured");
+        return;
+    }
+    check (subEntries.back().capture->low.size() == roomeq::lfGrid().size(), "a sweep keeps its low-frequency response");
+    const auto mainsId = mains->getInstanceId();
+    for (int i = 0; i < 400; ++i)
+    {
+        const auto others = sub->getZoneRegistry().others (sub->getInstanceId());
+        if (std::any_of (others.begin(), others.end(), [&] (const auto& z) { return z.instance == mainsId && ! z.measurements.empty(); }))
+            break;
+        pumpBoth (1);
+    }
+    pumpBoth (20);
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor (sub->createEditor());
+    auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
+    editor->setSize (1200, 820);
+    ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+    auto* panel = ours->getAlignmentPanel();
+    if (panel == nullptr)
+    {
+        check (false, "alignment panel");
+        return;
+    }
+    panel->refresh();
+    const auto s = panel->getSubSuggestion();
+    auto withTyped = false;
+    for (int i = 0; i < panel->getWithBox().getNumItems(); ++i)
+        withTyped = withTyped || panel->getWithBox().getItemText (i).startsWith ("Type");
+    check (panel->getWithBox().getText() == "Mains (Tops)" && ! withTyped, "the sub picks \"Mains (Tops)\" (no typed option: it needs the response)");
+    // Where they line up: 3 m (8.75 ms) plus the mains' 1.5 ms of processing.
+    const auto expected = 1000.0 * (3.0 / 343.0) + 1.5;
+    check (s && s->ok && s->regionLoHz < 90.0 && 90.0 < s->regionHiHz && std::abs (s->delayMs - expected) < 1.5 && ! s->invert
+               && s->confidence != roomeq::Confidence::low && s->improvementDb > 1.0,
+           "suggests " + juce::String (s ? s->delayMs : -1.0, 2) + " ms, polarity " + (s && s->invert ? "inverted" : "normal")
+               + " (about " + juce::String (expected, 2) + " ms), +" + juce::String (s ? s->improvementDb : 0.0, 1)
+               + " dB over " + juce::String (s ? juce::roundToInt (s->regionLoHz) : 0) + "-" + juce::String (s ? juce::roundToInt (s->regionHiHz) : 0)
+               + " Hz, confidence " + (s ? roomeq::confidenceLabel (s->confidence) : "none"));
+    check (panel->getResultText().contains ("Suggested: delay") && panel->getApplyButton().isEnabled()
+               && juce::exactlyEqual (sub->getZoneSettings().delayMs, 0.0),
+           "nothing changes until Apply");
+    if (! s || ! s->ok)
+        return;
+
+    // The mains' sweep into the sub instance as well: the mains' measurement hears both.
+    const auto measureTogether = [&]
+    {
+        auto top = tops (3e-4), low = lows (0.0);
+        idleWithMic (*mains, 3e-4f);
+        if (! mains->startSweep().wasOk())
+            return std::nan ("");
+        juce::AudioBuffer<float> mb (3, blockSize), sb (3, blockSize);
+        juce::MidiBuffer midi;
+        std::vector<float> topSpeaker (blockSize, 0.0f), lowSpeaker (blockSize, 0.0f);
+        for (int block = 0; block < 100000 && mains->getEngine().getActivity() == MeasurementEngine::Activity::measuring; ++block)
+        {
+            mb.clear();
+            for (int i = 0; i < blockSize; ++i)   // hears last block, as runMeasurement's mic does
+                mb.setSample (2, i, top.process (topSpeaker[static_cast<std::size_t> (i)]) + low.process (lowSpeaker[static_cast<std::size_t> (i)]));
+            mains->processBlock (mb, midi);
+            sb.clear();
+            for (int ch = 0; ch < 2; ++ch)
+                sb.copyFrom (ch, 0, mb, 0, 0, blockSize);
+            sub->processBlock (sb, midi);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                topSpeaker[static_cast<std::size_t> (i)] = mb.getSample (0, i);
+                lowSpeaker[static_cast<std::size_t> (i)] = sb.getSample (0, i);
+            }
+            if (block % 64 == 0)
+                pumpBoth (1);
+        }
+        for (int i = 0; i < 12000 && mains->getEngine().getActivity() != MeasurementEngine::Activity::idle; ++i)
+            pumpBoth (1);
+        pumpBoth (20);
+        const auto& low2 = mains->getEngine().getEntries().back().capture->low;
+        auto total = 0.0;
+        auto n = 0;
+        for (std::size_t k = 0; k < roomeq::lfGrid().size() && k < low2.size(); ++k)
+            if (roomeq::lfGrid()[k] >= s->regionLoHz && roomeq::lfGrid()[k] <= s->regionHiHz)
+            {
+                total += 20.0 * std::log10 (std::abs (low2[k]));
+                ++n;
+            }
+        return n > 0 ? total / n : std::nan ("");
+    };
+    const auto asIs = measureTogether();
+    panel->refresh();
+    const auto same = panel->getSubSuggestion();
+    check (same && std::abs (same->delayMs - s->delayMs) < 1e-9, "the panel keeps the picked sweeps as the mains measure again");
+    panel->getApplyButton().onClick();
+    pumpBoth (3);
+    panel->refresh();
+    const auto zs = sub->getZoneSettings();
+    check (std::abs (zs.delayMs - s->delayMs) < 0.006 && zs.invert == s->invert && ! panel->getApplyButton().isEnabled()
+               && panel->getResultText().contains ("As set now"),
+           "Apply sets the sub's Delay to " + juce::String (zs.delayMs, 2) + " ms and its polarity " + (zs.invert ? "inverted" : "normal"));
+    const auto aligned = measureTogether();
+    check (std::abs ((aligned - asIs) - s->improvementDb) < 0.5 && std::abs (aligned - s->summedDb) < 0.5,
+           "measured together: +" + juce::String (aligned - asIs, 2) + " dB (predicted +" + juce::String (s->improvementDb, 2)
+               + "), " + juce::String (aligned, 2) + " dB (predicted " + juce::String (s->summedDb, 2) + ")");
+    for (int i = 0; i < 5; ++i)
+        pumpBoth (1);
+    writeSnapshot (*editor, snapshotStem + "-sub-alignment.png");
+
+    // Saved with the session.
+    juce::MemoryBlock state;
+    sub->getStateInformation (state);
+    AdaptiveRoomEQProcessor restored;
+    restored.setStateInformation (state.getData(), static_cast<int> (state.getSize()));
+    const auto back = restored.getEngine().getEntries();
+    auto close = ! back.empty() && back.front().capture->low.size() == subEntries.back().capture->low.size();
+    for (std::size_t k = 0; close && k < back.front().capture->low.size(); ++k)
+        close = std::abs (back.front().capture->low[k] - subEntries.back().capture->low[k]) <= 1e-6 * std::abs (subEntries.back().capture->low[k]) + 1e-12;
+    check (close, "the low-frequency response is saved with the session");
+    editor.reset();
 }
 
 // A sub on a mono track: the zone band, its defaults, the fit, and re-grading
@@ -1893,6 +2093,7 @@ int main (int argc, char** argv)
 
     zoneChecks (outPath.upToLastOccurrenceOf (".", false, false));
     alignmentChecks (outPath.upToLastOccurrenceOf (".", false, false));
+    subAlignmentChecks (outPath.upToLastOccurrenceOf (".", false, false));
     clockDriftChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-drift.png");
     standaloneChecks (outPath.upToLastOccurrenceOf (".", false, false) + "-standalone.png");
 

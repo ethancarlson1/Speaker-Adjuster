@@ -95,3 +95,85 @@ def test_distance_and_the_zone_delay_suggestion():
     assert s.delay_ms == pytest.approx(17.20)
     s = alignment.suggest_zone_delay(8.0, 10.5)
     assert s.delay_ms == 0.0 and s.difference_ms == pytest.approx(-2.5) and "already arrives" in s.note
+
+
+# ---------------------------------------------------------------------------
+# Subs
+
+import scipy.signal as ss   # noqa: E402
+
+
+def lr4(kind: str, fc: float = 80.0) -> np.ndarray:
+    """A Linkwitz-Riley 4th-order crossover half on the alignment grid (two 2nd-order Butterworths)."""
+    b = ss.butter(2, fc, btype=kind, fs=FS, output="sos")
+    _, h = ss.sosfreqz(np.vstack([b, b]), worN=alignment.LF_GRID, fs=FS)
+    return h
+
+
+def at(h: np.ndarray, extra_ms: float = 0.0, ref_ms: float = 10.0) -> alignment.LowResponse:
+    return alignment.LowResponse(h * np.exp(-2j * np.pi * alignment.LF_GRID * extra_ms * 1e-3), ref_ms)
+
+
+def test_an_lr4_crossover_lines_up_exactly():
+    # The mains 3 ms late (their DSP): the sub waits 3 ms, polarity normal, and they sum perfectly.
+    out = alignment.align_sub(at(lr4("highpass"), 3.0), at(lr4("lowpass")))
+    assert out.ok and out.delay_ms == pytest.approx(3.0, abs=0.011) and not out.invert
+    assert out.efficiency_db > -0.05 and out.improvement_db > 1.0
+    assert out.region_hz[0] < 80.0 < out.region_hz[1] and out.crossing_hz == pytest.approx(80.0, rel=0.03)
+    assert out.confidence == alignment.HIGH, out.reasons
+    # Already there: nothing to gain.
+    assert alignment.align_sub(at(lr4("highpass"), 3.0), at(lr4("lowpass")), sub_delay_ms=3.0).improvement_db < 0.01
+
+
+def test_a_reversed_sub_is_inverted_and_a_late_sub_delays_the_mains():
+    out = alignment.align_sub(at(lr4("highpass"), 3.0), at(-lr4("lowpass")))
+    assert out.invert and out.delay_ms == pytest.approx(3.0, abs=0.011)
+    late = alignment.align_sub(at(lr4("highpass")), at(lr4("lowpass"), 2.0))
+    assert late.delay_ms == pytest.approx(-2.0, abs=0.011) and "delay the mains by 2.00 ms" in late.note
+    # The mains' own zone delay and polarity count: delayed 1 ms and inverted, the sub follows.
+    moved = alignment.align_sub(at(lr4("highpass"), 3.0), at(lr4("lowpass")), main_delay_ms=1.0, main_invert=True)
+    assert moved.delay_ms == pytest.approx(4.0, abs=0.011) and moved.invert
+
+
+def test_no_crossover_says_so():
+    tops = at(lr4("highpass", 500.0))          # tops that stop at 500 Hz: the sub is louder up to 300 Hz
+    out = alignment.align_sub(tops, at(lr4("lowpass", 700.0)))
+    assert not out.ok and "No crossover" in out.note
+
+
+def test_noise_and_a_narrow_overlap_lower_the_confidence():
+    out = alignment.align_sub(at(lr4("highpass"), 3.0), at(lr4("lowpass")), main_snr_db=15.0)
+    assert out.confidence == alignment.MEDIUM and "15 dB SNR" in out.reasons[0]
+    assert alignment.align_sub(at(lr4("highpass"), 3.0), at(lr4("lowpass")), sub_snr_db=5.0).confidence == alignment.LOW
+
+
+def test_in_the_room_the_prediction_matches_the_sum(sim):
+    """Mains (high-passed at 80 Hz, 4 ms more latency) and a sub (low-passed at
+    80 Hz) in the simulated room, measured separately at the same spot. Played
+    together with the suggestion, the measured sum matches the prediction."""
+    rng = np.random.default_rng(81)
+    tops = roomsim.SimulatedRoom(pa=roomsim.PASpec(hp_hz=80.0, hp_order=4, latency_ms=10.0))
+    sub = roomsim.SimulatedRoom(pa=roomsim.PASpec(hp_hz=25.0, hp_order=4, lp_hz=80.0, lp_order=4, peq=(), latency_ms=6.0))
+    quiet = roomsim.NoiseSpec(pink_dbfs=-70.0)
+    cm = capture.analyze_sweep_capture("M", [tops.play(PLAY, 2, quiet, rng) for _ in range(2)], CFG)
+    cs = capture.analyze_sweep_capture("S", [sub.play(PLAY, 2, quiet, rng) for _ in range(2)], CFG)
+    out = alignment.align_sub(alignment.low_response(cm), alignment.low_response(cs))
+    assert out.ok and 0.0 < out.delay_ms < 12.0, out
+    assert out.improvement_db > 1.0
+
+    def together(delay_ms: float, invert: bool) -> alignment.LowResponse:
+        shift = int(round(delay_ms * 1e-3 * FS))
+        x_sub = np.concatenate([np.zeros(shift), PLAY])[:len(PLAY)] * (-1.0 if invert else 1.0)
+        rec = [tops.play(PLAY, 2, quiet, rng) + sub.play(x_sub, 2, roomsim.NoiseSpec(pink_dbfs=-200.0), rng) for _ in range(2)]
+        return alignment.low_response(capture.analyze_sweep_capture("MS", rec, CFG))
+
+    lo, hi = out.region_hz
+    region = (alignment.LF_GRID >= lo) & (alignment.LF_GRID <= hi)
+
+    def level(r: alignment.LowResponse) -> float:
+        return float(np.mean(20 * np.log10(np.abs(r.h[region]))))
+
+    aligned = level(together(round(out.delay_ms * 1e-3 * FS) / FS * 1e3, out.invert))
+    as_is = level(together(0.0, False))
+    assert aligned == pytest.approx(out.summed_db, abs=0.5)                 # the prediction is what the room does
+    assert aligned - as_is == pytest.approx(out.improvement_db, abs=0.5)

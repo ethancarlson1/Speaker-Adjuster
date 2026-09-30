@@ -95,3 +95,88 @@ TEST_CASE ("distance and the zone delay suggestion")
     CHECK (late.differenceMs == doctest::Approx (-2.5));
     CHECK (late.note.find ("already arrives 2.50 ms after") != std::string::npos);
 }
+
+namespace
+{
+// A Linkwitz-Riley 4th-order crossover half on lfGrid() (two analogue 2nd-order Butterworths), delayed.
+LowResponse lr4 (bool highpass, double fc, double delayMs = 0.0, double sign = 1.0)
+{
+    LowResponse r;
+    for (const auto f : lfGrid())
+    {
+        const cplx s { 0.0, f / fc };
+        const auto bw = (highpass ? s * s : cplx { 1.0, 0.0 }) / (s * s + std::sqrt (2.0) * s + 1.0);
+        r.h.push_back (sign * bw * bw * std::polar (1.0, -2.0 * testing::pi * f * delayMs * 1e-3));
+    }
+    r.refMs = 10.0;
+    return r;
+}
+} // namespace
+
+TEST_CASE ("the low-frequency response starts at the loop start, whatever the peak")
+{
+    // A direct sound at 5 ms and a peak twice as loud 60 ms later: both are in it.
+    const double fs = 48000.0;
+    std::vector<double> h (48000, 0.0);
+    h[1000 + 240] = 1.0;
+    h[1000 + 240 + 2880] = 2.0;
+    const auto low = lowFrequencyResponse (h, 1000, 1000 + 240 + 2880, fs);
+    REQUIRE (low.size() == lfGrid().size());
+    for (std::size_t i = 0; i < low.size(); i += 17)
+    {
+        const auto w = -2.0 * testing::pi * lfGrid()[i] / fs;
+        const auto expected = std::polar (1.0, w * 240.0) + std::polar (2.0, w * (240.0 + 2880.0));
+        CHECK (std::abs (low[i] - expected) < 1e-9);
+    }
+}
+
+TEST_CASE ("an LR4 crossover lines up exactly; a reversed sub is inverted; a late sub delays the mains")
+{
+    const auto out = alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0));
+    REQUIRE (out.ok);
+    CHECK (out.delayMs == doctest::Approx (3.0).epsilon (0.004));
+    CHECK_FALSE (out.invert);
+    CHECK (out.efficiencyDb > -0.05);
+    CHECK (out.improvementDb > 1.0);
+    CHECK (out.crossingHz == doctest::Approx (80.0).epsilon (0.03));
+    CHECK ((out.regionLoHz < 80.0 && 80.0 < out.regionHiHz));
+    CHECK (out.confidence == Confidence::high);
+
+    SubSettings there;
+    there.subDelayMs = 3.0;
+    CHECK (alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0), there).improvementDb < 0.01);
+
+    const auto reversed = alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0, 0.0, -1.0));
+    CHECK (reversed.invert);
+    CHECK (reversed.delayMs == doctest::Approx (3.0).epsilon (0.004));
+
+    const auto late = alignSub (lr4 (true, 80.0), lr4 (false, 80.0, 2.0));
+    CHECK (late.delayMs == doctest::Approx (-2.0).epsilon (0.006));
+    CHECK (late.note.find ("delay the mains by 2.00 ms") != std::string::npos);
+
+    SubSettings moved;
+    moved.mainDelayMs = 1.0;
+    moved.mainInvert = true;
+    const auto m = alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0), moved);
+    CHECK (m.delayMs == doctest::Approx (4.0).epsilon (0.003));
+    CHECK (m.invert);
+}
+
+TEST_CASE ("no crossover, noise and a narrow overlap")
+{
+    const auto none = alignSub (lr4 (true, 500.0), lr4 (false, 700.0));
+    CHECK_FALSE (none.ok);
+    CHECK (none.note.rfind ("No crossover to align", 0) == 0);
+    CHECK_FALSE (crossoverRegion (lr4 (true, 500.0), lr4 (false, 700.0)).has_value());
+    CHECK (crossoverRegion (lr4 (true, 80.0), lr4 (false, 80.0)).has_value());
+
+    SubSettings noisy;
+    noisy.mainSnrDb = 15.0;
+    const auto medium = alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0), noisy);
+    CHECK (medium.confidence == Confidence::medium);
+    REQUIRE_FALSE (medium.reasons.empty());
+    CHECK (medium.reasons[0] == "15 dB SNR over the crossover");
+    noisy.subSnrDb = 5.0;
+    CHECK (alignSub (lr4 (true, 80.0, 3.0), lr4 (false, 80.0), noisy).confidence == Confidence::low);
+    CHECK_FALSE (alignSub ({}, lr4 (false, 80.0)).ok);    // pink noise or music: no phase to work with
+}
