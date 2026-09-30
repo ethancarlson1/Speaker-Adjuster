@@ -3,6 +3,7 @@
 #include "plugin/AlignmentPanel.h"
 #include "plugin/CaptureList.h"
 #include "plugin/PluginProcessor.h"
+#include "plugin/QualityCard.h"
 #include "plugin/ResponseGraph.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -189,6 +190,12 @@ public:
 private:
 
     CaptureList captureList;
+    QualityCard qualityCard;                     // Measure tab: the selected capture's quality
+    void updateQualityCard();
+public:
+    QualityCard& getQualityCard() { return qualityCard; }         // tests
+    CaptureList& getCaptureList() { return captureList; }         // tests
+private:
     ResponseGraph graph { processor };
     juce::TooltipWindow tooltips { this, 600 };
     std::unique_ptr<juce::AlertWindow> saveDialog;

@@ -20,7 +20,8 @@ const juce::Identifier applied { "Applied" }, previous { "Previous" }, appliedId
 const juce::Identifier nextCorrectionId { "nextCorrectionId" }, correctionBand { "CorrectionBand" };
 const juce::Identifier freq { "freq" }, gain { "gain" }, q { "q" };
 const juce::Identifier arrivalMs { "arrivalMs" }, arrivalConfidence { "arrivalConfidence" }, arrivalReasons { "arrivalReasons" };
-const juce::Identifier systemLatencyMs { "systemLatencyMs" }, low { "low" };
+const juce::Identifier systemLatencyMs { "systemLatencyMs" }, low { "low" }, coherence { "coherence" };
+const juce::Identifier impulse { "impulse" }, impulseStartMs { "impulseStartMs" };
 } // namespace ids
 
 // Spectra are stored as float32: plenty for dB-domain data, half the size.
@@ -507,8 +508,22 @@ void MeasurementEngine::analyse (std::unique_ptr<CaptureRequest> request)
                 if (req->kind == CaptureRequest::Kind::noise)
                     c.kind = "noise";
             }
-            result.arrival = roomeq::estimateArrival (c);   // needs the impulse response, which isn't kept with the session
+            result.arrival = roomeq::estimateArrival (c);   // needs the impulse response, which isn't kept whole
+            if (! c.ir.empty() && ! c.delaysMs.empty())
+            {
+                // 5 ms before the window's peak to 95 ms after, for the quality details.
+                const auto nPre = roomeq::irWindow (cfg.window, c.fs).nPre;
+                const auto before = static_cast<std::size_t> (std::lround (0.005 * c.fs));
+                const auto from = nPre > before ? nPre - before : 0;
+                const auto to = std::min (c.ir.size(), nPre + static_cast<std::size_t> (std::lround (0.095 * c.fs)));
+                auto excerpt = std::make_shared<Impulse>();
+                excerpt->samples.assign (c.ir.begin() + static_cast<std::ptrdiff_t> (from), c.ir.begin() + static_cast<std::ptrdiff_t> (to));
+                excerpt->fs = c.fs;
+                excerpt->startMs = c.delaysMs.front() - 1000.0 * static_cast<double> (nPre - from) / c.fs;
+                result.impulse = std::move (excerpt);
+            }
             c.repeatPowers.clear();   // only needed for grading (a re-grade keeps the spreads it found)
+            c.ir.clear();             // kept as the excerpt above
             result.capture = std::make_shared<roomeq::Capture> (std::move (c));
         }
         catch (const std::exception& e)
@@ -702,10 +717,11 @@ void MeasurementEngine::update()
                 it->verify = r.verify;
                 it->correctionId = r.correctionId;
                 it->arrival = r.arrival;
+                it->impulse = r.impulse;
             }
             else
             {
-                entries.push_back ({ nextId++, r.capture, r.verify, r.correctionId, r.arrival });
+                entries.push_back ({ nextId++, r.capture, r.verify, r.correctionId, r.arrival, r.impulse });
             }
         }
         status = r.name + " analysed: " + juce::String (roomeq::gradeLabel (r.capture->grade.overall));
@@ -771,6 +787,11 @@ juce::ValueTree MeasurementEngine::toValueTree() const
         ct.setProperty (ids::weight, pack (c.weight), nullptr);
         if (! c.low.empty())
             ct.setProperty (ids::low, packComplex (c.low), nullptr);
+        if (e.impulse != nullptr)
+        {
+            ct.setProperty (ids::impulse, pack ({ e.impulse->samples.begin(), e.impulse->samples.end() }), nullptr);
+            ct.setProperty (ids::impulseStartMs, e.impulse->startMs, nullptr);
+        }
         for (const auto& b : c.grade.bands)
         {
             juce::ValueTree bt (ids::band);
@@ -785,6 +806,8 @@ juce::ValueTree MeasurementEngine::toValueTree() const
             if (b.excessSpreadDb)
                 bt.setProperty (ids::excess, *b.excessSpreadDb, nullptr);
             bt.setProperty (ids::outOfRange, b.outOfRange, nullptr);
+            if (b.coherence)
+                bt.setProperty (ids::coherence, *b.coherence, nullptr);
             bt.setProperty (ids::snrGrade, static_cast<int> (b.snrGrade), nullptr);
             bt.setProperty (ids::consistencyGrade, static_cast<int> (b.consistencyGrade), nullptr);
             ct.appendChild (bt, nullptr);
@@ -835,6 +858,8 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
             if (bt.hasProperty (ids::excess))
                 b.excessSpreadDb = static_cast<double> (bt[ids::excess]);
             b.outOfRange = bt[ids::outOfRange];
+            if (bt.hasProperty (ids::coherence))
+                b.coherence = static_cast<double> (bt[ids::coherence]);
             b.snrGrade = static_cast<roomeq::Grade> (static_cast<int> (bt[ids::snrGrade]));
             b.consistencyGrade = static_cast<roomeq::Grade> (static_cast<int> (bt[ids::consistencyGrade]));
             c->grade.bands.push_back (b);
@@ -854,8 +879,17 @@ void MeasurementEngine::fromValueTree (const juce::ValueTree& tree)
             arrival.confidence = roomeq::Confidence::medium;
             arrival.reasons = { "measured before arrival confidence was recorded" };
         }
+        std::shared_ptr<const Impulse> impulse;
+        if (const auto samples = unpack (ct[ids::impulse]); ! samples.empty())
+        {
+            auto loadedImpulse = std::make_shared<Impulse>();
+            loadedImpulse->samples.assign (samples.begin(), samples.end());
+            loadedImpulse->fs = c->fs;
+            loadedImpulse->startMs = ct[ids::impulseStartMs];
+            impulse = std::move (loadedImpulse);
+        }
         loaded.push_back ({ id, std::move (c), static_cast<bool> (ct[ids::verify]), static_cast<int> (ct[ids::correctionId]),
-                            std::move (arrival) });
+                            std::move (arrival), std::move (impulse) });
     }
 
     {

@@ -51,6 +51,7 @@ class BandResult:
     out_of_range: bool
     snr_grade: Grade
     consistency_grade: Grade
+    coherence: float | None = None  # mean coherence over the band's excited bins (music and noise only)
 
     @property
     def grade(self) -> Grade | None:
@@ -134,6 +135,7 @@ def regrade(grade: CaptureGrade, freqs: np.ndarray, signal_power: np.ndarray,
             snr_grade=_grade(b.snr_db, cfg.snr_pass_db, cfg.snr_marginal_db, True),
             consistency_grade=(Grade.PASS if b.excess_spread_db is None else
                                _grade(b.excess_spread_db, cfg.consistency_pass_db, cfg.consistency_marginal_db, False)),
+            coherence=b.coherence,
         ))
     result = _verdict(bands, cfg)
     result.notes += grade.notes[len(_range_notes(grade.bands)):]

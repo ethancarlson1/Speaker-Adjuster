@@ -22,6 +22,7 @@
 #include "plugin/PluginProcessor.h"
 #include "roomeq/levelmatch.h"
 #include "roomeq/noise.h"
+#include "roomeq/quality.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -1802,6 +1803,16 @@ int main (int argc, char** argv)
                    && again[i].capture->grade.reasons == entries[i].capture->grade.reasons
                    && again[i].capture->excluded == (i == 4);
         check (same, "names, reasons and excluded flags restored");
+        auto qualitySame = again.size() == entries.size();
+        for (std::size_t i = 0; qualitySame && i < again.size(); ++i)
+        {
+            const auto a = roomeq::measurementQuality (*again[i].capture), b = roomeq::measurementQuality (*entries[i].capture);
+            qualitySame = a.confidence == b.confidence && a.snr == b.snr && a.coherenceRating == b.coherenceRating
+                          && a.repeatability == b.repeatability && a.reasons == b.reasons
+                          && (again[i].impulse == nullptr) == (entries[i].impulse == nullptr)
+                          && (entries[i].impulse == nullptr || again[i].impulse->samples.size() == entries[i].impulse->samples.size());
+        }
+        check (qualitySame, "measurement quality, coherence and impulse responses restored");
         check (restored.getEngine().getDisplay() != nullptr, "average recomputed after restore");
         auto verifySame = true;
         for (std::size_t i = 0; verifySame && i < again.size() && i < entries.size(); ++i)
@@ -1961,7 +1972,15 @@ int main (int argc, char** argv)
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
         writeSnapshot (*editor, stem + "-correct-small.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
+        {
+            const auto all = engine.getEntries();
+            ours->getCaptureList().selectId (all.front().id);
+            check (ours->getQualityCard().isVisible() && ours->getQualityCard().getQuality().has_value(),
+                   "the smallest window still shows the selected capture's quality (card "
+                       + ours->getQualityCard().getBounds().toString() + ")");
+        }
         writeSnapshot (*editor, stem + "-measure-small.png");
+        ours->getCaptureList().selectId (-1);
         editor->setSize (1200, 820);
 
         std::cout << "Editing on the graph\n";
@@ -1976,9 +1995,54 @@ int main (int argc, char** argv)
             const auto all = engine.getEntries();
             const auto firstVerify = std::find_if (all.begin(), all.end(), [] (const auto& e) { return e.verify; });
             ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
-            graph->setData (engine.getDisplay(), all[1].id);
+            ours->getCaptureList().selectId (all[1].id);
             check (graph->isHighlighting(), "selecting a position highlights its curve");
+
+            // ... and shows its measurement quality.
+            auto& card = ours->getQualityCard();
+            const auto& q = card.getQuality();
+            check (card.isVisible() && q && q->confidence == roomeq::Confidence::high && q->snr <= roomeq::Rating::good
+                       && q->repeatability && ! q->coherence && q->usable.first < 80.0 && q->usable.second > 15000.0
+                       && card.getDetailsButton().isVisible(),
+                   "P2's quality: signal-to-noise " + juce::String (q ? roomeq::ratingLabel (q->snr) : "none")
+                       + ", repeatability " + juce::String (q && q->repeatability ? roomeq::ratingLabel (*q->repeatability) : "none")
+                       + ", no coherence (a sweep), confidence " + (q ? roomeq::confidenceLabel (q->confidence) : "none")
+                       + " (card " + card.getBounds().toString() + (card.isVisible() ? ", visible)" : ", hidden)"));
             writeSnapshot (*editor, stem + "-selected.png");
+            {
+                auto details = card.createDetails();
+                check (details != nullptr && all[1].impulse != nullptr
+                           && all[1].impulse->samples.size() == static_cast<std::size_t> (0.1 * fs)
+                           && std::abs (all[1].impulse->startMs - (all[1].capture->delaysMs.front() - 5.0)) < 1e-9,
+                       "Details: the band table and 100 ms of impulse response from 5 ms before the peak");
+                if (details != nullptr)
+                    writeSnapshot (*details, stem + "-quality-details.png");
+            }
+            const auto byKind = [&] (const char* kind, bool redo)
+            {
+                return std::find_if (all.begin(), all.end(), [&] (const auto& e)
+                                     { return ! e.verify && e.capture->kind == kind && (e.capture->grade.overall == roomeq::Grade::redo) == redo; });
+            };
+            if (const auto rumble = byKind ("sweep", true); rumble != all.end())
+            {
+                ours->getCaptureList().selectId (rumble->id);
+                const auto& r = card.getQuality();
+                check (r && r->confidence == roomeq::Confidence::low && r->snr == roomeq::Rating::poor
+                           && (r->snrBand == "31.5" || r->snrBand == "63") && ! r->reasons.empty(),
+                       "the rumble capture: confidence low, " + (r && ! r->reasons.empty() ? juce::String (r->reasons.front()) : juce::String()));
+            }
+            if (const auto music = byKind ("program", false); music != all.end())
+            {
+                ours->getCaptureList().selectId (music->id);
+                const auto& m = card.getQuality();
+                check (m && m->coherence && m->coherenceRating && ! m->repeatability && music->impulse == nullptr,
+                       "the music capture: coherence " + juce::String (m && m->coherence ? *m->coherence : -1.0, 2) + " ("
+                           + (m && m->coherenceRating ? roomeq::ratingLabel (*m->coherenceRating) : "none") + ") at its worst band");
+                writeSnapshot (*editor, stem + "-quality-music.png");
+            }
+            ours->getCaptureList().selectId (-1);
+            check (! card.getQuality() && ! card.getDetailsButton().isVisible(), "no selection: the card says to pick one");
+            graph->setData (engine.getDisplay(), all[1].id);
             graph->setData (engine.getDisplay(), firstVerify != all.end() ? firstVerify->id : -1);
             check (graph->isHighlighting(), "and a verify capture's too");
             graph->setData (engine.getDisplay(), -1);

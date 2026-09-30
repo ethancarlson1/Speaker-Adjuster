@@ -199,6 +199,20 @@ Capture analyzeProgramCapture (const std::string& name, const std::vector<double
     c.grade = gradeCapture (c.freqs, c.power, c.noisePower, nullptr, cfg.grading, std::min (20000.0, fs / 2.0));
     for (auto& note : driftNotes (est.drift))
         c.grade.notes.push_back (std::move (note));
+    const auto excited = excitationGate (est);
+    for (auto& b : c.grade.bands)
+    {
+        auto sum = 0.0;
+        auto n = 0;
+        for (std::size_t k = 0; k < est.freqs.size(); ++k)
+            if (excited[k] > 0.5 && est.freqs[k] >= b.lo && est.freqs[k] < b.hi)
+            {
+                sum += est.coherence[k];
+                ++n;
+            }
+        if (n > 0)
+            b.coherence = sum / n;
+    }
     c.delaysMs.push_back (1000.0 * static_cast<double> (est.delay) / fs);
     c.driftPpm = est.drift.ppm;
     return c;

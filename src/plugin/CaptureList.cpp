@@ -169,6 +169,16 @@ int CaptureList::getSelectedId() const
     return row >= 0 && row < static_cast<int> (entries.size()) ? entries[static_cast<std::size_t> (row)].id : -1;
 }
 
+void CaptureList::selectId (int id)
+{
+    const auto it = std::find_if (entries.begin(), entries.end(), [id] (const auto& e) { return e.id == id; });
+    if (it != entries.end())
+        list.selectRow (static_cast<int> (it - entries.begin()));
+    else
+        list.deselectAllRows();
+    justSelected = false;
+}
+
 void CaptureList::resized()
 {
     list.setBounds (getLocalBounds());

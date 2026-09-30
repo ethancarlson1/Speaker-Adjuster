@@ -25,6 +25,7 @@
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
 #include "roomeq/loudness.h"
+#include "roomeq/quality.h"
 
 #include <algorithm>
 #include <cctype>
@@ -109,7 +110,19 @@ std::string complexes (const std::vector<roomeq::cplx>& v)
     return list (v, [] (const roomeq::cplx& z) { return "[" + num (z.real()) + "," + num (z.imag()) + "]"; });
 }
 
-std::string captureJson (const roomeq::Capture& c)
+std::string qualityJson (const roomeq::MeasurementQuality& q)
+{
+    const auto rating = [] (std::optional<roomeq::Rating> r) { return r ? str (roomeq::ratingLabel (*r)) : std::string ("null"); };
+    return std::string ("{") + "\"snr_db\":" + num (q.snrDb) + ",\"snr_band\":" + str (q.snrBand)
+           + ",\"snr\":" + rating (q.snr) + ",\"coherence\":" + (q.coherence ? num (*q.coherence) : "null")
+           + ",\"coherence_band\":" + str (q.coherenceBand) + ",\"coherence_rating\":" + rating (q.coherenceRating)
+           + ",\"repeat_db\":" + (q.repeatDb ? num (*q.repeatDb) : "null") + ",\"repeat_band\":" + str (q.repeatBand)
+           + ",\"repeatability\":" + rating (q.repeatability)
+           + ",\"usable\":[" + num (q.usable.first) + "," + num (q.usable.second) + "]"
+           + ",\"confidence\":" + str (roomeq::confidenceLabel (q.confidence)) + ",\"reasons\":" + list (q.reasons, str) + "}";
+}
+
+std::string captureJson (const roomeq::Capture& c, double bandLo, double bandHi)
 {
     const auto band = [] (const roomeq::BandResult& b)
     {
@@ -118,6 +131,7 @@ std::string captureJson (const roomeq::Capture& c)
                + ",\"snr_db\":" + num (b.snrDb)
                + ",\"spread_db\":" + (b.spreadDb ? num (*b.spreadDb) : "null")
                + ",\"excess_spread_db\":" + (b.excessSpreadDb ? num (*b.excessSpreadDb) : "null")
+               + ",\"coherence\":" + (b.coherence ? num (*b.coherence) : "null")
                + ",\"out_of_range\":" + (b.outOfRange ? "true" : "false")
                + ",\"grade\":" + (g ? str (roomeq::gradeLabel (*g)) : "null") + "}";
     };
@@ -132,7 +146,8 @@ std::string captureJson (const roomeq::Capture& c)
            + ",\"overall\":" + str (roomeq::gradeLabel (c.grade.overall))
            + ",\"reasons\":" + list (c.grade.reasons, str)
            + ",\"notes\":" + list (c.grade.notes, str)
-           + ",\"bands\":" + list (c.grade.bands, band) + "}";
+           + ",\"bands\":" + list (c.grade.bands, band)
+           + ",\"quality\":" + qualityJson (roomeq::measurementQuality (c, bandLo, bandHi)) + "}";
 }
 
 std::string summaryJson (const roomeq::SessionSummary& s)
@@ -384,7 +399,7 @@ int run (int argc, char** argv)
         ccfg.refBandHiHz = bandHi;
         correction = correctionJson (roomeq::designCorrection (captures, *summary, *target, cfg.fs, ccfg));
     }
-    std::cout << "{\"captures\":" << list (captures, [] (const auto& c) { return captureJson (*c); })
+    std::cout << "{\"captures\":" << list (captures, [&] (const auto& c) { return captureJson (*c, bandLo, bandHi); })
               << ",\"summary\":" << (summary ? summaryJson (*summary) : "null")
               << ",\"correction\":" << correction << "}\n";
     return 0;

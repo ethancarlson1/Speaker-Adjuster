@@ -30,6 +30,7 @@ public:
     // appliedId: verify captures taken with another correction are marked as older.
     void setEntries (std::vector<MeasurementEngine::Entry> newEntries, bool measuring, int appliedId = 0);
     int getSelectedId() const;
+    void selectId (int id);                   // -1: none (as a click would, it tells onSelect)
     void resized() override;
     void paint (juce::Graphics&) override;
 

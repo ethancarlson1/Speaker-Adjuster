@@ -28,6 +28,25 @@ So far all of this has only been checked against simulated rooms. The next step 
    Under its badge is the direct sound's arrival, e.g. "sweep 25.40 ms", with a dot for how far to trust it: green high, amber medium, red low (see [Alignment](#alignment)).
 7. The graph shows each position (level-aligned), the power average, and the target over the corrected range. With only 1–2 good positions, quick mode smooths more heavily and limits the correction (below).
 8. Click a capture to highlight its curve: it's drawn on top, thicker, with the others dimmed and its name in the legend. Verify captures can be highlighted too. Click it again to clear the highlight.
+9. The selected capture's **Measurement quality** shows under the measure buttons (see below).
+
+**Measurement quality.** The grading's numbers in words, for the selected capture. Each row is rated **Excellent / Good / Fair / Poor** from its worst graded octave band, as the grade is. Good and Fair start at the grading's pass and marginal limits, so a PASS capture is Good or better.
+
+| Row | From | Excellent | Good | Fair |
+|---|---|---|---|---|
+| Signal-to-noise | band SNR | ≥ 30 dB | ≥ 20 dB | ≥ 10 dB |
+| Coherence (music and pink noise) | the band's mean coherence over the bins the program excited | ≥ 0.95 | ≥ 0.85 | ≥ 0.6 |
+| Repeatability (two or more sweeps) | the worst 1/3-octave spread between repeats, beyond what the noise explains | ≤ 0.5 dB | ≤ 1 dB | ≤ 3 dB |
+
+- **Missing rows:** sweeps have no coherence, and a single sweep or a music or noise capture has no repeats to compare. Those rows show a dash.
+- **Usable range:** where this capture is within 10 dB of its reference band (1-octave smoothed), found as the session's is.
+- **Overall confidence:** **high**; **medium** when anything is Fair or the grade is marginal; **low** when anything is Poor, the grade is redo, or no band was heard. The reason is shown under it.
+
+**Details…** opens the raw numbers:
+- each octave band's level, SNR, coherence, repeat spread (raw and beyond the noise) and grade;
+- the arrival and its confidence reasons;
+- any clock drift that was corrected;
+- for sweeps, the impulse response from 5 ms before its peak to 95 ms after, as an energy-time curve in dB, with the arrival marked. It's kept with the session.
 
 **Mic gain.** The Mic meter in the header has a green zone, −30 to −10 dBFS: set the mic gain so its peaks sit there. In the plugin, do it with soundcheck music or pink noise at show level. The standalone app only plays test signals, so run one (a pink noise capture is easiest) and set the gain while it plays. The bar turns red above −3 dBFS.
 
@@ -358,7 +377,7 @@ cd prototype && ROOMEQ_CLI=../build/roomeq_cli pytest               # Python tes
 ./build/AdaptiveRoomEQ_Harness_artefacts/Release/AdaptiveRoomEQ_Harness --out ui.png   # end to end
 ```
 
-The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, grade, reason string and curve must agree to within 1e-6 dB. The fitted correction must agree to within 0.05 dB; locally it's within 2e-6 dB.
+The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, coherence, grade, quality rating, reason string and curve must agree to within 1e-6 dB. The fitted correction must agree to within 0.05 dB; locally it's within 2e-6 dB.
 
 The harness drives the real processor against a simulated room. It checks:
 - the speakers get exactly the predicted correction and voicing, plus the output level match's make-up, and pink noise comes out as loud as it goes in;
@@ -368,7 +387,7 @@ The harness drives the real processor against a simulated room. It checks:
 - a dead mic input refuses every test signal and nothing plays;
 - Clear all: refused mid-measurement; afterwards no measurements, corrections or level calibration, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
 - measurements bypass the correction: with correction, voicing, level compensation shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
-- selecting a capture (a position or a verify capture) highlights its curve;
+- selecting a capture (a position or a verify capture) highlights its curve and shows its measurement quality: a clean sweep high confidence, the rumble capture low (poor SNR at 31.5 Hz), the music capture with its coherence; Details with 100 ms of impulse response; still shown in the smallest window; and quality, coherence and impulse responses surviving the saved session;
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;

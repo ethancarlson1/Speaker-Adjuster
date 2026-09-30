@@ -161,5 +161,9 @@ def analyze_program_capture(name: str, reference: np.ndarray, mic: np.ndarray, f
     weight = (rebin_power(est.freqs, dualfft.excitation_gate(est), freqs) > 0.5) * in_band(freqs, 20.0, 20000.0)
     grade = grade_capture(freqs, power, noise, None, cfg.grading, f_max=min(20000.0, fs / 2))
     grade.notes += dualfft.drift_notes(est.drift)
+    excited = dualfft.excitation_gate(est) > 0.5
+    for b in grade.bands:
+        sel = excited & (est.freqs >= b.lo) & (est.freqs < b.hi)
+        b.coherence = float(np.mean(est.coherence[sel])) if np.any(sel) else None
     return Capture(name=name, kind="program", fs=fs, freqs=freqs, power=power, noise_power=noise,
                    weight=weight, grade=grade, delays_ms=[1000 * est.delay / fs], drift_ppm=est.drift.ppm)

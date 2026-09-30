@@ -40,6 +40,7 @@ struct BandResult
     bool outOfRange = false;
     Grade snrGrade = Grade::pass;
     Grade consistencyGrade = Grade::pass;
+    std::optional<double> coherence;         // mean coherence over the band's excited bins (music and noise only)
 
     std::optional<Grade> grade() const;      // empty when out of range
 };

@@ -29,6 +29,15 @@ class MeasurementEngine : public juce::ChangeBroadcaster,
                           private juce::Timer
 {
 public:
+    // A sweep's impulse response around its arrival, for the quality details:
+    // 5 ms before the analysis window's peak to 95 ms after.
+    struct Impulse
+    {
+        std::vector<float> samples;
+        double fs = 0.0;
+        double startMs = 0.0;     // the first sample's loop delay
+    };
+
     struct Entry
     {
         int id = 0;
@@ -36,6 +45,7 @@ public:
         bool verify = false;
         int correctionId = 0;     // verify captures: the applied correction they measured
         roomeq::Arrival arrival;  // the direct sound's loop delay, found when it was analysed
+        std::shared_ptr<const Impulse> impulse;   // sweeps only
     };
 
     struct SweepSettings
@@ -152,6 +162,7 @@ private:
         std::shared_ptr<const roomeq::Capture> capture;
         roomeq::GradingConfig grading;    // what it was graded with
         roomeq::Arrival arrival;
+        std::shared_ptr<const Impulse> impulse;
         bool latency = false;             // a loopback for the system latency, not a capture
         juce::String name, error;
     };

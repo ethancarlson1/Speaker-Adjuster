@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from roomeq import alignment, averaging, capture, loudness, roomsim, sweep
+from roomeq import alignment, averaging, capture, loudness, quality, roomsim, sweep
 from roomeq.spectrum import log_freq_grid
 
 CLI = os.environ.get("ROOMEQ_CLI")
@@ -46,6 +46,20 @@ def assert_curve(cpp, py, what):
     assert np.array_equal(np.isnan(cpp), np.isnan(py)), f"{what}: NaN pattern differs"
     ok = ~np.isnan(py)
     assert np.max(np.abs(cpp[ok] - py[ok]), initial=0.0) < TOL_DB, what
+
+
+def assert_quality(cpp, py: capture.Capture, band=(250.0, 4000.0)):
+    q = quality.measurement_quality(py, band)
+    where = py.name
+    for key in ("snr_db", "coherence", "repeat_db"):
+        value = getattr(q, key)
+        if value is None:
+            assert cpp[key] is None, f"{where} {key}"
+        else:
+            assert cpp[key] == pytest.approx(value, abs=1e-9), f"{where} {key}"
+    for key in ("snr_band", "snr", "coherence_band", "coherence_rating", "repeat_band", "repeatability", "confidence", "reasons"):
+        assert cpp[key] == getattr(q, key), f"{where} {key}"
+    assert as_array(cpp["usable"]) == pytest.approx(np.array(q.usable), abs=1e-9, nan_ok=True), where
 
 
 def test_sweep_generation_matches(tmp_path):
@@ -109,9 +123,15 @@ def test_session_matches_python(sim, tmp_path):
                     assert cb[key] is None, where
                 else:
                     assert abs(cb[key] - value) < TOL_DB, where
+            if pb.coherence is None:
+                assert cb["coherence"] is None, where
+            else:
+                assert cb["coherence"] == pytest.approx(pb.coherence, abs=1e-9), where
+        assert_quality(cpp["quality"], py)
 
     # The scenario must exercise every grade path, or the comparison proves little.
     assert {c.grade.overall.label for c in py_caps} >= {"pass", "redo"}
+    assert {quality.measurement_quality(c).confidence for c in py_caps} == {"high", "medium", "low"}
 
     py_sum = averaging.summarize_session(py_caps, 6, log_freq_grid(20, 20000, 48))
     s = result["summary"]
@@ -263,6 +283,7 @@ def test_sub_zone_matches_python(tmp_path):
             assert cb["out_of_range"] == pb.out_of_range, f"{py.name} {pb.name}"
             assert cb["grade"] == (None if pb.grade is None else pb.grade.label), f"{py.name} {pb.name}"
             assert abs(cb["level_db"] - pb.level_db) < TOL_DB, f"{py.name} {pb.name}"
+        assert_quality(cpp["quality"], py, band)
     assert any(not b.out_of_range for b in caps[0].grade.bands) and caps[0].grade.bands[-1].out_of_range
 
     summary = averaging.summarize_session(caps, 6, log_freq_grid(20, 20000, 48), band=band)

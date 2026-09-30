@@ -84,7 +84,11 @@ juce::String bandText (const roomeq::Band& b)
 AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     : AudioProcessorEditor (&p),
       processor (p),
-      captureList ({ [this] (int id) { graph.setData (processor.getEngine().getDisplay(), id); },
+      captureList ({ [this] (int id)
+                     {
+                         graph.setData (processor.getEngine().getDisplay(), id);
+                         updateQualityCard();
+                     },
                      [this] (int id, const juce::String& name) { processor.getEngine().rename (id, name); },
                      [this] (int id, bool include) { processor.getEngine().setExcluded (id, ! include); },
                      [this] (int id) { redo (id); },
@@ -208,6 +212,8 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     button (measureButton, measureControls);
     button (programButton, measureControls);
     button (clearAllButton, measureControls);
+    addChildComponent (qualityCard);
+    measureControls.push_back (&qualityCard);
     addAndMakeVisible (stopButton);   // on every tab: Verify runs from the Correct tab
 
     // ---- Correct tab
@@ -637,7 +643,18 @@ void AdaptiveRoomEQEditor::refreshFromEngine()
     const auto measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
     captureList.setEntries (engine.getEntries(), measuring, engine.getAppliedId());
     graph.setData (engine.getDisplay(), captureList.getSelectedId());
+    updateQualityCard();
     repaint();
+}
+
+void AdaptiveRoomEQEditor::updateQualityCard()
+{
+    std::optional<MeasurementEngine::Entry> selected;
+    const auto id = captureList.getSelectedId();
+    for (const auto& e : processor.getEngine().getEntries())
+        if (e.id == id)
+            selected = e;
+    qualityCard.setEntry (std::move (selected), processor.getReferenceBand());
 }
 
 void AdaptiveRoomEQEditor::timerCallback()
@@ -1486,9 +1503,16 @@ void AdaptiveRoomEQEditor::resized()
     // What's left: correction / loudness details and the tab's tip. When the
     // window is too small for both, the details stay and the tip goes.
     const auto tipHeight = currentTab == Tab::loudness ? 64 : 84;
-    const auto detailsHeight = currentTab == Tab::correct || currentTab == Tab::loudness || currentTab == Tab::zone ? 90 : 0;
+    const auto detailsHeight = currentTab == Tab::correct || currentTab == Tab::loudness || currentTab == Tab::zone ? 90
+                               : currentTab == Tab::measure                                                         ? QualityCard::preferredHeight
+                                                                                                                    : 0;
     tipBounds = content.getHeight() >= tipHeight + detailsHeight ? content.removeFromBottom (tipHeight) : juce::Rectangle<int>();
     infoBounds = content.withTrimmedTop (4);
+    if (currentTab == Tab::measure)
+    {
+        qualityCard.setBounds (infoBounds.withTrimmedTop (4).withTrimmedBottom (6));
+        qualityCard.setVisible (! showViewOn && qualityCard.getHeight() >= QualityCard::minimumHeight);
+    }
     }
 
     // Right: the capture list (setup view) and the graph.

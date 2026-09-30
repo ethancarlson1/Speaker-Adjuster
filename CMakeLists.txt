@@ -43,6 +43,7 @@ add_library(roomeq_core STATIC
     src/roomeq/levelmatch.cpp
     src/roomeq/loudness.cpp
     src/roomeq/noise.cpp
+    src/roomeq/quality.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
     src/roomeq/targets.cpp
@@ -89,6 +90,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_loudness.cpp
         tests/cpp/test_loudness_stage.cpp
         tests/cpp/test_noise.cpp
+        tests/cpp/test_quality.cpp
         tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_spl_meter.cpp
@@ -172,6 +174,7 @@ target_sources(AdaptiveRoomEQ
         src/plugin/MeasurementEngine.cpp
         src/plugin/PluginEditor.cpp
         src/plugin/PluginProcessor.cpp
+        src/plugin/QualityCard.cpp
         src/plugin/ResponseGraph.cpp
         src/plugin/Spectrogram.cpp
         src/plugin/SplMeter.cpp
@@ -215,6 +218,7 @@ if(ARE_BUILD_TESTS)
             src/plugin/MeasurementEngine.cpp
             src/plugin/PluginEditor.cpp
             src/plugin/PluginProcessor.cpp
+            src/plugin/QualityCard.cpp
             src/plugin/ResponseGraph.cpp
             src/plugin/Spectrogram.cpp
             src/plugin/SplMeter.cpp
