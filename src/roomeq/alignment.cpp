@@ -265,7 +265,8 @@ SubAlignment alignSub (const LowResponse& main, const LowResponse& sub, const Su
     for (std::size_t i = 0; i < f.size(); ++i)
     {
         const auto w = 2.0 * pi * f[i] * 1e-3;
-        hm[i] = main.h[i] * std::polar (s.mainInvert ? -1.0 : 1.0, -w * (main.refMs + s.mainDelayMs));
+        // Polarity as a sign: std::polar's magnitude must not be negative (libc++ gives NaN).
+        hm[i] = main.h[i] * std::polar (1.0, -w * (main.refMs + s.mainDelayMs)) * (s.mainInvert ? -1.0 : 1.0);
         hs[i] = sub.h[i] * std::polar (1.0, -w * sub.refMs);
     }
 
@@ -284,7 +285,7 @@ SubAlignment alignSub (const LowResponse& main, const LowResponse& sub, const Su
         auto total = 0.0;
         for (auto i = lo; i <= hi; ++i)
         {
-            const auto v = hm[i] + hs[i] * std::polar (invert ? -1.0 : 1.0, -2.0 * pi * f[i] * delayMs * 1e-3);
+            const auto v = hm[i] + hs[i] * std::polar (1.0, -2.0 * pi * f[i] * delayMs * 1e-3) * (invert ? -1.0 : 1.0);
             total += 20.0 * std::log10 (std::max (std::abs (v), 1e-30));
         }
         return total / static_cast<double> (hi - lo + 1);
