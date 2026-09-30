@@ -187,7 +187,6 @@ void pump (AdaptiveRoomEQProcessor& p)
 {
     p.getEngine().update();
     p.getLoudness().update();
-    p.getShow().update();
     juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
 }
 
@@ -1406,92 +1405,6 @@ int main (int argc, char** argv)
         show.play (&music, 3.0);   // boosting again, for the screenshot
     }
 
-    std::cout << "Show tracking\n";
-    {
-        auto& tracking = proc.getShow();
-        using ShowStep = ShowController::Step;
-        const auto drain = [&]
-        {
-            for (int i = 0; i < 12000 && tracking.pendingAnalyses() > 0; ++i)
-                pump (proc);
-            pump (proc);
-        };
-        SimulatedRoom room (8.0, 31, 1e-3, 0.0);   // a noisier room: the crowd
-        Show show { proc, room, 0.0, {}, {}, {} };
-        Music music;
-        music.gain = 0.03;
-        show.play (&music, 2.0);
-        check (tracking.storeReference().wasOk(), "store the soundcheck reference (music playing)");
-        show.play (&music, 35.0, [&] { return tracking.getStep() != ShowStep::storing; });
-        drain();
-        auto info = tracking.getInfo();
-        check (info.hasReference && info.referenceBands >= 18,
-               "reference stored (" + juce::String (info.referenceBands) + " of 22 bands heard clearly)");
-        show.play (&music, 2.0);
-        info = tracking.getInfo();
-        check (info.firstResultSeconds > 45.0 && info.firstResultSeconds <= 60.0 && info.nextUpdateSeconds <= 10.0
-                   && showCountdown (info).startsWith ("First result in about"),
-               "countdown: " + showCountdown (info));
-
-        show.play (&music, 150.0);
-        drain();
-        info = tracking.getInfo();
-        double largest = 0.0;
-        for (auto dv : info.state.deltaDb)
-            if (std::isfinite (dv))
-                largest = std::max (largest, std::abs (dv));
-        check (info.blocksHeard >= 13 && info.state.severity == 0 && largest < 2.0,
-               "2.5 minutes of the same room: no warning (largest change " + juce::String (largest, 2) + " dB)");
-        show.play (&music, 1.0);
-        info = tracking.getInfo();
-        check (info.firstResultSeconds < 0.0 && info.nextUpdateSeconds >= 0.0 && info.nextUpdateSeconds <= 10.0
-                   && showCountdown (info).startsWith ("Next update in"),
-               "once there's a result: " + showCountdown (info));
-
-        // The low mids build up by 6 dB (a peaking filter on what the mic hears).
-        auto bump = Biquad::peaking (180.0, 6.0, 1.0);
-        show.roomChange = [bump] (double x) mutable { return bump.process (x); };
-        show.play (&music, 150.0);
-        drain();
-        info = tracking.getInfo();
-        const auto& names = roomeq::showBandNames();
-        juce::StringArray flagged;
-        for (std::size_t b = 0; b < info.state.flags.size(); ++b)
-            if (info.state.flags[b] != 0)
-                flagged.add (names[b]);
-        const auto message = juce::String::fromUTF8 (info.state.message.c_str());
-        check (info.state.severity >= 1 && flagged.contains ("200") && ! flagged.contains ("1k") && ! flagged.contains ("4k"),
-               "the build-up is flagged at " + flagged.joinIntoString (", ") + " Hz: " + message);
-
-        // The banner's x: the same change stays hidden, a new one brings it back.
-        tracking.dismissWarning();
-        check (tracking.getInfo().warningDismissed, "dismissed: the warning is hidden");
-        show.play (&music, 30.0);
-        drain();
-        check (tracking.getInfo().warningDismissed && tracking.getInfo().state.severity >= 1,
-               "30 s more of the same change: still hidden");
-        auto dip = Biquad::peaking (5000.0, -7.0, 0.8);   // and now the top end dulls too
-        show.roomChange = [bump, dip] (double x) mutable { return dip.process (bump.process (x)); };
-        show.play (&music, 150.0);
-        drain();
-        info = tracking.getInfo();
-        flagged.clear();
-        for (std::size_t b = 0; b < info.state.flags.size(); ++b)
-            if (info.state.flags[b] != 0)
-                flagged.add (names[b]);
-        check (! info.warningDismissed && (flagged.contains ("5k") || flagged.contains ("6.3k")),
-               "a new change flagged (" + flagged.joinIntoString (", ") + " Hz): the warning is back");
-
-        // A measurement mid-show: that block is dropped, not counted as the room.
-        const auto dropped = info.blocksDropped;
-        check (proc.startSweep().wasOk(), "a sweep during the show");
-        show.play (&music, 3.0);
-        engine.cancel();
-        show.play (&music, 15.0);
-        drain();
-        check (tracking.getInfo().blocksDropped > dropped, "the block it overlapped is dropped");
-    }
-
     std::cout << "State round trip\n";
     juce::MemoryBlock state;
     proc.getStateInformation (state);
@@ -1524,9 +1437,6 @@ int main (int argc, char** argv)
                    && juce::exactlyEqual (now.calibration.spl, was.calibration.spl) && now.canRecheck && now.hasMicOffset
                    && juce::exactlyEqual (now.micOffsetDb, was.micOffsetDb),
                "loudness calibration restored");
-        check (restored.getShow().getInfo().hasReference
-                   && restored.getShow().getInfo().referenceBands == proc.getShow().getInfo().referenceBands,
-               "show reference restored");
         restored.setRateAndBufferSizeDetails (fs, blockSize);
         restored.prepareToPlay (fs, blockSize);
         auto restoredEq = restored.getEngine().getApplied();
@@ -1557,8 +1467,7 @@ int main (int argc, char** argv)
         ours->setShowView (true);
         for (int i = 0; i < 5; ++i)
             pump (proc);
-        check (ours->isShowView() && proc.isShowView() && ours->getBanner().getSeverity() >= 1 && ours->getBanner().isVisible(),
-               "show view, with the warning banner up");
+        check (ours->isShowView() && proc.isShowView(), "show view");
         {
             // The mic's spectrogram: music through a room, then a 1 kHz tone at the mic.
             ResponseGraph* showGraph = nullptr;
@@ -1587,20 +1496,15 @@ int main (int argc, char** argv)
             proc.getSpl().collect();
         }
         {
-            // The change graph's hover readout, and the spectrogram/EQ panel and its switch.
+            // The spectrogram/EQ panel: its hover readout, dragging over it, and its switch.
             using Panel = AdaptiveRoomEQProcessor::ShowPanel;
             ResponseGraph* showGraph = nullptr;
             for (auto* c : editor->getChildren())
                 if (auto* gr = dynamic_cast<ResponseGraph*> (c))
                     showGraph = gr;
-            check (proc.getShowPanel() == Panel::both, "the lower panel shows the spectrogram with the EQ over it by default");
-            const auto& names = roomeq::showBandNames();
-            const auto b200 = static_cast<int> (std::find (names.begin(), names.end(), "200") - names.begin());
-            const auto hover = showGraph->showHoverText (showGraph->getShowBandPosition (b200));
-            check (hover.startsWith ("200 Hz band (178" + juce::String::fromUTF8 ("\xe2\x80\x93") + "225 Hz)") && hover.contains ("dB since soundcheck") && hover.contains ("flagged"),
-                   "hovering the 200 Hz bar: " + hover);
+            check (proc.getShowPanel() == Panel::both, "the spectrogram with the EQ over it by default");
             const auto panelHover = showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0));
-            check (panelHover.contains ("correction") && panelHover.contains ("voicing"), "hovering the lower panel: " + panelHover);
+            check (panelHover.contains ("correction") && panelHover.contains ("voicing"), "hovering the panel: " + panelHover);
 
             auto source = juce::Desktop::getInstance().getMainMouseSource();
             const auto event = [&] (juce::Point<float> at, juce::Point<float> down, bool dragged)
@@ -1642,7 +1546,7 @@ int main (int argc, char** argv)
             showGraph->showPanelChanged();
             for (int i = 0; i < 3; ++i)
                 pump (proc);
-            const auto over200 = showGraph->getShowBandPosition (b200);
+            const auto over200 = showGraph->getShowPanelPoint (200.0);
             showGraph->mouseMove (event (over200, over200, false));   // the snapshot shows the readout
             writeSnapshot (*editor, stem + "-show.png");
             showGraph->mouseExit (event (over200, over200, false));
@@ -1735,11 +1639,9 @@ int main (int argc, char** argv)
 
     std::cout << "Clear all\n";
     {
-        auto& tracking = proc.getShow();
         idleWithMic (proc, 3e-4f);
-        check (! engine.getEntries().empty() && ! engine.getApplied().empty() && proc.getLoudness().getInfo().calibrated
-                   && tracking.getInfo().hasReference,
-               "before: measurements, a correction, a level calibration and a show reference");
+        check (! engine.getEntries().empty() && ! engine.getApplied().empty() && proc.getLoudness().getInfo().calibrated,
+               "before: measurements, a correction and a level calibration");
         check (proc.startSweep().wasOk(), "start a sweep");
         check (proc.clearRoomData().failed(), "clearing waits while a measurement runs");
         engine.cancel();
@@ -1756,8 +1658,8 @@ int main (int argc, char** argv)
         const auto shown = engine.getDisplay();
         const auto li = proc.getLoudness().getInfo();
         check (engine.getEntries().empty() && engine.getApplied().empty() && ! engine.hasPrevious() && ! li.calibrated
-                   && li.hasMicOffset == micKept && ! tracking.getInfo().hasReference && (shown == nullptr || ! shown->proposal),
-               "no measurements, corrections, level calibration or show reference; the mic calibration stays");
+                   && li.hasMicOffset == micKept && (shown == nullptr || ! shown->proposal),
+               "no measurements, corrections or level calibration; the mic calibration stays");
         check (proc.getVoicingSections() == voicing && worstMismatchDb (impulseThrough (proc), voicing, makeupFor (voicing)) < 0.02,
                "the speakers get just the voicing EQ: no correction, loudness flat");
         juce::MemoryBlock cleared;
@@ -1765,7 +1667,7 @@ int main (int argc, char** argv)
         AdaptiveRoomEQProcessor restored;
         restored.setStateInformation (cleared.getData(), static_cast<int> (cleared.getSize()));
         check (restored.getEngine().getEntries().empty() && restored.getEngine().getApplied().empty()
-                   && ! restored.getLoudness().getInfo().calibrated && ! restored.getShow().getInfo().hasReference,
+                   && ! restored.getLoudness().getInfo().calibrated,
                "and the saved session stays cleared");
     }
 

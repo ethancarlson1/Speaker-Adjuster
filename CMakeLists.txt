@@ -41,7 +41,6 @@ add_library(roomeq_core STATIC
     src/roomeq/iso226.cpp
     src/roomeq/levelmatch.cpp
     src/roomeq/loudness.cpp
-    src/roomeq/showtrack.cpp
     src/roomeq/noise.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
@@ -86,21 +85,18 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_grading.cpp
         tests/cpp/test_levelmatch.cpp
         tests/cpp/test_loudness.cpp
-        tests/cpp/test_showtrack.cpp
         tests/cpp/test_loudness_stage.cpp
         tests/cpp/test_noise.cpp
         tests/cpp/test_recorder.cpp
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_spl_meter.cpp
         tests/cpp/test_sweep.cpp
-        tests/cpp/test_warning_dismissal.cpp
         tests/cpp/test_zone_stage.cpp
         src/plugin/CaptureRecorder.cpp    # the real-time parts are JUCE-free, so they're tested here
         src/plugin/EqStages.cpp
         src/plugin/LoudnessStage.cpp
         src/plugin/SplMeter.cpp
         src/plugin/TapRecorder.cpp
-        src/plugin/WarningDismissal.cpp
         src/plugin/ZoneStage.cpp)
     target_link_libraries(roomeq_tests PRIVATE roomeq_core doctest_headers)
     add_test(NAME roomeq_tests COMMAND roomeq_tests)
@@ -174,11 +170,9 @@ target_sources(AdaptiveRoomEQ
         src/plugin/PluginEditor.cpp
         src/plugin/PluginProcessor.cpp
         src/plugin/ResponseGraph.cpp
-        src/plugin/ShowController.cpp
         src/plugin/Spectrogram.cpp
         src/plugin/SplMeter.cpp
         src/plugin/TapRecorder.cpp
-        src/plugin/WarningDismissal.cpp
         src/plugin/ZoneStage.cpp)
 
 target_include_directories(AdaptiveRoomEQ PRIVATE src)
@@ -217,11 +211,9 @@ if(ARE_BUILD_TESTS)
             src/plugin/PluginEditor.cpp
             src/plugin/PluginProcessor.cpp
             src/plugin/ResponseGraph.cpp
-            src/plugin/ShowController.cpp
             src/plugin/Spectrogram.cpp
             src/plugin/SplMeter.cpp
             src/plugin/TapRecorder.cpp
-            src/plugin/WarningDismissal.cpp
             src/plugin/ZoneStage.cpp)
     target_include_directories(AdaptiveRoomEQ_Harness PRIVATE src)
     target_compile_definitions(AdaptiveRoomEQ_Harness

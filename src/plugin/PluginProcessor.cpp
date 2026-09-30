@@ -155,15 +155,6 @@ AdaptiveRoomEQProcessor::AdaptiveRoomEQProcessor()
         env.available = ! standalone;
         return env;
     });
-    showControl.setEnvironmentSource ([this]
-    {
-        ShowController::Environment env;
-        env.fs = getSampleRate();
-        env.micSignal = hasMicSignal();
-        env.measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
-        env.available = ! standalone;
-        return env;
-    });
 }
 
 AdaptiveRoomEQProcessor::~AdaptiveRoomEQProcessor()
@@ -336,7 +327,6 @@ void AdaptiveRoomEQProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     recorder.abortWhileStopped();
     eq.prepare (sampleRate, getEqSettings());
     loudness.prepare (sampleRate, samplesPerBlock, getLoudnessSettings());
-    showTap.abortWhileStopped();
     spl.prepare (sampleRate);
     zoneStage.prepare (sampleRate, getZoneSettings());
 }
@@ -345,7 +335,6 @@ void AdaptiveRoomEQProcessor::releaseResources()
 {
     recorder.abortWhileStopped();
     loudness.abortTapWhileStopped();
-    showTap.abortWhileStopped();
 }
 
 bool AdaptiveRoomEQProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -447,15 +436,14 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // Loudness compensation (the standalone app has no program to compensate).
     // Flat and not tracking while a measurement or calibration plays: at once
     // under a test signal (it starts with silence), gliding under music.
-    // Then the zone's delay and polarity, bypassed like the EQ. The taps record
-    // what the speakers finally get.
+    // Then the zone's delay and polarity, bypassed like the EQ. The loudness tap
+    // records what the speakers finally get.
     if (! standalone)
     {
         loudness.process (channels, numChannels, mic, numSamples, getLoudnessSettings(), measuring,
                           recorder.replacesOutput());
         zoneStage.process (channels, numChannels, numSamples, measuring && ! throughEq ? ZoneSettings {} : getZoneSettings());
         loudness.recordTap (channels, numChannels, mic, numSamples);
-        showTap.record (channels, numChannels, mic, numSamples);   // after all the EQ: the room's own response
     }
 
     updatePeak (outputPeak, mainOut.getMagnitude (0, numSamples));
@@ -702,12 +690,8 @@ juce::Result AdaptiveRoomEQProcessor::clearRoomData()
         return juce::Result::fail ("Wait for the measurement to finish (or stop it), then clear");
     if (const auto step = loudnessControl.getStep(); (step != Step::idle && step != Step::awaitingSpl) || loudnessControl.isAnalysing())
         return juce::Result::fail ("Wait for the loudness calibration or re-check to finish (or stop it), then clear");
-    if (showControl.getStep() == ShowController::Step::storing)
-        return juce::Result::fail ("Wait for the show reference to finish storing (or stop it), then clear");
     engine.clearAll();
     loudnessControl.clearCalibration();
-    if (showControl.getInfo().hasReference)
-        showControl.clearReference();
     return juce::Result::ok();
 }
 
@@ -733,7 +717,6 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.appendChild (parameters.copyState(), nullptr);
     root.appendChild (engine.toValueTree(), nullptr);
     root.appendChild (loudnessControl.toValueTree(), nullptr);
-    root.appendChild (showControl.toValueTree(), nullptr);
     root.setProperty ("showView", showView.load(), nullptr);
     root.setProperty ("showPanel", showPanel.load(), nullptr);
     const auto custom = getCustomTarget();
@@ -771,7 +754,6 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     }
     engine.fromValueTree (root.getChildWithName (MeasurementEngine::treeType));
     loudnessControl.fromValueTree (root.getChildWithName (LoudnessController::treeType));
-    showControl.fromValueTree (root.getChildWithName (ShowController::treeType));
     showView = static_cast<bool> (root.getProperty ("showView", false));
     showPanel = juce::jlimit (0, 2, static_cast<int> (root.getProperty ("showPanel", 0)));
 }

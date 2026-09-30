@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from roomeq import averaging, capture, loudness, roomsim, showtrack, sweep
+from roomeq import averaging, capture, loudness, roomsim, sweep
 from roomeq.spectrum import log_freq_grid
 
 CLI = os.environ.get("ROOMEQ_CLI")
@@ -147,40 +147,6 @@ def test_captures_across_two_clocks_match_python(sim, tmp_path):
     assert m.drift_ppm == pytest.approx(18.0, abs=0.2) and n.drift_ppm == pytest.approx(-31.0, abs=0.2)
     assert still.drift_ppm == 0.0 and not any("clocks" in note for note in still.grade.notes)
     assert "output and mic clocks differ by 31.0 ppm (corrected)" in n.grade.notes
-
-
-def test_show_tracking_matches_python(sim, tmp_path):
-    """Soundcheck reference, then a show whose low mids build up after 90 s:
-    every state (deltas, level, flags, severity, message, details) agrees."""
-    import scipy.signal as ss
-    rng = np.random.default_rng(35)
-    fs = CFG.fs
-    x = roomsim.synthetic_program(30.0 + 240.0, fs, rng)
-    y = sim.play(x, 2, roomsim.NoiseSpec(pink_dbfs=-60.0, babble_dbfs=-45.0), rng)
-    A, w0 = 10 ** (6 / 40), 2 * np.pi * 180 / fs
-    alpha = np.sin(w0) / 2
-    b = np.array([1 + alpha * A, -2 * np.cos(w0), 1 - alpha * A])
-    a = np.array([1 + alpha / A, -2 * np.cos(w0), 1 - alpha / A])
-    at = int(120 * fs)
-    y = np.concatenate([y[:at], ss.lfilter(b, a, y)[at:]])
-    ref_x, ref_y, show_x, show_y = x[:30 * fs], y[:30 * fs], x[30 * fs:], y[30 * fs:]
-
-    cpp = run_cli("show-track", "--fs", fs, "--ref-out", save(tmp_path, "rx", ref_x), "--ref-mic", save(tmp_path, "ry", ref_y),
-                  "--out", save(tmp_path, "sx", show_x), "--mic", save(tmp_path, "sy", show_y))
-    ref = loudness.transfer_bands_db(ref_x, ref_y, fs)
-    assert_curve(cpp["reference"], ref, "reference")
-    tracker = showtrack.DeltaTracker(ref)
-    block = 10 * fs
-    py = [tracker.add_block(loudness.transfer_bands_db(show_x[s:s + block], show_y[s:s + block], fs))
-          for s in range(0, len(show_x) - block + 1, block)]
-    assert len(cpp["states"]) == len(py)
-    for i, (c, p) in enumerate(zip(cpp["states"], py)):
-        assert_curve(c["delta_db"], p.delta_db, f"block {i} deltas")
-        assert (c["level_db"] is None and np.isnan(p.level_db)) or abs(c["level_db"] - p.level_db) < TOL_DB, i
-        assert c["flags"] == p.flags and c["level_flag"] == p.level_flag and c["severity"] == p.severity, i
-        assert c["message"] == p.message and c["details"] == p.details, i
-    # And it's a meaningful comparison: quiet at first, then the build-up is found.
-    assert py[8].severity == 0 and py[-1].severity >= 1 and "dB at" in py[-1].message
 
 
 def test_quick_mode_and_all_excluded(sim, tmp_path):

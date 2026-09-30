@@ -1,8 +1,8 @@
 #pragma once
 
 // Records the final output (mono) and the mic for a set time, for analysis on
-// the message thread: the loudness calibration, re-check and mic calibrator,
-// and show tracking. JUCE-free, so it's unit tested.
+// the message thread: the loudness calibration, re-check and mic calibrator.
+// JUCE-free, so it's unit tested.
 //
 // Hand-off like CaptureRecorder's requests: the message thread owns the
 // request and publishes a raw pointer; the audio thread clears it before

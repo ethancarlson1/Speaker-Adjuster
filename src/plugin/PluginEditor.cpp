@@ -79,64 +79,6 @@ juce::String bandText (const roomeq::Band& b)
 }
 } // namespace
 
-void ShowBanner::set (int newSeverity, const juce::String& newText)
-{
-    if (newSeverity != severity || newText != text)
-    {
-        severity = newSeverity;
-        text = newText;
-        repaint();
-    }
-}
-
-void ShowBanner::paint (juce::Graphics& g)
-{
-    const auto colour = severity >= 2 ? theme::critical : theme::warning;
-    auto r = getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (colour.withAlpha (0.16f));
-    g.fillRoundedRectangle (r, 5.0f);
-    g.setColour (colour);
-    g.drawRoundedRectangle (r, 5.0f, 1.3f);
-    const auto badge = r.removeFromLeft (r.getHeight()).reduced (7.0f);
-    g.fillEllipse (badge);
-    g.setColour (theme::plane);
-    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    g.drawText ("!", badge, juce::Justification::centred);
-
-    const auto cross = dismissArea();
-    r.removeFromRight (cross.getWidth());
-    g.setColour (theme::ink2);
-    const auto x = cross.reduced (cross.getWidth() * 0.34f);
-    g.drawLine ({ x.getTopLeft(), x.getBottomRight() }, 1.6f);
-    g.drawLine ({ x.getBottomLeft(), x.getTopRight() }, 1.6f);
-
-    g.setColour (theme::ink);
-    g.setFont (juce::FontOptions (13.5f));
-    g.drawFittedText (text + juce::String::fromUTF8 ("   \xc2\xb7   details"), r.reduced (6.0f, 0.0f).toNearestInt(),
-                      juce::Justification::centredLeft, 1, 0.85f);
-}
-
-juce::Rectangle<float> ShowBanner::dismissArea() const
-{
-    const auto r = getLocalBounds().toFloat();
-    return r.withLeft (r.getRight() - r.getHeight());
-}
-
-void ShowBanner::mouseUp (const juce::MouseEvent& e)
-{
-    if (e.mouseWasDraggedSinceMouseDown())
-        return;
-    if (dismissArea().contains (e.position))
-    {
-        if (onDismiss)
-            onDismiss();
-    }
-    else if (onClick)
-    {
-        onClick();
-    }
-}
-
 AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     : AudioProcessorEditor (&p),
       processor (p),
@@ -229,24 +171,20 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     programButton.onClick = [this] { if (micReady()) showResult (processor.startProgram()); };
     stopButton.onClick = [this]
     {
-        if (processor.getShow().getStep() == ShowController::Step::storing)
-            processor.getShow().cancelStore();
-        else if (processor.getLoudness().getStep() != LoudnessController::Step::idle)
+        if (processor.getLoudness().getStep() != LoudnessController::Step::idle)
             processor.getLoudness().cancel();   // also stops calibration noise
         else
             processor.getEngine().cancel();
     };
     clearAllButton.setColour (juce::TextButton::textColourOffId, theme::critical);
     clearAllButton.setTooltip ("Start the room over: forgets every measurement and correction"
-                               + juce::String (processor.isStandalone() ? "." : ", the loudness level calibration and "
-                                                                                 "the show reference."));
+                               + juce::String (processor.isStandalone() ? "." : ", and the loudness level calibration."));
     clearAllButton.onClick = [this]
     {
         const auto what = processor.isStandalone()
                               ? juce::String ("Every measurement, and the applied and previous corrections, are deleted.")
-                              : juce::String ("Every measurement, the applied and previous corrections, the loudness level "
-                                              "calibration and the show reference are deleted. The correction and loudness "
-                                              "compensation go flat.");
+                              : juce::String ("Every measurement, the applied and previous corrections and the loudness "
+                                              "level calibration are deleted. The correction and loudness compensation go flat.");
         // Made here rather than in the inner capture: MSVC reads `this` there as the outer lambda.
         juce::Component::SafePointer<AdaptiveRoomEQEditor> editor (this);
         juce::AlertWindow::showAsync (juce::MessageBoxOptions()
@@ -406,48 +344,15 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     addAndMakeVisible (captureList);
     addAndMakeVisible (graph);
 
-    // ---- Show view (plugin only) and the warning banner
+    // ---- Show view (plugin only)
     showViewButton.setClickingTogglesState (true);
     showViewButton.setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.6f));
-    showViewButton.setTooltip ("A compact layout for the show: show tracking, the bypasses and the EQ, without the "
-                               "measurement tools. Click again for the setup view.");
+    showViewButton.setTooltip ("A compact layout for the show: the mic's spectrogram with the EQ over it, the SPL meter "
+                               "and the bypasses, without the measurement tools. Click again for the setup view.");
     showViewButton.onClick = [this] { setShowView (showViewButton.getToggleState()); };
     if (! processor.isStandalone())
         addAndMakeVisible (showViewButton);
-    banner.onClick = [this] { showBannerDetails(); };
-    banner.onDismiss = [this]
-    {
-        processor.getShow().dismissWarning();
-        updateBanner();
-    };
-    banner.setTooltip (juce::String::fromUTF8 ("Click for the band-by-band details. \xc3\x97 hides this warning until "
-                                               "something new changes (another band, or 3 dB growing to 6 dB)."));
-    banner.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    addChildComponent (banner);
 
-    storeRefButton.setColour (juce::TextButton::buttonColourId, theme::blue);
-    storeRefButton.setTooltip ("At the end of soundcheck, with music or pink noise playing: records 30 s through the mic "
-                               "as the reference. During the show the plugin keeps measuring from the music and warns if "
-                               "the room's response moves 3 dB or more from it for a couple of minutes.");
-    storeRefButton.onClick = [this] { if (micReady()) showResult (processor.getShow().storeReference()); };
-    clearRefButton.setTooltip ("Forget the reference: show tracking stops.");
-    clearRefButton.onClick = [this]
-    {
-        // Made here rather than in the inner capture: MSVC reads `this` there as the outer lambda.
-        juce::Component::SafePointer<AdaptiveRoomEQEditor> editor (this);
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions()
-                                          .withIconType (juce::MessageBoxIconType::QuestionIcon)
-                                          .withTitle ("Clear the reference?")
-                                          .withMessage ("Show tracking stops until a new reference is stored.")
-                                          .withButton ("Clear")
-                                          .withButton ("Cancel")
-                                          .withAssociatedComponent (this),
-                                      [editor] (int result)
-                                      {
-                                          if (editor != nullptr && result == 1)
-                                              editor->processor.getShow().clearReference();
-                                      });
-    };
     showRecheckButton.setTooltip ("Listens to ~12 s of the music through the mic and updates the loudness calibration "
                                   "if the gain after the plugin changed.");
     showRecheckButton.onClick = [this] { if (micReady()) showResult (processor.getLoudness().startRecheck()); };
@@ -461,7 +366,7 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     showVoicingAttachment = std::make_unique<ButtonAttachment> (params, "voicingOn", showVoicingOn);
     showLoudAttachment = std::make_unique<ButtonAttachment> (params, "loudOn", showLoudOn);
     showLevelMatchAttachment = std::make_unique<ButtonAttachment> (params, "levelMatch", showLevelMatch);
-    for (auto* c : std::initializer_list<juce::Component*> { &storeRefButton, &clearRefButton, &showRecheckButton, &splResetButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &showRecheckButton, &splResetButton,
                                                              &showCorrectionOn, &showVoicingOn, &showLoudOn, &showLevelMatch })
     {
         addChildComponent (c);
@@ -512,14 +417,12 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     selectVoicingBand (0);
     processor.getEngine().addChangeListener (this);
     processor.getLoudness().addChangeListener (this);
-    processor.getShow().addChangeListener (this);
 
     setResizable (true, true);
     setResizeLimits (1060, 740, 2400, 1600);
     setSize (1200, 820);
     showTab (Tab::measure);
     setShowView (processor.isShowView());
-    updateBanner();
     refreshFromEngine();
     startTimerHz (refreshHz);
 }
@@ -530,7 +433,6 @@ AdaptiveRoomEQEditor::~AdaptiveRoomEQEditor()
         deviceManager->removeChangeListener (this);
     processor.getEngine().removeChangeListener (this);
     processor.getLoudness().removeChangeListener (this);
-    processor.getShow().removeChangeListener (this);
     for (auto* tab : { &zoneTab, &measureTab, &correctTab, &voicingTab, &loudnessTab })
         tab->setLookAndFeel (nullptr);
     stopTimer();
@@ -658,8 +560,6 @@ void AdaptiveRoomEQEditor::changeListenerCallback (juce::ChangeBroadcaster* sour
         refreshDeviceChannels();
     else if (source == &processor.getLoudness())
         updateLoudnessControls();
-    else if (source == &processor.getShow())
-        updateBanner();
     else
         refreshFromEngine();
 }
@@ -742,12 +642,8 @@ void AdaptiveRoomEQEditor::timerCallback()
     const auto loudBusy = processor.getLoudness().getStep() != LoudnessController::Step::idle;
     measureButton.setEnabled (! measuring);
     programButton.setEnabled (! measuring && ! processor.isStandalone());
-    const auto& show = processor.getShow();
-    const auto storing = show.getStep() == ShowController::Step::storing;
-    clearAllButton.setEnabled (activity == MeasurementEngine::Activity::idle && ! loudBusy && ! storing);
-    stopButton.setEnabled (measuring || loudBusy || storing);
-    storeRefButton.setEnabled (! measuring && ! storing);
-    clearRefButton.setEnabled (show.getInfo().hasReference);
+    clearAllButton.setEnabled (activity == MeasurementEngine::Activity::idle && ! loudBusy);
+    stopButton.setEnabled (measuring || loudBusy);
     showRecheckButton.setEnabled (! loudBusy && ! measuring && processor.getLoudness().getInfo().canRecheck);
     splResetButton.setEnabled (processor.getLoudness().getInfo().hasMicOffset);
     micInput.setEnabled (! measuring && micInput.getNumItems() > 0);
@@ -779,14 +675,12 @@ void AdaptiveRoomEQEditor::timerCallback()
     bandQ.setEnabled (roomeq::hasQ (sel.type));
 
     updateLoudnessControls();
-    updateBanner();
 
     graph.refresh();
     repaint (headerArea());
     repaint (statusBounds);
     if (showViewOn)
     {
-        repaint (showTextBounds);
         repaint (showLoudBounds);
         repaint (splBounds);
     }
@@ -821,74 +715,6 @@ void AdaptiveRoomEQEditor::updateLoudnessControls()
         splEntry.clear();
     }
     lastLoudnessStep = step;
-}
-
-void AdaptiveRoomEQEditor::updateBanner()
-{
-    const auto info = processor.getShow().getInfo();
-    const auto severity = info.hasReference && ! info.warningDismissed ? info.state.severity : 0;
-    banner.set (severity, juce::String::fromUTF8 (info.state.message.c_str()));
-    if (banner.isVisible() != (severity > 0))
-    {
-        banner.setVisible (severity > 0);
-        resized();
-    }
-}
-
-void AdaptiveRoomEQEditor::showBannerDetails()
-{
-    const auto info = processor.getShow().getInfo();
-    const auto& st = info.state;
-    juce::String text = juce::String::fromUTF8 (st.message.c_str());
-    text << "\n\nFrom the last 2 minutes of music the mic heard clearly, compared with the soundcheck reference. "
-            "Tonal change per band (a change common to all bands is taken out and shown as the level):\n\n";
-    for (const auto& d : st.details)
-        text << juce::String::fromUTF8 (d.c_str()) << "\n";
-    if (std::isfinite (st.levelDb))
-        text << "\nLevel after the plugin: " << signedDb (st.levelDb) << " dB";
-    auto content = std::make_unique<juce::TextEditor>();
-    content->setMultiLine (true);
-    content->setReadOnly (true);
-    content->setCaretVisible (false);
-    content->setScrollbarsShown (true);
-    content->setFont (juce::FontOptions (13.0f));
-    content->setColour (juce::TextEditor::backgroundColourId, theme::panel);
-    content->setColour (juce::TextEditor::textColourId, theme::ink);
-    content->setColour (juce::TextEditor::outlineColourId, theme::axis);
-    content->setText (text, false);
-    content->setSize (380, 360);
-    juce::CallOutBox::launchAsynchronously (std::move (content), banner.getScreenBounds(), nullptr);
-}
-
-juce::String AdaptiveRoomEQEditor::showTrackingText() const
-{
-    const auto info = processor.getShow().getInfo();
-    if (! info.hasReference)
-        return "No reference yet. At the end of soundcheck, with music or pink noise playing at a normal level, press "
-               "Store reference. During the show the plugin then keeps measuring from the music, and warns if the "
-               "room's response moves 3 dB or more from it for a couple of minutes.";
-    const auto& st = info.state;
-    juce::String text;
-    text << "Reference stored";
-    if (info.storedAt > 0)
-        text << " " << juce::Time (info.storedAt).formatted ("%d %b %H:%M");
-    text << " (" << info.referenceBands << " of 22 bands heard clearly).\n";
-    const auto seconds = info.blocksHeard * static_cast<int> (ShowController::blockSeconds);
-    text << "Tracking: " << seconds / 60 << ":" << juce::String (seconds % 60).paddedLeft ('0', 2) << " of the show measured. "
-         << showCountdown (info) << "\n";
-    if (! std::isfinite (st.levelDb))
-        text << "The first result needs about a minute of music the mic hears clearly.";
-    else if (st.severity == 0)
-        text << "No change of 3 dB or more since soundcheck.";
-    else
-        text << juce::String::fromUTF8 (st.message.c_str())
-             << (info.warningDismissed ? ". (Warning hidden until something new changes.)" : ".");
-    if (std::isfinite (st.levelDb))
-        text << "\nLevel after the plugin: " << signedDb (st.levelDb) << " dB since soundcheck.";
-    if (info.blocksDropped > 0)
-        text << "\n" << info.blocksDropped << " block" << (info.blocksDropped == 1 ? "" : "s")
-             << " skipped (a measurement played, or the mic was quiet).";
-    return text;
 }
 
 void AdaptiveRoomEQEditor::drawSpl (juce::Graphics& g, juce::Rectangle<int> area) const
@@ -975,13 +801,8 @@ juce::String AdaptiveRoomEQEditor::statusText() const
         return errorText;
     auto& engine = processor.getEngine();
     const auto& loud = processor.getLoudness();
-    const auto& show = processor.getShow();
     const auto step = loud.getStep();
     const auto measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
-    if (show.getStep() == ShowController::Step::storing)
-        return show.getStatus();
-    if (showViewOn && ! measuring && step == Step::idle && show.getStatus().isNotEmpty())
-        return show.getStatus();
     if (step == Step::calibrating && measuring)
         return loud.getStatus() + "\n" + engine.getStatus();
     if (step != Step::idle)
@@ -1284,12 +1105,7 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
     const auto& loud = processor.getLoudness();
     const auto loudRecording = loud.getStep() == LoudnessController::Step::micCalibrating
                                || loud.getStep() == LoudnessController::Step::rechecking;
-    if (processor.getShow().getStep() == ShowController::Step::storing)
-    {
-        g.setColour (theme::blue);
-        g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, processor.getShow().getProgress())), 3.0f);
-    }
-    else if (loud.isAnalysing())
+    if (loud.isAnalysing())
     {
         const auto phase = static_cast<float> (juce::Time::getMillisecondCounter() % 1200) / 1200.0f;
         g.setColour (theme::gold.withAlpha (0.8f));
@@ -1327,11 +1143,6 @@ void AdaptiveRoomEQEditor::paint (juce::Graphics& g)
         g.drawText ("Measuring, EQ and calibration: Setup view", heading, juce::Justification::centredRight);
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (12.5f));
-        g.drawFittedText (showTrackingText(), showTextBounds, juce::Justification::topLeft,
-                          juce::jmax (1, showTextBounds.getHeight() / 15), 0.9f);
-        g.setColour (theme::axis);
-        g.drawHorizontalLine (showRuleY, static_cast<float> (controls.getX() + 12), static_cast<float> (controls.getRight() - 12));
-        g.setColour (theme::ink2);
         g.drawFittedText (showLoudnessText(), showLoudBounds, juce::Justification::topLeft,
                           juce::jmax (1, showLoudBounds.getHeight() / 15), 0.9f);
         g.setColour (theme::axis);
@@ -1418,16 +1229,6 @@ void AdaptiveRoomEQEditor::resized()
         statusBounds = panel.removeFromBottom (statusHeight).expanded (12, 0);
         stopButton.setBounds (statusBounds.getRight() - 12 - 70, statusBounds.getY() + 16, 70, 28);
         panel.removeFromBottom (16);
-        {
-            auto r = panel.removeFromTop (34);
-            clearRefButton.setBounds (r.removeFromRight (70));
-            r.removeFromRight (8);
-            storeRefButton.setBounds (r);
-            panel.removeFromTop (10);
-        }
-        showTextBounds = panel.removeFromTop (juce::jmin (150, juce::jmax (90, panel.getHeight() - 300)));
-        showRuleY = panel.getY() + 6;
-        panel.removeFromTop (16);
         {
             auto r = panel.removeFromTop (24);
             showCorrectionOn.setBounds (r.removeFromLeft (128));
@@ -1634,14 +1435,9 @@ void AdaptiveRoomEQEditor::resized()
     infoBounds = content.withTrimmedTop (4);
     }
 
-    // Right: the warning banner, the capture list (setup view) and the graph.
+    // Right: the capture list (setup view) and the graph.
     auto right = getLocalBounds().withTrimmedTop (headerHeight).reduced (margin).withTrimmedLeft (controlsWidth + margin);
     right.removeFromBottom (30);   // summary line
-    if (banner.isVisible())
-    {
-        banner.setBounds (right.removeFromTop (36));
-        right.removeFromTop (10);
-    }
     if (! showViewOn)
     {
         captureList.setBounds (right.removeFromTop (juce::jmin (4 * 56 + 4, right.getHeight() / 3)));

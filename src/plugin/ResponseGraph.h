@@ -25,11 +25,9 @@ public:
     void setData (std::shared_ptr<const MeasurementEngine::Display> display, int selectedId);
     void refresh();                                   // polled: repaints if the EQ or target changed
 
-    // Show view: the top panel shows the change since the soundcheck reference
-    // (a bar per third octave, with a readout on hover) instead of the
-    // measurements. The panel below shows the mic's spectrogram with the EQ
+    // Show view: instead of the measurements, the mic's spectrogram with the EQ
     // curves and voicing handles over it, or either alone (Both / Spectrogram /
-    // EQ); all on the same frequency axis.
+    // EQ), on the same frequency axis, with a readout on hover.
     void setShowMode (bool shouldShow);
     bool isShowMode() const { return showMode; }
     void showPanelChanged();                          // the processor's choice changed (tests, session restore)
@@ -44,7 +42,6 @@ public:
     // Where the handles are drawn (component coordinates), for tests.
     juce::Point<float> getVoicingHandlePosition (int band) const { return voicingHandle (band, eqArea()); }
     juce::Point<float> getTargetPointPosition (int index) const { return targetPoint (static_cast<std::size_t> (index), responseArea()); }
-    juce::Point<float> getShowBandPosition (int band) const;   // the middle of a change-graph band's column
     juce::Point<float> getShowPanelPoint (double hz) const;    // in the spectrogram/EQ panel, halfway down
 
     void paint (juce::Graphics&) override;
@@ -73,7 +70,6 @@ private:
     juce::Rectangle<float> eqArea() const;            // show mode: the spectrogram/EQ panel
     void drawShowPanel (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawShowHover (juce::Graphics&) const;
-    int showBandAt (juce::Point<float> p) const;      // the change graph's band under p, or -1
     bool showsSpectrogram() const;
     bool showsEq() const;
     void timerCallback() override;
@@ -94,7 +90,6 @@ private:
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     // overImage: halos so the curves read over the spectrogram; reserveRight: room kept at the legend row's end.
     void drawEq (juce::Graphics&, juce::Rectangle<float> area, bool overImage = false, float reserveRight = 0.0f) const;
-    void drawShowChange (juce::Graphics&, juce::Rectangle<float> area) const;
     int selectedIndex() const;                          // among the fit positions, or -1
     const std::vector<double>* selectedCurve() const;   // the selected capture's curve (position or verify), or null
     juce::String selectedName() const;
@@ -129,8 +124,6 @@ private:
     bool lastLoudnessOn = true, lastLoudnessCalibrated = false;
 
     bool showMode = false;
-    juce::String lastCountdown;
-    int lastShowBlocks = -1;
     int selectedBand = 0;
     int draggingBand = -1;
     int draggingPoint = -1;

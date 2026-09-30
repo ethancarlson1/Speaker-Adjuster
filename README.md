@@ -2,12 +2,12 @@
 
 A VST3/AU plugin (plus a standalone app) that measures a PA in the room, corrects it, and keeps the tonal balance consistent as the volume drops and the room fills. See [SPEC.md](SPEC.md) for the full design.
 
-**Status:** Phases 1–3 are implemented, plus Phase 4's show tracking (its reference snapshot and live change warning).
+**Status:** Phases 1–3 are implemented.
 - **Measure:** positions measured with log sweeps or pink noise (or from program material), each capture graded, and every position, the power average and the target shown.
 - **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
 - **Voicing:** an 8-band voicing EQ on top of the correction.
 - **Loudness:** level calibration, level tracking and ISO 226 loudness compensation, so the balance heard at the reference level holds as the show gets quieter.
-- **Show:** a compact show view, and a warning when the room's response moves from what it was at soundcheck.
+- **Show:** a compact show view with the mic's spectrogram, the EQ over it, and an SPL meter.
 - **Zones:** one instance per zone (mains, subs, front fill, delay speakers) on a mono or stereo track, each judged on its own band, with a delay and polarity to line it up.
 
 So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
@@ -32,10 +32,9 @@ So far all of this has only been checked against simulated rooms. The next step 
 **Clear all…** (under the measure buttons) starts the room over. After a confirmation, it deletes:
 - every measurement (positions and verify captures), so numbering starts again at 1;
 - the applied and previous corrections, so the correction goes flat;
-- the loudness level calibration, so the compensation stays flat until you calibrate again;
-- the show reference.
+- the loudness level calibration, so the compensation stays flat until you calibrate again.
 
-The voicing EQ, targets, the mic calibration (it belongs to the mic, not the room) and all settings stay. It can't be undone, and it waits until nothing is measuring, calibrating or storing.
+The voicing EQ, targets, the mic calibration (it belongs to the mic, not the room) and all settings stay. It can't be undone, and it waits until nothing is measuring or calibrating.
 
 **Nothing plays unless the mic can hear.** Before a sweep, pink noise, a verify, a music capture, the mic calibrator or a re-check starts, the plugin checks that the mic input carried signal (above −100 dBFS) in the last second. If it's dead (not routed, muted, no phantom power), a popup says so and nothing plays.
 
@@ -175,24 +174,21 @@ The plugin stores the output level that gave that SPL. With the mic connected, i
 
 The EQ strip shows the compensation at the current level in gold. The tab shows the level, the boosts, and when it was calibrated and re-checked. The calibration is saved with the session.
 
-## Show view and show tracking
+## Show view
 
 **Show view** (the header button, plugin only) is a compact layout for the show. Click it again for the setup view. The choice is saved with the session.
 
 The left panel has:
-- show tracking, with a countdown to the next result;
 - the bypasses (**Correction**, **Voicing EQ**, **Loudness**, **Match output level**);
 - the loudness readout and **Re-check level**;
 - the SPL meter.
 
-The capture list goes. The graph side has two panels on the same 20 Hz–20 kHz axis:
-- **Change since soundcheck**, ±6 dB. A bar beyond that is pinned to the edge with an arrow and its value. Hover over a bar to see which band it is and its change, e.g. "200 Hz band (178–225 Hz): +4.8 dB since soundcheck (flagged)".
-- **The mic's spectrogram with the EQ over it.** A **Both / Spectrogram / EQ** switch at the right of its legend row picks what's shown, and the choice is saved with the session.
-  - **Both** (the default) draws the correction, voicing and loudness curves and the voicing handles over the spectrogram. Drag a handle straight to where you see a build-up. Hovering reads out the frequency and the EQ there.
-  - **Spectrogram** shows it alone, with its time labels and colour key; the handles step aside.
-  - **EQ** shows the curves alone, as in the setup view.
+The capture list goes, and the graph side shows **the mic's spectrogram with the EQ over it**, 20 Hz–20 kHz. A **Both / Spectrogram / EQ** switch at the right of its legend row picks what's shown, and the choice is saved with the session.
+- **Both** (the default) draws the correction, voicing and loudness curves and the voicing handles over the spectrogram. Drag a handle straight to where you see a build-up. Hovering reads out the frequency and the EQ there.
+- **Spectrogram** shows it alone, with its time labels and colour key; the handles step aside.
+- **EQ** shows the curves alone, as in the setup view.
 
-  The spectrogram covers the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
+The spectrogram covers the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
 
 **SPL at the mic** reads dB SPL from the measurement mic, so it needs the mic calibration (calibrator, Loudness tab). Until then it says so. It shows:
 - the live **dB(A) fast** (125 ms) level, and its max;
@@ -201,19 +197,7 @@ The capture list goes. The graph side has two panels on the same 20 Hz–20 kHz 
 
 The weighting is IEC 61672 A and C on the audio thread, and it keeps running with the editor closed. Seconds with nothing from the mic aren't counted, since a dead mic isn't silence.
 
-**Show tracking** warns you when the room's response moves away from what it was at soundcheck:
-1. At the end of soundcheck, with music or pink noise playing at a normal level, press **Store reference** (show view). It records 30 s through the mic and keeps the output-to-mic response per third octave, 63 Hz–8 kHz.
-2. During the show the plugin keeps measuring the same response from the music, 10 s at a time. It compares the last 2 minutes with the reference, band by band, using only the bands the mic heard clearly. The countdown says when the next result is due ("Next update in 7 s"). The first result needs 6 blocks, so it says "First result in about 0:52" until then, or why it's paused (a measurement playing, no mic signal).
-3. A change common to every band is a level change after the plugin (an amp or a fader). It's shown on its own, and flagged if it reaches 3 dB; **Re-check level** brings the loudness calibration up to date with it. What's left is the tonal change.
-4. If a band's tonal change reaches **3 dB**, a banner appears on the graph side in both views, e.g. "Since soundcheck: +5.2 dB at 125–250 Hz". It turns red at 6 dB and clears once the change falls below 2 dB. Click the banner for the band-by-band details.
-5. The banner's **×** hides it until something new comes up: another band (or the level) is flagged, the change grows from 3 dB to 6 dB, or a band that cleared trips again. The show view's tracking text still shows the change, marked as hidden. The dismissal isn't saved with the session.
-
-Things that aren't the room don't count:
-- The measurement is taken after all of the plugin's EQ, so correction, voicing and loudness changes aren't mistaken for the room.
-- Crowd noise isn't coherent with the music, so it makes bands count less rather than moving them.
-- Blocks during a measurement or calibration (a test signal instead of the show), or with a dead mic, are skipped.
-
-The reference is saved with the session. **Clear** forgets it and stops tracking. Proposing a correction for the change (the rest of Phase 4) comes later.
+**No "change since soundcheck".** An earlier version stored the room's output-to-mic response at soundcheck and warned when it moved during the show. It was removed: the mic also hears the stage (drums, amps, wedges) and other zones playing the same material as the PA, so the comparison moved with each song's instrumentation more than with the room.
 
 ## Trying it out
 
@@ -286,7 +270,7 @@ Phase 3's "done when" test:
 | Path | What |
 | --- | --- |
 | `src/roomeq/` | Analysis core: plain C++17, no JUCE. A port of the Python prototype, using pocketfft |
-| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, show tracking, background analysis and fitting, UI |
+| `src/plugin/` | JUCE plugin: real-time sweep/noise player and recorder, the correction, voicing and loudness EQ (state-variable filters that glide), output level match, level tracking, calibration, the zone's delay, background analysis and fitting, UI |
 | `prototype/` | Python (NumPy/SciPy) reference implementation, room simulator, tests, review plots |
 | `tests/cpp/` | C++ unit tests (doctest) for the core, the real-time recorder, the EQ, the loudness stage and the zone's delay |
 | `tools/roomeq_cli.cpp` | Runs the C++ core on raw recordings and prints JSON. Used to cross-check against Python |
@@ -326,12 +310,11 @@ The harness drives the real processor against a simulated room. It checks:
 - undo, hearing the previous correction, custom targets and the state round trip all work;
 - dragging handles and target points on the graph works;
 - a dead mic input refuses every test signal and nothing plays;
-- Clear all: refused mid-measurement; afterwards no measurements, corrections, level calibration or show reference, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
+- Clear all: refused mid-measurement; afterwards no measurements, corrections or level calibration, the mic calibration kept, the speakers get just the voicing EQ, and a saved session stays cleared;
 - measurements bypass the correction: with correction, voicing, loudness shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
 - selecting a capture (a position or a verify capture) highlights its curve;
 - loudness: the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
-- show tracking: a reference from music in a room with a crowd, the countdown to the first result and then the next, 2.5 minutes of the same room with no warning, a 6 dB low-mid build-up flagged at the right bands, the warning's × keeping it hidden until the top end dulls too, and a block with a sweep in it dropped;
-- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering the change graph naming the band and its change; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
+- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;
 - two clocks: pink noise and music heard through a mic whose clock runs 20 ppm fast still grade PASS, with the drift measured and noted.

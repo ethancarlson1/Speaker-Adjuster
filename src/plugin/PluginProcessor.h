@@ -6,9 +6,7 @@
 #include "plugin/LoudnessStage.h"
 #include "plugin/MeasurementEngine.h"
 #include "plugin/SampleFifo.h"
-#include "plugin/ShowController.h"
 #include "plugin/SplMeter.h"
-#include "plugin/TapRecorder.h"
 #include "plugin/ZoneStage.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -89,9 +87,9 @@ public:
     juce::Result startProgram (int replaceId = -1);
 
     // Starts the room over: every measurement, the applied and previous
-    // corrections, the loudness level calibration and the show reference go.
-    // The voicing EQ, targets, mic calibration and settings stay. Refused while
-    // anything is measuring, calibrating or storing.
+    // corrections and the loudness level calibration go. The voicing EQ,
+    // targets, mic calibration and settings stay. Refused while anything is
+    // measuring or calibrating.
     juce::Result clearRoomData();
 
     // Targets: the three presets, or the session's custom points.
@@ -119,7 +117,6 @@ public:
 
     LoudnessSettings getLoudnessSettings() const noexcept;        // what the loudness stage uses now
     LoudnessController& getLoudness() { return loudnessControl; }
-    ShowController& getShow() { return showControl; }
 
     // The show view's SPL meter and spectrogram, from the mic (plugin only).
     SplMeter& getSpl() { return spl; }
@@ -158,8 +155,6 @@ private:
     LoudnessController loudnessControl { loudness, engine };
     ZoneStage zoneStage;
     std::atomic<int> appliedZone { 0 };           // the zone whose defaults were last set
-    TapRecorder showTap;                          // the final output and the mic, for show tracking
-    ShowController showControl { showTap };
     std::atomic<bool> showView { false };
     std::atomic<int> showPanel { 0 };
     SplMeter spl;

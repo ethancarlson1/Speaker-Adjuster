@@ -8,7 +8,6 @@
 //   roomeq_cli loudness-plan --fs 48000 --ref 95
 //   roomeq_cli track --fs 48000 --in output.f64 [--mic mic.f64] [--speed 5] [--block 512]
 //   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
-//   roomeq_cli show-track --fs 48000 --ref-out a.f64 --ref-mic b.f64 --out c.f64 --mic d.f64
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
 //                      --position P1=a.f64,b.f64 [--position ...]
 //                      [--program P2=reference.f64:mic.f64] [--exclude P1] [--band-lo 250 --band-hi 4000]
@@ -23,7 +22,6 @@
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
 #include "roomeq/loudness.h"
-#include "roomeq/showtrack.h"
 
 #include <algorithm>
 #include <cctype>
@@ -264,30 +262,6 @@ int run (int argc, char** argv)
         }
         std::cout << "{\"estimates\":" << numbers (estimates) << ",\"held\":" << numbers (held)
                   << ",\"mic\":" << numbers (micEstimates) << "}\n";
-        return 0;
-    }
-    if (args.command == "show-track")
-    {
-        // Reference from the soundcheck recording, then 10 s blocks of the show.
-        const auto reference = roomeq::transferBandsDb (readF64 (args.values.at ("ref-out")), readF64 (args.values.at ("ref-mic")), cfg.fs);
-        const auto out = readF64 (args.values.at ("out"));
-        const auto mic = readF64 (args.values.at ("mic"));
-        roomeq::DeltaTracker tracker (reference);
-        const auto block = static_cast<std::size_t> (10.0 * cfg.fs);
-        std::vector<std::string> states;
-        for (std::size_t s = 0; s + block <= std::min (out.size(), mic.size()); s += block)
-        {
-            const std::vector<double> o (out.begin() + static_cast<long> (s), out.begin() + static_cast<long> (s + block));
-            const std::vector<double> m (mic.begin() + static_cast<long> (s), mic.begin() + static_cast<long> (s + block));
-            const auto& st = tracker.addBlock (roomeq::transferBandsDb (o, m, cfg.fs));
-            std::vector<double> flags (st.flags.begin(), st.flags.end());
-            states.push_back (std::string ("{") + "\"delta_db\":" + numbers (st.deltaDb) + ",\"level_db\":" + num (st.levelDb)
-                              + ",\"flags\":" + numbers (flags) + ",\"level_flag\":" + std::to_string (st.levelFlag)
-                              + ",\"severity\":" + std::to_string (st.severity) + ",\"message\":" + str (st.message)
-                              + ",\"details\":" + list (st.details, str) + "}");
-        }
-        std::cout << "{\"reference\":" << numbers (reference)
-                  << ",\"states\":" << list (states, [] (const std::string& x) { return x; }) << "}\n";
         return 0;
     }
     if (args.command == "transfer-bands")

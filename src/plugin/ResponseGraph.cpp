@@ -147,21 +147,6 @@ void ResponseGraph::refresh()
         updateCurves();
         repaint();
     }
-    if (showMode)
-    {
-        const auto info = processor.getShow().getInfo();
-        const auto blocks = info.hasReference ? info.blocksHeard + 1000 * info.blocksDropped : -2;
-        if (blocks != lastShowBlocks)
-        {
-            lastShowBlocks = blocks;
-            repaint();
-        }
-        else if (const auto countdown = showCountdown (info); countdown != lastCountdown)
-        {
-            lastCountdown = countdown;
-            repaint (getLocalBounds().removeFromTop (30));
-        }
-    }
 }
 
 void ResponseGraph::setShowMode (bool shouldShow)
@@ -281,19 +266,21 @@ bool ResponseGraph::customTargetEditable() const
 // ---------------------------------------------------------------------------
 // Geometry
 
-// Setup: response (66%) and EQ strip. Show: change since soundcheck (40%), and
-// the spectrogram/EQ panel. Each has a legend row above it.
+// Setup: response (66%) and EQ strip. Show: the spectrogram/EQ panel alone.
+// Each has a legend row above it.
 juce::Rectangle<float> ResponseGraph::responseArea() const
 {
     const auto full = getLocalBounds().toFloat().withTrimmedLeft (44.0f).withTrimmedRight (14.0f);
     const auto plotHeight = full.getHeight() - 30.0f - 30.0f - 22.0f;
-    return full.withTrimmedTop (30.0f).withHeight (plotHeight * (showMode ? 0.40f : 0.66f));
+    return full.withTrimmedTop (30.0f).withHeight (plotHeight * 0.66f);
 }
 
 juce::Rectangle<float> ResponseGraph::eqArea() const
 {
-    const auto r = responseArea();
     const auto bottom = static_cast<float> (getHeight()) - 22.0f;
+    if (showMode)
+        return getLocalBounds().toFloat().withTrimmedLeft (44.0f).withTrimmedRight (14.0f).withTrimmedTop (30.0f).withBottom (bottom);
+    const auto r = responseArea();
     return r.withY (r.getBottom() + 30.0f).withBottom (bottom);
 }
 
@@ -349,55 +336,14 @@ void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> are
     }
 }
 
-juce::Point<float> ResponseGraph::getShowBandPosition (int band) const
-{
-    const auto area = responseArea();
-    return { xFor (roomeq::recheckBands()[static_cast<std::size_t> (band)], area), area.getCentreY() };
-}
-
 juce::Point<float> ResponseGraph::getShowPanelPoint (double hz) const
 {
     const auto area = eqArea();
     return { xFor (hz, area), area.getCentreY() };
 }
 
-int ResponseGraph::showBandAt (juce::Point<float> p) const
-{
-    const auto area = responseArea();
-    if (! showMode || ! area.contains (p))
-        return -1;
-    const auto hz = hzFor (p.x, area);
-    const auto& bands = roomeq::recheckBands();
-    for (std::size_t b = 0; b < bands.size(); ++b)
-        if (hz >= bands[b] * std::exp2 (-1.0 / 6.0) && hz < bands[b] * std::exp2 (1.0 / 6.0))
-            return static_cast<int> (b);
-    return -1;
-}
-
 juce::String ResponseGraph::showHoverText (juce::Point<float> p) const
 {
-    const auto dash = juce::String::fromUTF8 ("\xe2\x80\x93");
-    if (const auto b = showBandAt (p); b >= 0)
-    {
-        const auto info = processor.getShow().getInfo();
-        const auto centre = roomeq::recheckBands()[static_cast<std::size_t> (b)];
-        const auto name = juce::String (roomeq::showBandNames()[static_cast<std::size_t> (b)]);
-        const auto lo = theme::formatHz (centre * std::exp2 (-1.0 / 6.0)), hi = theme::formatHz (centre * std::exp2 (1.0 / 6.0));
-        const auto sameUnit = lo.endsWith (" kHz") == hi.endsWith (" kHz");   // "178-225 Hz", "891 Hz-1.1 kHz"
-        juce::String text = (name.endsWith ("k") ? name.dropLastCharacters (1) + " kHz" : name + " Hz") + " band ("
-                            + (sameUnit ? lo.upToFirstOccurrenceOf (" ", false, false) : lo) + dash + hi + "): ";
-        const auto& st = info.state;
-        const auto i = static_cast<std::size_t> (b);
-        if (! info.hasReference)
-            return text + "no soundcheck reference yet";
-        if (i >= st.deltaDb.size() || ! std::isfinite (st.deltaDb[i]))
-            return text + "not heard clearly enough yet";
-        const auto d = st.deltaDb[i];
-        text << (d >= 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) << juce::String (std::abs (d), 1) << " dB since soundcheck";
-        if (i < st.flags.size() && st.flags[i] != 0)
-            text << (std::abs (d) >= 6.0 ? " (flagged, 6 dB or more)" : " (flagged)");
-        return text;
-    }
     const auto panel = eqArea();
     if (showMode && panel.contains (p) && ! curves.grid.empty())
     {
@@ -422,13 +368,9 @@ void ResponseGraph::drawShowHover (juce::Graphics& g) const
     const auto text = showHoverText (p);
     if (text.isEmpty())
         return;
-    const auto inChange = showBandAt (p) >= 0;
-    const auto area = inChange ? responseArea() : eqArea();
-    if (! inChange)
-    {
-        g.setColour (theme::ink.withAlpha (0.5f));
-        g.drawVerticalLine (juce::roundToInt (hoverX), area.getY(), area.getBottom());
-    }
+    const auto area = eqArea();
+    g.setColour (theme::ink.withAlpha (0.5f));
+    g.drawVerticalLine (juce::roundToInt (hoverX), area.getY(), area.getBottom());
     g.setFont (juce::FontOptions (12.0f));
     const auto w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 16.0f;
     auto box = juce::Rectangle<float> (hoverX + 10.0f, juce::jlimit (area.getY() + 4.0f, area.getBottom() - 26.0f, hoverY - 30.0f), w, 22.0f);
@@ -836,7 +778,6 @@ void ResponseGraph::paint (juce::Graphics& g)
     const auto response = responseArea();
     if (showMode)
     {
-        drawShowChange (g, response);
         drawShowPanel (g, eqArea());
         drawShowHover (g);
         return;
@@ -857,125 +798,6 @@ void ResponseGraph::paint (juce::Graphics& g)
     }
     drawEq (g, eqArea());
     drawHover (g);
-}
-
-void ResponseGraph::drawShowChange (juce::Graphics& g, juce::Rectangle<float> area) const
-{
-    drawFrequencyAxis (g, area, false);
-    constexpr double range = 6.0;   // bigger changes are pinned to the edge, with their value
-    const auto yFor = [&] (double db)
-    {
-        return area.getY() + static_cast<float> ((range - db) / (2.0 * range)) * area.getHeight();
-    };
-    g.setFont (juce::FontOptions (11.0f));
-    for (int db = -6; db <= 6; db += 3)
-    {
-        const auto y = yFor (db);
-        g.setColour (db == 0 ? theme::axis : theme::grid);
-        g.drawHorizontalLine (juce::roundToInt (y), area.getX(), area.getRight());
-        g.setColour (theme::muted);
-        g.drawText ((db > 0 ? "+" : "") + juce::String (db), juce::Rectangle<float> (0.0f, y - 8.0f, area.getX() - 6.0f, 16.0f),
-                    juce::Justification::centredRight);
-    }
-    g.setColour (theme::axis);
-    g.drawRect (area, 1.0f);
-
-    const auto info = processor.getShow().getInfo();
-    const auto& st = info.state;
-    const auto legendEnd = drawLegend (g, { area.getX(), 8.0f }, { { "Change since soundcheck (tonal)", theme::blue, false },
-                                                                   { "Flagged", theme::warning, false },
-                                                                   { "3 dB", theme::warning.withAlpha (0.6f), true } });
-    auto header = juce::Rectangle<float> (legendEnd + 16.0f, 4.0f, juce::jmax (0.0f, area.getRight() - 4.0f - legendEnd - 16.0f), 20.0f);
-    g.setFont (juce::FontOptions (12.0f));
-    if (info.hasReference && std::isfinite (st.levelDb))
-    {
-        const auto r = std::round (st.levelDb * 10.0) / 10.0;
-        const auto level = std::abs (r) < 0.05 ? juce::String ("0.0")
-                                                : (r > 0.0 ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (r), 1);
-        g.setColour (st.levelFlag != 0 ? theme::warning : theme::ink2);
-        g.drawText ("Level after the plugin: " + level + " dB", header.removeFromRight (200.0f), juce::Justification::centredRight);
-        header.removeFromRight (16.0f);
-    }
-    if (info.hasReference)   // left out when there's no room: the left panel says it too
-    {
-        const auto countdown = showCountdown (info);
-        if (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), countdown) <= header.getWidth())
-        {
-            g.setColour (theme::muted);
-            g.drawText (countdown, header, juce::Justification::centredRight);
-        }
-    }
-
-    juce::Graphics::ScopedSaveState clip (g);
-    g.reduceClipRegion (area.toNearestInt());
-    for (const auto db : { -3.0, 3.0 })
-    {
-        juce::Path line;
-        line.startNewSubPath (area.getX(), yFor (db));
-        line.lineTo (area.getRight(), yFor (db));
-        g.setColour (theme::warning.withAlpha (0.6f));
-        strokeDashed (g, line, 1.2f, 5.0f, 4.0f);
-    }
-
-    g.setFont (juce::FontOptions (14.0f));
-    if (! info.hasReference)
-    {
-        g.setColour (theme::ink2);
-        g.drawFittedText ("No soundcheck reference yet. With music or pink noise playing, press Store reference.",
-                          area.reduced (20.0f).toNearestInt(), juce::Justification::centred, 2);
-        return;
-    }
-    const auto& bands = roomeq::recheckBands();
-    const auto hovered = showBandAt ({ hoverX, hoverY });
-    auto any = false;
-    for (std::size_t b = 0; b < bands.size() && b < st.deltaDb.size(); ++b)
-    {
-        if (static_cast<int> (b) == hovered)
-        {
-            const auto x0 = xFor (bands[b] * std::exp2 (-1.0 / 6.0), area), x1 = xFor (bands[b] * std::exp2 (1.0 / 6.0), area);
-            g.setColour (theme::ink.withAlpha (0.06f));
-            g.fillRect (juce::Rectangle<float> (x0, area.getY(), x1 - x0, area.getHeight()));
-        }
-        const auto x0 = xFor (bands[b] * std::exp2 (-1.0 / 6.0), area), x1 = xFor (bands[b] * std::exp2 (1.0 / 6.0), area);
-        const auto w = (x1 - x0) * 0.7f, cx = 0.5f * (x0 + x1);
-        const auto d = st.deltaDb[b];
-        if (! std::isfinite (d))
-        {
-            g.setColour (theme::muted.withAlpha (0.5f));
-            g.fillRect (juce::Rectangle<float> (cx - w / 2.0f, yFor (0.0) - 1.0f, w, 2.0f));
-            continue;
-        }
-        any = true;
-        const auto clamped = juce::jlimit (-range, range, d);
-        const auto top = std::min (yFor (clamped), yFor (0.0)), bottom = std::max (yFor (clamped), yFor (0.0));
-        const auto flagged = b < st.flags.size() && st.flags[b] != 0;
-        g.setColour (flagged ? (std::abs (d) >= 6.0 ? theme::critical : theme::warning) : theme::blue.withAlpha (0.75f));
-        g.fillRoundedRectangle (juce::Rectangle<float> (cx - w / 2.0f, top, w, std::max (1.5f, bottom - top)), 2.0f);
-        if (std::abs (d) > range)
-        {
-            // Off the scale: an arrow at the edge, and the value.
-            const auto up = d > 0.0;
-            const auto tip = up ? top + 3.0f : bottom - 3.0f;
-            const auto base = up ? tip + 7.0f : tip - 7.0f;
-            juce::Path arrow;
-            arrow.addTriangle (cx, tip, cx - 5.0f, base, cx + 5.0f, base);
-            g.setColour (theme::plane);
-            g.fillPath (arrow);
-            if (w >= 22.0f)   // its value, when the bar is wide enough to hold it
-            {
-                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-                const auto label = juce::Rectangle<float> (cx - w / 2.0f, up ? base + 1.0f : base - 15.0f, w, 14.0f);
-                g.drawFittedText ((up ? "+" : juce::String::fromUTF8 ("\xe2\x88\x92")) + juce::String (std::abs (d), 1),
-                                  label.toNearestInt(), juce::Justification::centred, 1, 0.7f);
-            }
-        }
-    }
-    if (! any)
-    {
-        g.setColour (theme::ink2);
-        g.drawFittedText ("Listening: the first result needs about a minute of music the mic hears clearly.",
-                          area.reduced (20.0f).toNearestInt(), juce::Justification::centred, 2);
-    }
 }
 
 // ---------------------------------------------------------------------------
