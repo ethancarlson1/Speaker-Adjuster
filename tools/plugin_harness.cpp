@@ -1923,6 +1923,44 @@ int main (int argc, char** argv)
                    "Copy puts the same text on the clipboard");
             dir.deleteRecursively();
         }
+        {
+            // Targets as files: the House preset out as CSV and JSON and back in (as Custom),
+            // another tool's text file, and a file that isn't a target.
+            const auto wasChoice = proc.getTargetChoice();
+            const auto wasCustom = proc.getCustomTarget();
+            const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("are-target-check");
+            dir.createDirectory();
+            setParam (proc, "target", static_cast<float> (AdaptiveRoomEQProcessor::targetHouse));
+            const auto house = proc.getTarget();
+            const auto csv = dir.getChildFile ("House.csv"), json = dir.getChildFile ("House.json");
+            check (proc.exportTarget (csv).wasOk() && proc.exportTarget (json).wasOk()
+                       && csv.loadFileAsString().startsWith ("# Adaptive Room EQ target")
+                       && juce::JSON::parse (json)["format"].toString() == "adaptive-room-eq.target",
+                   "target export: House as CSV and JSON");
+            setParam (proc, "target", static_cast<float> (AdaptiveRoomEQProcessor::targetFlat));
+            const auto fromCsv = proc.importTarget (csv);
+            const auto csvBack = proc.getCustomTarget();
+            const auto fromJson = proc.importTarget (json);
+            check (fromCsv.wasOk() && fromJson.wasOk() && csvBack.points == house.points && proc.getCustomTarget().points == house.points
+                       && proc.getTargetChoice() == AdaptiveRoomEQProcessor::targetCustom && proc.getCustomTarget().name == house.name,
+                   "target import: both come back as Custom with House's points");
+            const auto rew = dir.getChildFile ("house curve.txt");
+            rew.replaceWithText ("* Measurement tool target\nFreq(Hz)\tSPL(dB)\n20\t4.5\n100\t2\n2000\t0\n16000\t-3\n");
+            const auto fromRew = proc.importTarget (rew);
+            check (fromRew.wasOk() && proc.getCustomTarget().points.size() == 4 && proc.getCustomTarget().name == "house curve"
+                       && juce::exactlyEqual (proc.getCustomTarget().db (20.0), 4.5),
+                   "another tool's tab-separated text file imports too");
+            const auto junk = dir.getChildFile ("notes.csv");
+            junk.replaceWithText ("20,1\nnot a number\n");
+            const auto refused = proc.importTarget (junk);
+            check (refused.failed() && refused.getErrorMessage().contains ("line 2") && proc.getCustomTarget().points.size() == 4,
+                   "a file that isn't a target is refused and changes nothing: " + refused.getErrorMessage());
+            proc.setCustomTarget (wasCustom);
+            setParam (proc, "target", static_cast<float> (wasChoice));
+            for (int i = 0; i < 20; ++i)
+                pump (proc);
+            dir.deleteRecursively();
+        }
         ours->selectVoicingBand (1);
         ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
         writeSnapshot (*editor, stem + "-voicing.png");

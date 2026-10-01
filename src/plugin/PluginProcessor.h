@@ -110,6 +110,8 @@ public:
     juce::Array<juce::File> getSavedTargets() const;
     juce::Result saveCustomTarget (const juce::String& name);
     juce::Result loadTarget (const juce::File& file);             // into Custom, and selects it
+    juce::Result exportTarget (const juce::File& file) const;     // the selected target: .csv (or .txt) as CSV, else JSON
+    juce::Result importTarget (const juce::File& file);           // .json, or CSV / text from here or another tool; into Custom
 
     // Zones.
     enum class Zone { mains = 0, subs, frontFill, delay };

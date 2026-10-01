@@ -1115,6 +1115,12 @@ void AdaptiveRoomEQEditor::showTargetMenu()
         });
     }
     menu.addSeparator();
+    menu.addItem (juce::String::fromUTF8 ("Import target (CSV or JSON)\xe2\x80\xa6"), [this] { chooseTargetFile (true); });
+    juce::PopupMenu exportMenu;
+    exportMenu.addItem (juce::String::fromUTF8 ("As CSV\xe2\x80\xa6"), [this] { chooseTargetFile (false, ".csv"); });
+    exportMenu.addItem (juce::String::fromUTF8 ("As JSON\xe2\x80\xa6"), [this] { chooseTargetFile (false, ".json"); });
+    menu.addSubMenu ("Export this target", exportMenu);
+    menu.addSeparator();
     menu.addItem ("Show targets folder", [] {
         const auto folder = AdaptiveRoomEQProcessor::getTargetsFolder();
         folder.createDirectory();
@@ -1161,6 +1167,41 @@ void AdaptiveRoomEQEditor::saveExport (const juce::String& extension)
                                         safe->repaint();
                                     }
                                 });
+}
+
+void AdaptiveRoomEQEditor::chooseTargetFile (bool importing, const juce::String& extension)
+{
+    const auto name = juce::File::createLegalFileName (juce::String::fromUTF8 (processor.getTarget().name.c_str()) + " target" + extension);
+    const auto start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    targetChooser = std::make_unique<juce::FileChooser> (importing ? "Import a target" : "Export the target",
+                                                         importing ? start : start.getChildFile (name),
+                                                         importing ? "*.csv;*.txt;*.json" : "*" + extension);
+    const auto flags = importing ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                 : juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                       | juce::FileBrowserComponent::warnAboutOverwriting;
+    juce::Component::SafePointer<AdaptiveRoomEQEditor> safe (this);
+    targetChooser->launchAsync (flags, [safe, importing, extension] (const juce::FileChooser& chooser)
+    {
+        if (safe == nullptr || chooser.getResult() == juce::File())
+            return;
+        if (importing)
+        {
+            const auto file = chooser.getResult();
+            const auto result = safe->processor.importTarget (file);
+            safe->showResult (result);
+            if (result.wasOk())
+                safe->noticeText = "Target imported from " + file.getFileName() + " into Custom.";
+        }
+        else
+        {
+            const auto file = chooser.getResult().withFileExtension (extension);
+            const auto result = safe->processor.exportTarget (file);
+            safe->showResult (result);
+            if (result.wasOk())
+                safe->noticeText = "Target exported to " + file.getFileName() + ".";
+        }
+        safe->repaint();
+    });
 }
 
 void AdaptiveRoomEQEditor::askToSaveTarget()

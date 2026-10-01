@@ -165,7 +165,20 @@ How it chooses and what it tells you:
    - **Flat**.
    - **House:** +4 dB below ~80 Hz easing to 0 by 250 Hz, and −1 dB/octave above 2 kHz (−3 dB at 16 kHz).
    - **Speech:** −6 dB at 75 Hz, +2 dB at 2–4 kHz, and −3 dB at 16 kHz.
-   - **Custom:** drag its points on the graph; double-click to add or remove one. The **Targets…** menu saves it as a file, loads saved ones, or starts one from a preset.
+   - **Custom:** drag its points on the graph; double-click to add or remove one. The **Targets…** menu saves it in the targets folder, loads saved ones, or starts one from a preset.
+
+   **Sharing targets.** **Targets… › Import target (CSV or JSON)…** loads a file into Custom. **Export this target** writes the selected target, a preset or Custom, as CSV or JSON:
+   - **JSON:** `{"format": "adaptive-room-eq.target", "version": 1, "name": "House", "points": [[20.0, 4.00], …]}`. Saved targets use it too, and older files without the format line still load.
+   - **CSV:** `frequency_hz,gain_db` rows after `#` comment lines; `# name: House` names it.
+
+   Import is forgiving, so target and house-curve text files from other tools load too:
+   - commas, semicolons, tabs or spaces between the columns;
+   - a decimal comma when semicolons or tabs separate them;
+   - header lines and `#`, `*` or `//` comments skipped;
+   - extra columns ignored;
+   - points sorted, and a repeated frequency keeps the last.
+
+   A line it can't read among the points stops the import with its line number, and nothing changes.
 
    The target is placed on the average by its level over the zone's reference band (250 Hz–4 kHz, or 40–100 Hz for subs), so the correction reshapes the ends rather than moving the overall level.
 2. The proposed correction updates as you measure. The graph shows it:
@@ -442,6 +455,7 @@ The harness drives the real processor against a simulated room. It checks:
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
+- targets as files: House exported as CSV and JSON and imported back exactly, another tool's tab-separated text file imported, and a file that isn't a target refused with its line number;
 - export: the applied correction at the current Amount, the voicing bands that are on and the output gain; JSON, CSV and text files written and read back (the JSON parses, the CSV has a row per filter); and Copy putting the same text on the clipboard;
 - the Correct tab's system summary: its filters matching the proposal, the improvement, the positions' variation, every reason shown, and the switch to the capture list and back;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;

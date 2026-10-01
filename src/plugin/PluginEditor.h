@@ -58,6 +58,8 @@ private:
                     bool withTarget = false) const;
     void showTargetMenu();
     void askToSaveTarget();
+    void chooseTargetFile (bool importing, const juce::String& extension = {});
+    std::unique_ptr<juce::FileChooser> targetChooser;
 
     // Standalone only: pick the physical mic input and speaker output as single
     // channels (JUCE's own audio settings dialog only offers stereo pairs).

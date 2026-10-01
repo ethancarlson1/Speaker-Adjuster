@@ -47,6 +47,7 @@ add_library(roomeq_core STATIC
     src/roomeq/quality.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
+    src/roomeq/targetfile.cpp
     src/roomeq/targets.cpp
     src/roomeq/voicing.cpp)
 target_include_directories(roomeq_core PUBLIC src)
@@ -97,6 +98,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_spl_meter.cpp
         tests/cpp/test_sweep.cpp
+        tests/cpp/test_targetfile.cpp
         tests/cpp/test_zone_stage.cpp
         src/plugin/CaptureRecorder.cpp    # the real-time parts are JUCE-free, so they're tested here
         src/plugin/EqStages.cpp

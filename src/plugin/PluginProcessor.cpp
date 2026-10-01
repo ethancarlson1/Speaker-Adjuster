@@ -1,5 +1,7 @@
 #include "plugin/PluginProcessor.h"
+
 #include "plugin/PluginEditor.h"
+#include "roomeq/targetfile.h"
 
 namespace
 {
@@ -639,23 +641,42 @@ juce::Result AdaptiveRoomEQProcessor::saveCustomTarget (const juce::String& name
     // same rounded points.
     auto target = getCustomTarget();
     target.name = name.trim().toStdString();
-    juce::Array<juce::var> points;
     for (auto& [f, g] : target.points)
     {
         f = std::round (f * 10.0) / 10.0;
         g = std::round (g * 100.0) / 100.0;
-        points.add (juce::Array<juce::var> { f, g });
     }
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty ("name", name.trim());
-    obj->setProperty ("points", points);
     const auto folder = getTargetsFolder();
     if (! folder.createDirectory())
         return juce::Result::fail ("Couldn't create " + folder.getFullPathName());
     const auto file = folder.getChildFile (clean + ".json");
-    if (! file.replaceWithText (juce::JSON::toString (juce::var (obj), false, 2)))
+    if (! file.replaceWithText (juce::String::fromUTF8 (roomeq::targetToJson (target).c_str())))
         return juce::Result::fail ("Couldn't write " + file.getFullPathName());
     setCustomTarget (target);
+    return juce::Result::ok();
+}
+
+juce::Result AdaptiveRoomEQProcessor::exportTarget (const juce::File& file) const
+{
+    const auto target = getTarget();
+    const auto text = file.hasFileExtension ("csv") || file.hasFileExtension ("txt") ? roomeq::targetToCsv (target)
+                                                                                    : roomeq::targetToJson (target);
+    if (! file.replaceWithText (juce::String::fromUTF8 (text.c_str())))
+        return juce::Result::fail ("Couldn't write " + file.getFullPathName());
+    return juce::Result::ok();
+}
+
+juce::Result AdaptiveRoomEQProcessor::importTarget (const juce::File& file)
+{
+    if (file.hasFileExtension ("json"))
+        return loadTarget (file);
+    std::string error;
+    const auto t = roomeq::targetFromCsv (file.loadFileAsString().toStdString(), file.getFileNameWithoutExtension().toStdString(), error);
+    if (! t)
+        return juce::Result::fail (file.getFileName() + ": " + juce::String::fromUTF8 (error.c_str()));
+    setCustomTarget (*t);
+    if (auto* param = parameters.getParameter (ParamIds::target.getParamID()))
+        param->setValueNotifyingHost (param->convertTo0to1 (static_cast<float> (targetCustom)));
     return juce::Result::ok();
 }
 
