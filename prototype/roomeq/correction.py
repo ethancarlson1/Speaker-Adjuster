@@ -53,6 +53,7 @@ class CorrectionConfig:
     cut_min_octaves_high: float = 2 / 3
     cut_split_hz: tuple[float, float] = (250.0, 360.0)  # log-interpolated between the two widths
     max_octaves: float = 3.0                           # widest bell
+    shelves: bool = True                               # a low and a high shelf may be used as well as bells
     null_dip_db: float = 6.0
     null_spread_db: float = 6.0
     null_margin_octaves: float = 1 / 6
@@ -302,7 +303,7 @@ def fit_bands(prob: FitProblem) -> list[Band]:
             candidates.append(bell)
         kinds = {s.kind for s in slots}
         for kind in (LOW_SHELF, HIGH_SHELF):
-            if kind not in kinds:
+            if prob.cfg.shelves and kind not in kinds:
                 candidates += _seed_shelves(prob, resid, kind)
         if not candidates:
             break
