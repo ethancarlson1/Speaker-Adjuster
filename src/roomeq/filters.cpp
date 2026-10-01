@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <complex>
 
 namespace roomeq
 {
@@ -100,12 +99,16 @@ Biquad designBiquad (const Band& band, double fs)
 
 double biquadDb (const Biquad& c, double f, double fs)
 {
-    const auto w = 2.0 * pi * f / fs;
-    const auto z1 = std::polar (1.0, -w);
-    const auto z2 = z1 * z1;
-    const auto num = c.b0 + c.b1 * z1 + c.b2 * z2;
-    const auto den = 1.0 + c.a1 * z1 + c.a2 * z2;
-    return 20.0 * std::log10 (std::max (std::abs (num), 1e-300) / std::max (std::abs (den), 1e-300));
+    // |H|^2 in terms of phi = sin^2(w/2): one sine and one log per point, and
+    // stable near DC (|b0 + b1 z^-1 + b2 z^-2|^2 = (b0+b1+b2)^2 - 4 (b0 b1 + 4 b0 b2 + b1 b2) phi + 16 b0 b2 phi^2).
+    const auto s = std::sin (pi * f / fs);
+    const auto phi = s * s;
+    const auto bs = c.b0 + c.b1 + c.b2;
+    const auto as = 1.0 + c.a1 + c.a2;
+    const auto num = bs * bs - 4.0 * (c.b0 * c.b1 + 4.0 * c.b0 * c.b2 + c.b1 * c.b2) * phi + 16.0 * c.b0 * c.b2 * phi * phi;
+    const auto den = as * as - 4.0 * (c.a1 + 4.0 * c.a2 + c.a1 * c.a2) * phi + 16.0 * c.a2 * phi * phi;
+    constexpr double dbPerNeper = 4.3429448190325182765;   // 10 / ln 10: std::log is quicker than std::log10
+    return dbPerNeper * std::log (std::max (num, 1e-300) / std::max (den, 1e-300));
 }
 
 std::vector<double> bandDb (const Band& band, const std::vector<double>& freqs, double fs)

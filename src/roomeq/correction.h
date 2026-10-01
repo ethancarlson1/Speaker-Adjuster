@@ -43,6 +43,7 @@ struct CorrectionConfig
     double cutSplitLoHz = 250.0;          // log-interpolated between the two widths
     double cutSplitHiHz = 360.0;
     double maxOctaves = 3.0;              // widest bell
+    bool shelves = true;                  // a low and a high shelf may be used as well as bells
     double nullDipDb = 6.0;
     double nullSpreadDb = 6.0;
     double nullMarginOctaves = 1.0 / 6.0;
@@ -95,6 +96,15 @@ double minCutOctaves (double freq, const CorrectionConfig& cfg);
 double maxQ (double freq, double gainDb, const CorrectionConfig& cfg);
 
 std::vector<Band> fitBands (const FitProblem& prob);
+
+// What the fit minimises for a correction curve: half the weighted squared
+// error plus the limit penalties.
+double fitCost (const FitProblem& prob, const std::vector<double>& curveDb);
+
+// Backward fit (refit.h): refine `bands` against prob (a shelf where none is
+// allowed becomes the widest bell an octave inside it), then repeatedly drop
+// the band whose removal costs least and refine the rest, until at most n are left.
+std::vector<Band> pruneBands (const std::vector<Band>& bands, const FitProblem& prob, int n);
 
 // Included, non-redo captures, level-aligned and smoothed to 1/fraction octave on grid, redo bands masked.
 std::vector<std::vector<double>> levelAlignedPositions (const std::vector<std::shared_ptr<const Capture>>& captures,

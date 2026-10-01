@@ -167,6 +167,11 @@ def _cost(prob: FitProblem, c: np.ndarray) -> float:
     return 0.5 * float(r @ r)
 
 
+def fit_cost(prob: FitProblem, c: np.ndarray) -> float:
+    """What the fit minimises for a correction curve: half the weighted squared error plus the limit penalties."""
+    return _cost(prob, c)
+
+
 def levenberg_marquardt(slots: list[_Slot], free: list[int], prob: FitProblem, fixed_db: np.ndarray,
                         max_iter: int = 100) -> float:
     """Refine the parameters of slots[free] (in place); the others contribute `fixed_db`.
@@ -324,6 +329,37 @@ def fit_bands(prob: FitProblem) -> list[Band]:
     if len(kept) != len(slots) and kept:
         levenberg_marquardt(kept, list(range(len(kept))), prob, zero)
     return sorted((s.band() for s in kept), key=lambda b: b.freq)
+
+
+def _slot_for(b: Band, prob: FitProblem) -> _Slot:
+    """A band as a fit slot within prob's bounds (a shelf where none is allowed: the widest bell, an octave inside)."""
+    sign = 1.0 if b.gain_db > 0 else -1.0
+    kind, freq = b.kind, b.freq
+    if kind != BELL and not prob.cfg.shelves:
+        kind, freq = BELL, b.freq / 2 if b.kind == LOW_SHELF else b.freq * 2
+    if kind == BELL:
+        q = b.q if b.kind == BELL else filters.q_for_bandwidth(prob.cfg.max_octaves)
+        p = np.array([np.log2(freq), b.gain_db, np.log2(q)])
+    else:
+        p = np.array([np.log2(freq), b.gain_db])
+    return _Slot(kind, sign, _project(kind, p, sign, prob))
+
+
+def prune_bands(bands: list[Band], prob: FitProblem, n: int) -> list[Band]:
+    """Backward fit: refine `bands` against prob, then repeatedly drop the band whose removal
+    costs least and refine the rest, until at most n are left (refit.py)."""
+    zero = np.zeros(len(prob.freqs))
+    slots = [_slot_for(b, prob) for b in bands if b.enabled and b.kind in (BELL, LOW_SHELF, HIGH_SHELF)]
+    if slots:
+        levenberg_marquardt(slots, list(range(len(slots))), prob, zero)
+    while len(slots) > n:
+        responses = [filters.band_db(s.band(), prob.freqs, prob.fs) for s in slots]
+        total = sum(responses, zero)
+        costs = [_cost(prob, total - r) for r in responses]
+        del slots[int(np.argmin(costs))]
+        if slots:
+            levenberg_marquardt(slots, list(range(len(slots))), prob, zero)
+    return sorted((s.band() for s in slots if abs(s.p[1]) >= prob.cfg.min_gain_db), key=lambda b: b.freq)
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ add_library(roomeq_core STATIC
     src/roomeq/loudness.cpp
     src/roomeq/noise.cpp
     src/roomeq/quality.cpp
+    src/roomeq/refit.cpp
     src/roomeq/spectrum.cpp
     src/roomeq/sweep.cpp
     src/roomeq/targetfile.cpp
@@ -95,6 +96,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_noise.cpp
         tests/cpp/test_quality.cpp
         tests/cpp/test_recorder.cpp
+        tests/cpp/test_refit.cpp
         tests/cpp/test_spectrum.cpp
         tests/cpp/test_spl_meter.cpp
         tests/cpp/test_sweep.cpp

@@ -320,6 +320,35 @@ std::vector<std::size_t> allOf (std::size_t n)
     return idx;
 }
 
+// A band as a fit slot within prob's bounds (a shelf where none is allowed: the widest bell, an octave inside).
+Slot slotFor (const Band& b, const FitProblem& prob)
+{
+    const auto sgn = b.gainDb > 0.0 ? 1.0 : -1.0;
+    auto kind = b.kind;
+    auto freq = b.freq;
+    if (kind != BandKind::bell && ! prob.cfg.shelves)
+    {
+        kind = BandKind::bell;
+        freq = b.kind == BandKind::lowShelf ? b.freq / 2.0 : b.freq * 2.0;
+    }
+    std::vector<double> p;
+    if (kind == BandKind::bell)
+        p = { std::log2 (freq), b.gainDb, std::log2 (b.kind == BandKind::bell ? b.q : qForBandwidth (prob.cfg.maxOctaves)) };
+    else
+        p = { std::log2 (freq), b.gainDb };
+    return { kind, sgn, project (kind, std::move (p), sgn, prob) };
+}
+
+std::vector<Band> sortedBands (const std::vector<Slot>& slots, double minGainDb)
+{
+    std::vector<Band> bands;
+    for (const auto& s : slots)
+        if (std::abs (s.p[1]) >= minGainDb)
+            bands.push_back (fromParams (s.kind, s.p));
+    std::stable_sort (bands.begin(), bands.end(), [] (const Band& a, const Band& b) { return a.freq < b.freq; });
+    return bands;
+}
+
 // Included, non-redo captures, level-aligned and smoothed, redo bands masked.
 std::vector<std::vector<double>> alignedPositions (const std::vector<std::shared_ptr<const Capture>>& captures,
                                                    const SessionSummary& summary, double fraction,
@@ -401,7 +430,7 @@ std::vector<Band> fitBands (const FitProblem& prob)
         if (auto bell = seedBell (prob, resid))
             candidates.push_back (*bell);
         for (auto kind : { BandKind::lowShelf, BandKind::highShelf })
-            if (std::none_of (slots.begin(), slots.end(), [kind] (const Slot& s) { return s.kind == kind; }))
+            if (prob.cfg.shelves && std::none_of (slots.begin(), slots.end(), [kind] (const Slot& s) { return s.kind == kind; }))
                 for (auto& s : seedShelves (prob, resid, kind))
                     candidates.push_back (std::move (s));
         if (candidates.empty())
@@ -430,11 +459,51 @@ std::vector<Band> fitBands (const FitProblem& prob)
     if (kept.size() != slots.size() && ! kept.empty())
         levenbergMarquardt (kept, allOf (kept.size()), prob, zero);
 
-    std::vector<Band> bands;
-    for (const auto& s : kept)
-        bands.push_back (fromParams (s.kind, s.p));
-    std::stable_sort (bands.begin(), bands.end(), [] (const Band& a, const Band& b) { return a.freq < b.freq; });
-    return bands;
+    return sortedBands (kept, 0.0);
+}
+
+double fitCost (const FitProblem& prob, const std::vector<double>& curveDb)
+{
+    return cost (prob, curveDb);
+}
+
+std::vector<Band> pruneBands (const std::vector<Band>& bands, const FitProblem& prob, int n)
+{
+    std::vector<Slot> slots;
+    for (const auto& b : bands)
+        if (b.enabled && (b.kind == BandKind::bell || b.kind == BandKind::lowShelf || b.kind == BandKind::highShelf))
+            slots.push_back (slotFor (b, prob));
+    const std::vector<double> zero (prob.freqs.size(), 0.0);
+    if (! slots.empty())
+        levenbergMarquardt (slots, allOf (slots.size()), prob, zero);
+    while (static_cast<int> (slots.size()) > n)
+    {
+        std::vector<std::vector<double>> responses;
+        auto total = zero;
+        for (const auto& s : slots)
+        {
+            responses.push_back (slotDb (s, prob));
+            for (std::size_t k = 0; k < total.size(); ++k)
+                total[k] += responses.back()[k];
+        }
+        std::size_t drop = 0;
+        auto least = std::numeric_limits<double>::infinity();
+        for (std::size_t i = 0; i < slots.size(); ++i)
+        {
+            auto rest = total;
+            for (std::size_t k = 0; k < rest.size(); ++k)
+                rest[k] -= responses[i][k];
+            if (const auto c = cost (prob, rest); c < least)
+            {
+                least = c;
+                drop = i;
+            }
+        }
+        slots.erase (slots.begin() + static_cast<std::ptrdiff_t> (drop));
+        if (! slots.empty())
+            levenbergMarquardt (slots, allOf (slots.size()), prob, zero);
+    }
+    return sortedBands (slots, prob.cfg.minGainDb);
 }
 
 std::vector<std::vector<double>> levelAlignedPositions (const std::vector<std::shared_ptr<const Capture>>& captures,

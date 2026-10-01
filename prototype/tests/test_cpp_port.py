@@ -480,3 +480,27 @@ def test_sub_alignment_matches_python(tmp_path):
         for key in ("summed_db", "improvement_db", "efficiency_db"):
             assert cpp[key] == pytest.approx(getattr(py, key), abs=TOL_DB), key
         assert cpp["confidence"] == py.confidence and cpp["reasons"] == py.reasons and cpp["note"] == py.note, settings
+
+
+@pytest.mark.parametrize("max_bands, shelves", [(6, True), (4, True), (6, False)])
+def test_refit_matches_python(max_bands, shelves):
+    """Fit to N bands: same bands, same curve, same fit error."""
+    from roomeq import filters, refit
+    from roomeq.filters import BELL, HIGH_SHELF, LOW_SHELF, Band
+
+    bands = [Band(LOW_SHELF, 60, 2.5), Band(BELL, 95, -6, 4.0), Band(BELL, 160, -4, 3.0), Band(BELL, 240, -3, 2.5),
+             Band(BELL, 500, 1.5, 1.2), Band(BELL, 1200, -2.5, 2.0), Band(BELL, 2500, 2, 1.3), Band(BELL, 5000, -3, 2.0),
+             Band(HIGH_SHELF, 9000, -2)]
+    octaves = 3.0 if shelves else filters.bandwidth_for_q(0.3)
+    spec = ",".join(f"{b.kind}:{float(b.freq)!r}:{float(b.gain_db)!r}:{float(b.q)!r}" for b in bands)
+    cpp = run_cli("refit", "--fs", CFG.fs, "--bands", spec, "--max-bands", max_bands, "--shelves", int(shelves),
+                  "--max-octaves", repr(float(octaves)))
+    py = refit.refit_bands(bands, CFG.fs, max_bands, shelves=shelves, max_octaves=octaves)
+
+    assert cpp["refitted"] == py.refitted and cpp["original_bands"] == py.original_bands
+    assert [b["kind"] for b in cpp["bands"]] == [b.kind for b in py.bands]
+    grid = refit.refit_grid()
+    cpp_bands = [Band(b["kind"], b["freq"], b["gain_db"], b["q"]) for b in cpp["bands"]]
+    assert np.max(np.abs(filters.response_db(cpp_bands, grid, CFG.fs) - filters.response_db(py.bands, grid, CFG.fs))) < FIT_TOL_DB
+    assert cpp["max_error_db"] == pytest.approx(py.max_error_db, abs=FIT_TOL_DB)
+    assert cpp["rms_error_db"] == pytest.approx(py.rms_error_db, abs=FIT_TOL_DB)

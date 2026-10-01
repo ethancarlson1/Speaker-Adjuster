@@ -35,8 +35,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import filters
-from .correction import CorrectionConfig, FitProblem, _cost, _project, _Slot, fit_bands, levenberg_marquardt
-from .filters import BELL, HIGH_SHELF, LOW_SHELF, Band
+from .correction import CorrectionConfig, FitProblem, fit_bands, fit_cost, prune_bands
+from .filters import BELL, Band
 from .spectrum import log_freq_grid
 
 POINTS_PER_OCTAVE = 24
@@ -86,40 +86,10 @@ def refit_bands(bands: list[Band], fs: float, max_bands: int, shelves: bool = Tr
                       lower=np.minimum(curve, 0.0) - CUT_SLACK_DB,
                       f_lo=20.0, f_hi=20000.0, max_cut=max_cut, max_boost=max_boost, cfg=cfg)
     forward = fit_bands(prob) if max_bands > 0 else []
-    backward = _prune(bands, prob, max_bands)
-    zero = np.zeros(len(grid))
-    cost_f = _cost(prob, filters.response_db(forward, grid, fs) + zero)
-    cost_b = _cost(prob, filters.response_db(backward, grid, fs) + zero)
+    backward = prune_bands(bands, prob, max_bands)
+    cost_f = fit_cost(prob, filters.response_db(forward, grid, fs))
+    cost_b = fit_cost(prob, filters.response_db(backward, grid, fs))
     fitted = backward if cost_b < cost_f else forward
     max_err, rms = fit_error(curve, filters.response_db(fitted, grid, fs))
     return Refit(fitted, True, len(bands), max_err, rms)
 
-
-def _slot(b: Band, prob: FitProblem) -> _Slot:
-    """A band as a fit slot, within the refit's bounds (a shelf that isn't allowed: the widest bell)."""
-    sign = 1.0 if b.gain_db > 0 else -1.0
-    kind, freq = b.kind, b.freq
-    if kind != BELL and not prob.cfg.shelves:
-        kind, freq = BELL, b.freq / 2 if b.kind == LOW_SHELF else b.freq * 2
-    if kind == BELL:
-        q = b.q if b.kind == BELL else filters.q_for_bandwidth(prob.cfg.max_octaves)
-        p = np.array([np.log2(freq), b.gain_db, np.log2(q)])
-    else:
-        p = np.array([np.log2(freq), b.gain_db])
-    return _Slot(kind, sign, _project(kind, p, sign, prob))
-
-
-def _prune(bands: list[Band], prob: FitProblem, n: int) -> list[Band]:
-    """Backward: refine the bands, then drop the least useful and refine, until n are left."""
-    zero = np.zeros(len(prob.freqs))
-    slots = [_slot(b, prob) for b in bands if b.enabled and b.kind in (BELL, LOW_SHELF, HIGH_SHELF)]
-    if slots:
-        levenberg_marquardt(slots, list(range(len(slots))), prob, zero)
-    while len(slots) > n:
-        responses = [filters.band_db(s.band(), prob.freqs, prob.fs) for s in slots]
-        total = sum(responses, zero)
-        costs = [_cost(prob, total - r) for r in responses]
-        del slots[int(np.argmin(costs))]
-        if slots:
-            levenberg_marquardt(slots, list(range(len(slots))), prob, zero)
-    return sorted((s.band() for s in slots if abs(s.p[1]) >= prob.cfg.min_gain_db), key=lambda b: b.freq)
