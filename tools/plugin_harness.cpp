@@ -684,6 +684,20 @@ void standaloneChecks (const juce::String& snapshotPath)
     for (int i = 0; i < 20; ++i)
         pump (*proc);
     writeSnapshot (*editor, snapshotPath);
+    if (auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get()))
+    {
+        using Tab = AdaptiveRoomEQEditor::Tab;
+        using Mode = AdaptiveRoomEQEditor::Mode;
+        check (! ours->getModeButton (Mode::show).isVisible() && ours->isPageButtonShown (Tab::measure)
+                   && ! ours->isPageButtonShown (Tab::align) && ours->isPageButtonShown (Tab::verify),
+               "the app: no Show mode, and Tune has no Align step");
+        ours->setMode (Mode::setup);
+        check (ours->isPageButtonShown (Tab::zone) && ! ours->isPageButtonShown (Tab::loudness),
+               "the app's Setup: the zone and the mic and speaker routing (no Level Compensation)");
+        writeSnapshot (*editor, snapshotPath.upToLastOccurrenceOf (".", false, false) + "-setup.png");
+        ours->setMode (Mode::show);
+        check (ours->getMode() == Mode::tune, "asking the app for Show stays in Tune");
+    }
 }
 
 // Alignment across instances: a loopback sets the system latency (a speaker in
@@ -797,7 +811,7 @@ void alignmentChecks (const juce::String& snapshotStem)
     std::unique_ptr<juce::AudioProcessorEditor> editor (fill->createEditor());
     auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
     editor->setSize (1200, 820);
-    ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+    ours->showTab (AdaptiveRoomEQEditor::Tab::align);
     auto* panel = ours->getAlignmentPanel();
     if (panel == nullptr)
     {
@@ -952,7 +966,7 @@ void subAlignmentChecks (const juce::String& snapshotStem)
     std::unique_ptr<juce::AudioProcessorEditor> editor (sub->createEditor());
     auto* ours = dynamic_cast<AdaptiveRoomEQEditor*> (editor.get());
     editor->setSize (1200, 820);
-    ours->showTab (AdaptiveRoomEQEditor::Tab::zone);
+    ours->showTab (AdaptiveRoomEQEditor::Tab::align);
     auto* panel = ours->getAlignmentPanel();
     if (panel == nullptr)
     {
@@ -1281,6 +1295,8 @@ void zoneChecks (const juce::String& snapshotStem)
         for (int i = 0; i < 5; ++i)
             pump (proc);
         writeSnapshot (*editor, snapshotStem + "-zone.png");
+        ours->showTab (AdaptiveRoomEQEditor::Tab::align);
+        writeSnapshot (*editor, snapshotStem + "-align.png");
         editor->setSize (1060, 740);
         writeSnapshot (*editor, snapshotStem + "-zone-small.png");
     }
@@ -1847,6 +1863,59 @@ int main (int argc, char** argv)
             pump (proc);
         const auto stem = outPath.upToLastOccurrenceOf (".", false, false);
         writeSnapshot (*editor, outPath);
+        {
+            using Tab = AdaptiveRoomEQEditor::Tab;
+            using Mode = AdaptiveRoomEQEditor::Mode;
+            const auto pages = [&] (std::initializer_list<Tab> shown, std::initializer_list<Tab> hidden)
+            {
+                auto ok = true;
+                for (auto t : shown)
+                    ok = ok && ours->isPageButtonShown (t);
+                for (auto t : hidden)
+                    ok = ok && ! ours->isPageButtonShown (t);
+                return ok;
+            };
+            check (ours->getMode() == Mode::tune && pages ({ Tab::measure, Tab::align, Tab::correct, Tab::verify },
+                                                           { Tab::zone, Tab::loudness, Tab::monitor, Tab::voicing }),
+                   "Tune: 1 Measure, 2 Align, 3 Correct, 4 Verify");
+            ours->getModeButton (Mode::setup).triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (ours->getMode() == Mode::setup && pages ({ Tab::zone, Tab::loudness }, { Tab::measure, Tab::voicing })
+                       && proc.getUiMode() == 0 && ours->getModeButton (Mode::setup).getToggleState()
+                       && ! ours->getModeButton (Mode::tune).getToggleState() && ! ours->getModeButton (Mode::show).getToggleState(),
+                   "Setup: Zone and Level Compensation (mode " + juce::String (static_cast<int> (ours->getMode())) + ", toggles "
+                       + juce::String (static_cast<int> (ours->getModeButton (Mode::setup).getToggleState()))
+                       + juce::String (static_cast<int> (ours->getModeButton (Mode::tune).getToggleState()))
+                       + juce::String (static_cast<int> (ours->getModeButton (Mode::show).getToggleState())) + ", ui "
+                       + juce::String (proc.getUiMode()) + ")");
+            writeSnapshot (*editor, stem + "-setup.png");
+            ours->getModeButton (Mode::show).triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (ours->getMode() == Mode::show && ours->isShowView() && pages ({ Tab::monitor, Tab::voicing }, { Tab::measure, Tab::zone }),
+                   "Show: Monitor and Engineer Voicing");
+            ours->getModeButton (Mode::tune).triggerClick();
+            ours->showTab (Tab::correct);
+            const auto anyShown = [&]
+            {
+                auto any = false;
+                for (auto* c : ours->getAdvancedControls())
+                    any = any || c->isVisible();
+                return any;
+            };
+            const auto basic = ! anyShown();
+            ours->setAdvanced (true);
+            const auto detailed = anyShown() && proc.isAdvanced();
+            writeSnapshot (*editor, stem + "-correct-advanced.png");
+            juce::MemoryBlock ui;
+            proc.getStateInformation (ui);
+            AdaptiveRoomEQProcessor reopened;
+            reopened.setStateInformation (ui.getData(), static_cast<int> (ui.getSize()));
+            ours->setAdvanced (false);
+            check (basic && detailed && reopened.isAdvanced() && reopened.getUiMode() == 1 && ! anyShown(),
+                   "Advanced shows Correct's limits (Max cut, Max boost, the range); mode and Advanced are saved");
+        }
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
         {
             // The Correct tab shows the system summary where the capture list is.
@@ -1991,7 +2060,8 @@ int main (int argc, char** argv)
         ours->setShowView (true);
         for (int i = 0; i < 5; ++i)
             pump (proc);
-        check (ours->isShowView() && proc.isShowView(), "show view");
+        check (ours->isShowView() && proc.isShowView() && ours->isPageButtonShown (AdaptiveRoomEQEditor::Tab::monitor),
+               "show view: Show mode's Monitor page");
         {
             // The mic's spectrogram: music through a room, then a 1 kHz tone at the mic.
             ResponseGraph* showGraph = nullptr;
@@ -2079,8 +2149,13 @@ int main (int argc, char** argv)
         writeSnapshot (*editor, stem + "-show-small.png");
         editor->setSize (1200, 820);
         ours->setShowView (false);
+        check (ours->getMode() == AdaptiveRoomEQEditor::Mode::tune && ! proc.isShowView(), "leaving Show goes back to Tune");
         editor->setSize (1060, 740);   // the smallest size: everything still fits
+        ours->showTab (AdaptiveRoomEQEditor::Tab::loudness);
         writeSnapshot (*editor, stem + "-loudness-small.png");
+        ours->setAdvanced (true);
+        writeSnapshot (*editor, stem + "-loudness-small-advanced.png");
+        ours->setAdvanced (false);
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
         writeSnapshot (*editor, stem + "-correct-small.png");
         ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
@@ -2115,12 +2190,15 @@ int main (int argc, char** argv)
             const auto& q = card.getQuality();
             check (card.isVisible() && q && q->confidence == roomeq::Confidence::high && q->snr <= roomeq::Rating::good
                        && q->repeatability && ! q->coherence && q->usable.first < 80.0 && q->usable.second > 15000.0
-                       && card.getDetailsButton().isVisible(),
+                       && ! card.getDetailsButton().isVisible(),
                    "P2's quality: signal-to-noise " + juce::String (q ? roomeq::ratingLabel (q->snr) : "none")
                        + ", repeatability " + juce::String (q && q->repeatability ? roomeq::ratingLabel (*q->repeatability) : "none")
                        + ", no coherence (a sweep), confidence " + (q ? roomeq::confidenceLabel (q->confidence) : "none")
                        + " (card " + card.getBounds().toString() + (card.isVisible() ? ", visible)" : ", hidden)"));
             writeSnapshot (*editor, stem + "-selected.png");
+            ours->setAdvanced (true);
+            check (card.getDetailsButton().isVisible(), "Advanced adds the numbers and Details...");
+            writeSnapshot (*editor, stem + "-selected-advanced.png");
             {
                 auto details = card.createDetails();
                 check (details != nullptr && all[1].impulse != nullptr
@@ -2154,6 +2232,7 @@ int main (int argc, char** argv)
             }
             ours->getCaptureList().selectId (-1);
             check (! card.getQuality() && ! card.getDetailsButton().isVisible(), "no selection: the card says to pick one");
+            ours->setAdvanced (false);
             graph->setData (engine.getDisplay(), all[1].id);
             graph->setData (engine.getDisplay(), firstVerify != all.end() ? firstVerify->id : -1);
             check (graph->isHighlighting(), "and a verify capture's too");

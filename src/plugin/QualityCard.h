@@ -7,11 +7,12 @@
 
 #include <optional>
 
-// Measurement Quality (Measure tab): the selected capture's signal-to-noise,
+// Measurement Quality (Measure page): the selected capture's signal-to-noise,
 // coherence (music and noise), repeatability (repeat sweeps), usable range and
-// overall confidence, in words. Details... opens the raw numbers: each octave
-// band's level, SNR, coherence and repeat spread, the arrival, and a sweep's
-// impulse response around it.
+// measurement confidence, in words. With Advanced on, each rating shows the
+// number behind it, and Details... opens the raw numbers: each octave band's
+// level, SNR, coherence and repeat spread, the arrival, and a sweep's impulse
+// response around it.
 class QualityCard final : public juce::Component
 {
 public:
@@ -20,6 +21,7 @@ public:
     // The capture to show (none: a hint), judged against the zone's reference band.
     void setEntry (std::optional<MeasurementEngine::Entry> entry, std::pair<double, double> referenceBand);
     const std::optional<roomeq::MeasurementQuality>& getQuality() const { return quality; }
+    void setAdvanced (bool on);              // the numbers behind each rating, and Details...
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -34,6 +36,7 @@ private:
     std::optional<MeasurementEngine::Entry> entry;
     std::pair<double, double> band { 250.0, 4000.0 };
     std::optional<roomeq::MeasurementQuality> quality;
+    bool advanced = false;
     juce::TextButton detailsButton { juce::String::fromUTF8 ("Details\xe2\x80\xa6") };
 };
 

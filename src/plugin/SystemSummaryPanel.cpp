@@ -140,7 +140,7 @@ void SystemSummaryPanel::paint (juce::Graphics& g)
     };
 
     heading (measured, "Measurements");
-    row (measured, "Confidence", s.confidenceReasons.empty() ? juce::String() : utf8 (s.confidenceReasons.front()),
+    row (measured, "Measurement confidence", s.confidenceReasons.empty() ? juce::String() : utf8 (s.confidenceReasons.front()),
          std::pair { juce::String (roomeq::confidenceLabel (s.confidence)).toUpperCase(), confidenceColour (s.confidence) });
     row (measured, "Positions", juce::String (s.positions) + " good");
     if (s.variationDb && s.coverage)

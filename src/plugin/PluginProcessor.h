@@ -150,9 +150,13 @@ public:
     SplMeter& getSpl() { return spl; }
     SampleFifo& getMicFifo() { return micFifo; }
 
-    // The editor's compact show layout; saved with the session (not a parameter).
-    bool isShowView() const noexcept { return showView.load(); }
-    void setShowView (bool shouldShow) noexcept { showView = shouldShow; }
+    // The editor's mode (0 Setup, 1 Tune, 2 Show) and whether Advanced is on; saved with the session (not parameters).
+    int getUiMode() const noexcept { return uiMode.load(); }
+    void setUiMode (int m) noexcept { uiMode = juce::jlimit (0, 2, m); }
+    bool isShowView() const noexcept { return uiMode.load() == 2; }
+    void setShowView (bool shouldShow) noexcept { uiMode = shouldShow ? 2 : 1; }
+    bool isAdvanced() const noexcept { return advancedView.load(); }
+    void setAdvanced (bool on) noexcept { advancedView = on; }
     // The show view's lower panel: the mic's spectrogram with the EQ curves over it,
     // or either alone. Saved with the session.
     enum class ShowPanel { both = 0, spectrogram, eq };
@@ -188,7 +192,8 @@ private:
     juce::String trackName;
     juce::TimedCallback zonePublisher { [this] { publishZone(); } };
     std::atomic<int> appliedZone { 0 };           // the zone whose defaults were last set
-    std::atomic<bool> showView { false };
+    std::atomic<int> uiMode { 1 };
+    std::atomic<bool> advancedView { false };
     std::atomic<int> showPanel { 0 };
     SplMeter spl;
     SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips

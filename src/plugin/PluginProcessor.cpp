@@ -856,7 +856,8 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.appendChild (parameters.copyState(), nullptr);
     root.appendChild (engine.toValueTree(), nullptr);
     root.appendChild (loudnessControl.toValueTree(), nullptr);
-    root.setProperty ("showView", showView.load(), nullptr);
+    root.setProperty ("uiMode", uiMode.load(), nullptr);
+    root.setProperty ("advanced", advancedView.load(), nullptr);
     root.setProperty ("showPanel", showPanel.load(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
@@ -893,7 +894,9 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     }
     engine.fromValueTree (root.getChildWithName (MeasurementEngine::treeType));
     loudnessControl.fromValueTree (root.getChildWithName (LoudnessController::treeType));
-    showView = static_cast<bool> (root.getProperty ("showView", false));
+    // Sessions from before the modes saved only whether the show view was on.
+    setUiMode (root.hasProperty ("uiMode") ? static_cast<int> (root["uiMode"]) : static_cast<bool> (root.getProperty ("showView", false)) ? 2 : 1);
+    advancedView = static_cast<bool> (root.getProperty ("advanced", false));
     showPanel = juce::jlimit (0, 2, static_cast<int> (root.getProperty ("showPanel", 0)));
 }
 

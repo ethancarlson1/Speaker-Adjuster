@@ -650,13 +650,13 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool
     g.setColour (theme::axis);
     g.drawRect (area, 1.0f);
 
-    std::vector<LegendItem> legend { { curves.correctionOn ? "Correction" : "Correction (off)", theme::aqua, ! curves.correctionOn } };
+    std::vector<LegendItem> legend { { curves.correctionOn ? "System Correction" : "System Correction (off)", theme::aqua, ! curves.correctionOn } };
     if (curves.showProposal)
         legend.push_back ({ "Proposed (not applied)", theme::aqua.withAlpha (0.7f), true });
-    legend.push_back ({ curves.voicingOn ? "Voicing EQ" : "Voicing EQ (off)", theme::magenta, ! curves.voicingOn });
+    legend.push_back ({ curves.voicingOn ? "Engineer Voicing" : "Engineer Voicing (off)", theme::magenta, ! curves.voicingOn });
     const auto loudnessActive = curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated;
     if (curves.showLoudness)
-        legend.push_back ({ ! curves.loudnessOn ? "Level comp. (off)" : curves.loudnessCalibrated ? "Level comp. now" : "Level comp. (not calibrated)",
+        legend.push_back ({ ! curves.loudnessOn ? "Level Compensation (off)" : curves.loudnessCalibrated ? "Level Compensation now" : "Level Compensation (not calibrated)",
                             theme::gold, ! loudnessActive });
     const auto legendEnd = drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
 

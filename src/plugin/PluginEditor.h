@@ -12,13 +12,18 @@
 
 #include <array>
 
-// Setup view: tabs (Zone, Measure, Correct, Voicing, Loudness; the standalone
-// app has no Loudness tab, and its Zone tab has no delay or polarity) over a
-// status area that is always visible; on the right the
-// capture list with grades, and the graph (response on top, EQ stages below).
-// Show view (the header's button, plugin only): the left panel holds the
-// bypasses, the loudness readout and the SPL meter, the capture list goes, and
-// the graph shows the mic's spectrogram with the EQ curves over it.
+// Three modes (the header's Setup / Tune / Show), each with its pages over a
+// status area that is always visible:
+// - Setup: Zone (and, in the app, the mic input and speaker output) and
+//   Level Compensation (plugin only).
+// - Tune: 1 Measure, 2 Align (plugin only), 3 Correct, 4 Verify. On the
+//   right, the capture list (the system summary on Correct) and the graph
+//   (response on top, EQ stages below).
+// - Show (plugin only): Monitor (the bypasses, the level readout and the SPL
+//   meter) and Engineer Voicing; the graph shows the mic's spectrogram with
+//   the EQ curves over it.
+// Advanced shows the detailed limits and the raw numbers; without it the
+// pages keep to what a tuning needs.
 class AdaptiveRoomEQEditor final : public juce::AudioProcessorEditor,
                                    private juce::Timer,
                                    private juce::ChangeListener
@@ -36,11 +41,24 @@ public:
         correct,
         voicing,
         loudness,
-        zone
+        zone,
+        align,
+        verify,
+        monitor
     };
-    void showTab (Tab tab);
+    enum class Mode
+    {
+        setup = 0,
+        tune,
+        show
+    };
+    void showTab (Tab tab);                  // switches to its mode too
+    void setMode (Mode m);                   // to the page last open in it
+    Mode getMode() const { return mode; }
+    void setAdvanced (bool on);
+    bool isAdvanced() const { return advanced; }
     void selectVoicingBand (int band);
-    void setShowView (bool on);
+    void setShowView (bool on);              // Show mode, or back to Tune
     bool isShowView() const { return showViewOn; }
 
 private:
@@ -69,6 +87,10 @@ private:
     void updateTabVisibility();
     juce::String summaryLine() const;
     juce::String correctionInfo() const;
+    juce::String verifyInfo() const;
+    juce::String verifiedText() const;   // the verified average's distance from the target (empty if none)
+    static Mode modeOf (Tab tab);
+    std::vector<juce::TextButton*> tabsOf (Mode m);
     juce::String loudnessInfo() const;
     juce::String zoneInfo() const;
     juce::String statusText() const;
@@ -83,13 +105,20 @@ private:
 
     AdaptiveRoomEQProcessor& processor;
 
-    // Show view.
-    juce::TextButton showViewButton { "Show view" };
+    // Modes, and Advanced.
+    juce::TextButton setupButton { "Setup" }, tuneButton { "Tune" }, showButton { "Show" };
+    juce::ToggleButton advancedToggle { "Advanced" };
+    Mode mode = Mode::tune;
+    std::array<Tab, 3> lastTab { Tab::zone, Tab::measure, Tab::monitor };   // per mode
+    bool advanced = false;
+    std::vector<juce::Component*> advancedControls;   // shown only with Advanced on (on their page)
+
+    // Show mode.
     bool showViewOn = false;
     std::vector<juce::Component*> showControls;
     juce::TextButton showRecheckButton { "Re-check level" }, splResetButton { "Reset" };
-    juce::ToggleButton showCorrectionOn { "Correction on" }, showVoicingOn { "Voicing EQ on" }, showLoudOn { "Level comp. on" },
-        showLevelMatch { "Match output level" };
+    juce::ToggleButton showCorrectionOn { "System Correction" }, showVoicingOn { "Engineer Voicing" },
+        showLoudOn { "Level Compensation" }, showLevelMatch { "Match output level" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showCorrectionAttachment, showVoicingAttachment,
         showLoudAttachment, showLevelMatchAttachment;
     juce::Rectangle<int> showLoudBounds, splBounds;
@@ -101,10 +130,11 @@ private:
         juce::Font getTextButtonFont (juce::TextButton&, int) override { return juce::FontOptions (tabFontHeight); }
         static constexpr float tabFontHeight = 14.0f;
     } tabLook;
-    juce::TextButton zoneTab { "Zone" }, measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Voicing" },
-        loudnessTab { "Level comp" };
+    juce::TextButton zoneTab { "Zone" }, measureTab { "Measure" }, correctTab { "Correct" }, voicingTab { "Engineer Voicing" },
+        loudnessTab { "Level Compensation" }, alignTab { "Align" }, verifyTab { "Verify" }, monitorTab { "Monitor" };
     Tab currentTab = Tab::measure;
-    std::vector<juce::Component*> zoneControls, measureControls, correctControls, voicingControls, loudnessControls;
+    std::vector<juce::Component*> zoneControls, measureControls, correctControls, voicingControls, loudnessControls,
+        alignControls, verifyControls;
     juce::Rectangle<int> statusBounds, tipBounds, infoBounds;
     int calibrationRuleY = 0;
 
@@ -130,14 +160,14 @@ private:
     juce::ComboBox target;
     juce::Label targetLabel;
     juce::TextButton targetMenu { juce::String::fromUTF8 ("Targets\xe2\x80\xa6") };
-    juce::ToggleButton correctionOn { "Correction on" }, levelMatch { "Match output level" };
+    juce::ToggleButton correctionOn { "System Correction" }, levelMatch { "Match output level" };
     juce::Slider amount { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         maxCut { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         maxBoost { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         rangeLo { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         rangeHi { juce::Slider::LinearBar, juce::Slider::TextBoxRight };
     juce::Label amountLabel, maxCutLabel, maxBoostLabel, rangeLoLabel, rangeHiLabel;
-    juce::TextButton applyButton { "Apply correction" }, compareButton { "Hear previous" }, undoButton { "Undo" },
+    juce::TextButton applyButton { "Apply System Correction" }, compareButton { "Hear previous" }, undoButton { "Undo" },
         verifyButton { "Verify: measure through the EQ" }, exportButton { juce::String::fromUTF8 ("Export\xe2\x80\xa6") };
     std::unique_ptr<juce::FileChooser> exportChooser;
     void showExportMenu();
@@ -148,7 +178,7 @@ private:
         rangeHiAttachment;
 
     // Voicing tab.
-    juce::ToggleButton voicingOn { "Voicing EQ on" };
+    juce::ToggleButton voicingOn { "Engineer Voicing" };
     std::unique_ptr<ButtonAttachment> voicingOnAttachment;
     std::array<juce::TextButton, roomeq::numVoicingBands> bandButtons;
     juce::ToggleButton bandOn { "Band on" };
@@ -163,7 +193,7 @@ private:
     int selectedBand = 0;
 
     // Loudness tab.
-    juce::ToggleButton loudOn { "Level compensation on" }, loudHighPass { "Protective high-pass (follows the boost)" };
+    juce::ToggleButton loudOn { "Level Compensation" }, loudHighPass { "Protective high-pass (follows the boost)" };
     juce::ComboBox loudStrength;   // Subtle / Natural / Full: presets for Amount
     juce::Slider loudRef { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
         loudAmount { juce::Slider::LinearBar, juce::Slider::TextBoxRight },
@@ -208,6 +238,9 @@ public:
     SystemSummaryPanel& getSystemPanel() { return systemPanel; }  // tests
     juce::TextButton& getCapturesButton() { return capturesButton; }
     juce::TextButton& getSummaryButton() { return summaryButton; }
+    bool isPageButtonShown (Tab t);                               // tests: the page's button is in the tab bar
+    const std::vector<juce::Component*>& getAdvancedControls() const { return advancedControls; }
+    juce::TextButton& getModeButton (Mode m) { return m == Mode::setup ? setupButton : m == Mode::show ? showButton : tuneButton; }
     void copyEqToClipboard();                                     // Export... > Copy (tests too)
 private:
     ResponseGraph graph { processor };
@@ -215,7 +248,8 @@ private:
     std::unique_ptr<juce::AlertWindow> saveDialog;
 
     juce::String errorText;
-    juce::String noticeText;   // a done message (shown like the status, until the next action)
+    juce::String noticeText;   // a done message (shown like the status for a few seconds)
+    juce::uint32 noticeTime = 0;
     float micLevelDb = -100.0f;
     float outputLevelDb = -100.0f;
 

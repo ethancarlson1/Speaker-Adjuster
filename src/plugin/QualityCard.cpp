@@ -89,6 +89,13 @@ QualityCard::QualityCard()
     addChildComponent (detailsButton);
 }
 
+void QualityCard::setAdvanced (bool on)
+{
+    advanced = on;
+    detailsButton.setVisible (advanced && quality.has_value());
+    repaint();
+}
+
 void QualityCard::setEntry (std::optional<MeasurementEngine::Entry> newEntry, std::pair<double, double> referenceBand)
 {
     const auto same = entry.has_value() == newEntry.has_value()
@@ -101,7 +108,7 @@ void QualityCard::setEntry (std::optional<MeasurementEngine::Entry> newEntry, st
     quality.reset();
     if (entry && entry->capture != nullptr)
         quality = roomeq::measurementQuality (*entry->capture, band.first, band.second);
-    detailsButton.setVisible (quality.has_value());
+    detailsButton.setVisible (advanced && quality.has_value());
     repaint();
 }
 
@@ -143,12 +150,12 @@ void QualityCard::paint (juce::Graphics& g)
         g.setColour (theme::muted);
         g.setFont (juce::FontOptions (12.0f));
         g.drawText (utf8 (c.name) + juce::String::fromUTF8 (" \xc2\xb7 ") + kindOf (c) + (entry->verify ? " (verify)" : "")
-                        + juce::String::fromUTF8 (" \xc2\xb7 worst band shown"),
+                        + (advanced ? juce::String::fromUTF8 (" \xc2\xb7 worst band shown") : juce::String()),
                     r.removeFromTop (16), juce::Justification::centredLeft);
     }
     r.removeFromTop (4);
 
-    const auto labelWidth = 124, chipWidth = 76;
+    const auto labelWidth = 150, chipWidth = 76;
     // A row: its name, a rated word (or a dash when it doesn't apply) and the number behind it; or a plain value.
     const auto rowHeight = juce::jlimit (16, 22, (r.getHeight() - 4) / 5 - 2);   // five rows, tighter in a small window
     const auto line = [&] (const juce::String& name, std::optional<juce::String> word, juce::Colour colour, const juce::String& detail,
@@ -178,10 +185,15 @@ void QualityCard::paint (juce::Graphics& g)
         g.drawFittedText (detail, row, juce::Justification::centredLeft, 1, 0.85f);
     };
     for (const auto& row : rowsFor (q, c))
+    {
+        const auto plain = row.name == "Usable range";
+        // The number behind a rating is Advanced; what doesn't apply says why either way.
+        const auto detail = plain || advanced || ! row.rating ? row.detail : juce::String();
         line (row.name, row.rating ? std::optional<juce::String> (roomeq::ratingLabel (*row.rating)) : std::nullopt,
-              row.rating ? ratingColour (*row.rating) : theme::muted, row.detail, row.name == "Usable range");
+              row.rating ? ratingColour (*row.rating) : theme::muted, detail, plain);
+    }
     r.removeFromTop (4);
-    line ("Overall confidence", juce::String (roomeq::confidenceLabel (q.confidence)).toUpperCase(), confidenceColour (q.confidence), {});
+    line ("Measurement confidence", juce::String (roomeq::confidenceLabel (q.confidence)).toUpperCase(), confidenceColour (q.confidence), {});
     if (! q.reasons.empty())
     {
         juce::StringArray reasons;
