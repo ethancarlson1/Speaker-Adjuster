@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace roomeq;
@@ -100,4 +101,66 @@ TEST_CASE ("music has coherence and no repeatability; nothing heard is low")
     const auto none = measurementQuality (flat ({ silent }, Grade::redo));
     CHECK (none.confidence == Confidence::low);
     CHECK (none.reasons == std::vector<std::string> { "no band was heard clearly" });
+}
+
+TEST_CASE ("the correction explains where it held back")
+{
+    // A hand-made fit state on a 1/3-octave grid: the PA stops at 50 Hz; a dip
+    // at 200 Hz; the positions disagree at 1 kHz; the target asks for +6 dB
+    // near 4 kHz (Max boost 3) and -15 dB near 8 kHz (Max cut 12).
+    CorrectionResult r;
+    r.grid = logFreqGrid (20.0, 20000.0, 3);
+    const auto n = r.grid.size();
+    r.averageDb.assign (n, 0.0);
+    r.targetDb.assign (n, 0.0);
+    r.dipDb.assign (n, 0.0);
+    r.spreadDb.assign (n, 2.0);
+    r.nullMask.assign (n, false);
+    r.correctionDb.assign (n, 0.0);
+    r.paRange = { 50.0, r.grid.back() };
+    r.fitRange = { 50.0, r.grid.back() };
+    r.maxCutDb = 12.0;
+    r.maxBoostDb = 3.0;
+    const auto at = [&] (double f)
+    {
+        std::size_t best = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (std::abs (std::log (r.grid[i] / f)) < std::abs (std::log (r.grid[best] / f)))
+                best = i;
+        return best;
+    };
+    r.averageDb[at (200.0)] = -9.0;
+    r.dipDb[at (200.0)] = -9.0;
+    r.nullMask[at (200.0)] = true;
+    r.averageDb[at (1000.0)] = -4.0;
+    r.spreadDb[at (1000.0)] = 8.0;
+    r.nullMask[at (1000.0)] = true;
+    r.averageDb[at (4000.0)] = -6.0;
+    r.averageDb[at (8000.0)] = 15.0;
+
+    SessionSummary summary;
+    summary.nGood = 3;
+    CorrectionConfig cfg;
+    const auto e = explainCorrection ({}, summary, r, cfg);
+    REQUIRE (e.size() == 5);
+    CHECK (e[0].kind == "bandwidth");
+    CHECK (e[0].text.rfind ("Not correcting below 50 Hz: the system is more than 6 dB down there", 0) == 0);
+    CHECK (e[1].kind == "null");
+    CHECK (e[1].text.rfind ("Not boosting the dip at 200 Hz (9 dB below the trend)", 0) == 0);
+    CHECK (e[2].kind == "disagreement");
+    CHECK (e[2].text.rfind ("Not boosting around 1 kHz: the positions disagree by up to 8 dB", 0) == 0);
+    CHECK (e[3].text == "Boost held to +3.0 dB at 4.1 kHz (Max boost): the response is 6.0 dB below the target there.");
+    CHECK (e[4].text == "Cut held to -12.0 dB at 8.1 kHz (Max cut): the response is 15.0 dB above the target there.");
+
+    // Few positions: quick mode says so first, and a capped boost names the cap.
+    summary.nGood = 1;
+    summary.policy = { 2, 0.5, 3.0 };
+    r.maxBoostDb = 3.0;   // min (3, cap 3 / strength 0.5)
+    r.strength = 0.5;
+    const auto quick = explainCorrection ({}, summary, r, cfg);
+    CHECK (quick[0].text == "Only 1 good position: the fit smooths to 1/2 octave and is held to 50% strength, at most 3 dB. "
+                            "Measure 2 more to correct fully.");
+    const auto boost = std::find_if (quick.begin(), quick.end(), [] (const auto& x) { return x.text.rfind ("Boost held", 0) == 0; });
+    REQUIRE (boost != quick.end());
+    CHECK (boost->text.find ("+1.5 dB at 4.1 kHz (the quick-mode cap)") != std::string::npos);
 }

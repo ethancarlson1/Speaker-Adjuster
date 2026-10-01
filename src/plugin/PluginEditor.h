@@ -5,6 +5,7 @@
 #include "plugin/PluginProcessor.h"
 #include "plugin/QualityCard.h"
 #include "plugin/ResponseGraph.h"
+#include "plugin/SystemSummaryPanel.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -192,9 +193,16 @@ private:
     CaptureList captureList;
     QualityCard qualityCard;                     // Measure tab: the selected capture's quality
     void updateQualityCard();
+    // Correct tab: the system summary where the capture list is, or the list.
+    SystemSummaryPanel systemPanel;
+    juce::TextButton summaryButton { "System summary" }, capturesButton { "Captures" };
+    bool showingSummary = true;
 public:
     QualityCard& getQualityCard() { return qualityCard; }         // tests
     CaptureList& getCaptureList() { return captureList; }         // tests
+    SystemSummaryPanel& getSystemPanel() { return systemPanel; }  // tests
+    juce::TextButton& getCapturesButton() { return capturesButton; }
+    juce::TextButton& getSummaryButton() { return summaryButton; }
 private:
     ResponseGraph graph { processor };
     juce::TooltipWindow tooltips { this, 600 };

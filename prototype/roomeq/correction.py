@@ -98,6 +98,12 @@ class CorrectionResult:
     predicted_db: np.ndarray         # average + correction
     rms_error_db: float              # predicted vs target, in range, outside nulls
     notes: list[str] = field(default_factory=list)
+    # What the decisions were made from (the system summary explains them):
+    pa_range: tuple[float, float] = (0.0, 0.0)   # the PA's own -6 dB points, before the user's range
+    dip_db: np.ndarray | None = None             # 1/6-octave average - 1-octave trend (dips below -null_dip_db are nulls)
+    spread_db: np.ndarray | None = None          # positions' max - min (1/3 octave, level-aligned); NaN with fewer than 2
+    max_cut_db: float = 0.0                      # the fit's limits (quick mode: raised to cap / strength)
+    max_boost_db: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -337,16 +343,24 @@ def _aligned_positions(captures, summary: SessionSummary, fraction: float, grid:
     return out
 
 
+def position_spread(grid: np.ndarray, positions: list[np.ndarray]) -> np.ndarray:
+    """Max - min across positions per point; NaN where fewer than two have a value."""
+    if len(positions) < 2:
+        return np.full(len(grid), np.nan)
+    stack = np.array(positions)
+    valid = np.sum(np.isfinite(stack), axis=0) >= 2
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)      # all-NaN columns
+        spread = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
+    return np.where(valid, spread, np.nan)
+
+
 def detect_nulls(grid: np.ndarray, fine_db: np.ndarray, trend_db: np.ndarray, positions: list[np.ndarray],
                  cfg: CorrectionConfig) -> np.ndarray:
     null = fine_db - trend_db < -cfg.null_dip_db
     if len(positions) >= 2:
-        stack = np.array(positions)
-        valid = np.sum(np.isfinite(stack), axis=0) >= 2
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)      # all-NaN columns
-            spread = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
-        null |= valid & (spread > cfg.null_spread_db)
+        spread = position_spread(grid, positions)
+        null |= np.isfinite(spread) & (spread > cfg.null_spread_db)
     # Widen each null by the margin on both sides.
     margin = int(round(cfg.null_margin_octaves * cfg.points_per_octave))
     if margin > 0 and np.any(null):
@@ -367,8 +381,8 @@ def design_correction(captures, summary: SessionSummary, target: TargetCurve, fs
     trend = to_db(smooth_power(summary.freqs, summary.power, 1, grid, summary.weight))
     notes = []
 
-    lo, hi = usable_range(grid, trend, cfg.ref_band, drop_db=cfg.rolloff_db)
-    lo, hi = max(lo, cfg.range_hz[0]), min(hi, cfg.range_hz[1])
+    pa_lo, pa_hi = usable_range(grid, trend, cfg.ref_band, drop_db=cfg.rolloff_db)
+    lo, hi = max(pa_lo, cfg.range_hz[0]), min(pa_hi, cfg.range_hz[1])
     notes.append(f"fit range {lo:.0f} Hz - {hi:.0f} Hz")
 
     offset = anchor_offset_db(grid, average, target, cfg.ref_band)
@@ -404,4 +418,5 @@ def design_correction(captures, summary: SessionSummary, target: TargetCurve, fs
     return CorrectionResult(grid=grid, average_db=average, trend_db=trend, target_db=target_db, desired_db=desired,
                             upper_db=upper, lower_db=lower, null_mask=null, fit_range=(lo, hi), fitted=fitted,
                             bands=bands, strength=strength, correction_db=correction, predicted_db=predicted,
-                            rms_error_db=rms, notes=notes)
+                            rms_error_db=rms, notes=notes, pa_range=(pa_lo, pa_hi), dip_db=fine - trend,
+                            spread_db=position_spread(grid, positions), max_cut_db=max_cut, max_boost_db=max_boost)

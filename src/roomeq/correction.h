@@ -84,12 +84,25 @@ struct CorrectionResult
     std::vector<double> correctionDb;  // response of `bands`
     std::vector<double> predictedDb;   // average + correction
     double rmsErrorDb = 0.0;           // predicted vs target, in range, outside nulls (NaN if none)
+    // What the decisions were made from (the system summary explains them):
+    std::pair<double, double> paRange;  // the PA's own -6 dB points, before the user's range
+    std::vector<double> dipDb;          // 1/6-octave average - 1-octave trend (below -nullDipDb: a null)
+    std::vector<double> spreadDb;       // positions' max - min (1/3 octave, level-aligned); NaN with fewer than 2
+    double maxCutDb = 0.0, maxBoostDb = 0.0;   // the fit's limits (quick mode: raised to cap / strength)
 };
 
 double minCutOctaves (double freq, const CorrectionConfig& cfg);
 double maxQ (double freq, double gainDb, const CorrectionConfig& cfg);
 
 std::vector<Band> fitBands (const FitProblem& prob);
+
+// Included, non-redo captures, level-aligned and smoothed to 1/fraction octave on grid, redo bands masked.
+std::vector<std::vector<double>> levelAlignedPositions (const std::vector<std::shared_ptr<const Capture>>& captures,
+                                                        const SessionSummary& summary, double fraction,
+                                                        const std::vector<double>& grid);
+
+// Max - min across positions per point; NaN where fewer than two have a value.
+std::vector<double> positionSpread (std::size_t n, const std::vector<std::vector<double>>& positions);
 
 std::vector<bool> detectNulls (const std::vector<double>& grid, const std::vector<double>& fineDb,
                                const std::vector<double>& trendDb, const std::vector<std::vector<double>>& positions,

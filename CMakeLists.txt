@@ -178,6 +178,7 @@ target_sources(AdaptiveRoomEQ
         src/plugin/ResponseGraph.cpp
         src/plugin/Spectrogram.cpp
         src/plugin/SplMeter.cpp
+        src/plugin/SystemSummaryPanel.cpp
         src/plugin/TapRecorder.cpp
         src/plugin/ZoneRegistry.cpp
         src/plugin/ZoneStage.cpp)
@@ -222,6 +223,7 @@ if(ARE_BUILD_TESTS)
             src/plugin/ResponseGraph.cpp
             src/plugin/Spectrogram.cpp
             src/plugin/SplMeter.cpp
+            src/plugin/SystemSummaryPanel.cpp
             src/plugin/TapRecorder.cpp
             src/plugin/ZoneRegistry.cpp
             src/plugin/ZoneStage.cpp)

@@ -214,6 +214,24 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     button (clearAllButton, measureControls);
     addChildComponent (qualityCard);
     measureControls.push_back (&qualityCard);
+
+    addChildComponent (systemPanel);
+    for (auto* b : { &summaryButton, &capturesButton })
+    {
+        b->setRadioGroupId (2);
+        b->setClickingTogglesState (true);
+        b->setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.55f));
+        addChildComponent (b);
+    }
+    summaryButton.setToggleState (true, juce::dontSendNotification);
+    summaryButton.setTooltip ("The measurements and the proposal in a few lines, and where the correction was held back.");
+    capturesButton.setTooltip ("The captured positions, as on the Measure tab.");
+    summaryButton.onClick = [this]
+    {
+        showingSummary = summaryButton.getToggleState();
+        updateTabVisibility();
+    };
+    capturesButton.onClick = summaryButton.onClick;
     addAndMakeVisible (stopButton);   // on every tab: Verify runs from the Correct tab
 
     // ---- Correct tab
@@ -503,7 +521,11 @@ void AdaptiveRoomEQEditor::updateTabVisibility()
     for (auto* t : { &zoneTab, &measureTab, &correctTab, &voicingTab })
         t->setVisible (setup);
     loudnessTab.setVisible (setup && ! processor.isStandalone());
-    captureList.setVisible (setup);
+    const auto summaryHere = setup && currentTab == Tab::correct;
+    summaryButton.setVisible (summaryHere);
+    capturesButton.setVisible (summaryHere);
+    systemPanel.setVisible (summaryHere && showingSummary);
+    captureList.setVisible (setup && ! (summaryHere && showingSummary));
     for (auto* c : showControls)
         c->setVisible (showViewOn);
     graph.setShowMode (showViewOn);
@@ -643,6 +665,7 @@ void AdaptiveRoomEQEditor::refreshFromEngine()
     const auto measuring = engine.getActivity() == MeasurementEngine::Activity::measuring;
     captureList.setEntries (engine.getEntries(), measuring, engine.getAppliedId());
     graph.setData (engine.getDisplay(), captureList.getSelectedId());
+    systemPanel.setDisplay (engine.getDisplay());
     updateQualityCard();
     repaint();
 }
@@ -1520,7 +1543,18 @@ void AdaptiveRoomEQEditor::resized()
     right.removeFromBottom (30);   // summary line
     if (! showViewOn)
     {
-        captureList.setBounds (right.removeFromTop (juce::jmin (4 * 56 + 4, right.getHeight() / 3)));
+        auto top = right.removeFromTop (juce::jmin (4 * 56 + 4, right.getHeight() / 3));
+        if (currentTab == Tab::correct)
+        {
+            // The same space, with a switch between the summary and the list.
+            auto strip = top.removeFromTop (26);
+            summaryButton.setBounds (strip.removeFromLeft (140));
+            strip.removeFromLeft (4);
+            capturesButton.setBounds (strip.removeFromLeft (100));
+            top.removeFromTop (4);
+        }
+        captureList.setBounds (top);
+        systemPanel.setBounds (top);
         right.removeFromTop (12);
     }
     graph.setBounds (right);

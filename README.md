@@ -186,6 +186,31 @@ How it chooses and what it tells you:
 
 **Quick mode:** with one good position the applied correction is half strength and within ±3 dB; with two, 75% and ±6 dB. Full strength needs three.
 
+**System summary.** On the Correct tab, the space above the graph shows the System summary instead of the capture list. Switch with **System summary / Captures**; the other tabs always show the list. It's an overview, not a replacement for the graph:
+
+| Measurements | |
+|---|---|
+| Confidence | **high** when every capture in the average is high confidence (see [Measurement quality](#measuring-a-room-measure-tab)) and there are three or more good positions; **medium** when any is medium or low, or there are fewer; **low** with no good position or when more than half are low. The first reason is shown. |
+| Positions | the good positions in the average |
+| Coverage consistency | how much the positions differ: the mean over the fit range of their standard deviation at each frequency (1/3 octave, level-aligned), e.g. ±2.8 dB. Excellent up to 1.5 dB, Good up to 3, Fair up to 5. |
+| Usable bandwidth | the session's usable range |
+| Largest broad issue | the biggest 1/3-octave difference between the average and the target in the fit range, outside nulls, e.g. "+5.4 dB at about 190 Hz" |
+
+| Correction proposal | |
+|---|---|
+| Filters | its bands |
+| Largest cut / boost | of the combined curve, at full Amount |
+| Nulls left alone | nulls where the target asked for a boost the fit declined |
+| Expected improvement | the RMS difference from the target over the fit range, outside nulls, before and after, e.g. "4.7 → 2.0 dB" |
+
+**Where it held back.** Every place the fit was limited, from the state it worked from:
+- **Few positions:** "Only 2 good positions: the fit smooths to 1/3 octave and is held to 75% strength, at most 6 dB. Measure 1 more to correct fully."
+- **The system's range:** "Not correcting below 42 Hz: the system is more than 6 dB down there (its low-frequency limit)…". Only where the PA's roll-off sets the range, not the **Correct from / up to** you chose.
+- **Spatial nulls:** "Not boosting the dip at 63 Hz (9 dB below the trend): it looks like a cancellation that moves from seat to seat…"
+- **Disagreement:** "Not boosting around 180 Hz: the positions disagree by up to 8 dB there…". Nulls are listed only where the target asked for a boost.
+- **Limits:** "Boost held to +3.0 dB at 2.9 kHz (Max boost): the response is 5.1 dB below the target there." In quick mode the cap is named instead.
+- **Noise:** "63 Hz band: P5 left out of the average there (too noisy)". For music it says "low coherence", and "the repeats disagreed" when repeat sweeps didn't match. When no position was clean enough in a band, it says that band isn't corrected.
+
 ## Voicing EQ (Voicing tab)
 
 Eight bands (bell, low/high shelf, 12 or 24 dB/octave high/low-pass) after the correction: the engineer's taste layer. Measuring never changes it. Edit a band in the tab, or on the graph:
@@ -391,6 +416,7 @@ The harness drives the real processor against a simulated room. It checks:
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
+- the Correct tab's system summary: its filters matching the proposal, the improvement, the positions' variation, every reason shown, and the switch to the capture list and back;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;
 - sub alignment: the mains (high-passed at 90 Hz, 1.5 ms of processing, 9 m) and a sub (low-passed at 90 Hz, 6 m) swept at the same spot; the sub's panel suggesting about 10.9 ms, normal polarity; then the mains' sweep fed through the sub instance too, so the two are measured together as they were and with the suggestion applied: the measured gain over the crossover matches the prediction (+1.62 dB against +1.64 dB), and the sub's response is saved with the session;
 - delay and polarity: 12.50 ms inverted comes out 600 samples later and flipped, 12.51 ms is flat to 10 kHz, a typed distance converts, a measurement bypasses a 100 ms delay while Verify measures through it, and both are saved;

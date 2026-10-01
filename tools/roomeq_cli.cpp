@@ -15,9 +15,9 @@
 //                      [--program P2=reference.f64:mic.f64] [--exclude P1] [--band-lo 250 --band-hi 4000]
 //                      [--target flat|house|speech [--max-cut 12] [--max-boost 3] [--range-lo 20] [--range-hi 20000]]
 //
-// `analyze` prints JSON: every capture's grade plus the session summary
-// (level-aligned position curves, average, usable range, target level) and,
-// with --target, the fitted correction. --band-lo/--band-hi set the reference
+// `analyze` prints JSON: every capture's grade and quality plus the session
+// summary (level-aligned position curves, average, usable range, target level)
+// and, with --target, the fitted correction and the system summary. --band-lo/--band-hi set the reference
 // band (grading, level alignment, usable range, target placement): 40-100 for a sub.
 
 #include "roomeq/alignment.h"
@@ -120,6 +120,26 @@ std::string qualityJson (const roomeq::MeasurementQuality& q)
            + ",\"repeatability\":" + rating (q.repeatability)
            + ",\"usable\":[" + num (q.usable.first) + "," + num (q.usable.second) + "]"
            + ",\"confidence\":" + str (roomeq::confidenceLabel (q.confidence)) + ",\"reasons\":" + list (q.reasons, str) + "}";
+}
+
+std::string systemJson (const roomeq::SystemSummary& s)
+{
+    const auto opt = [] (const std::optional<double>& v) { return v ? num (*v) : std::string ("null"); };
+    const auto explanation = [] (const roomeq::Explanation& e)
+    {
+        return std::string ("{\"kind\":") + str (e.kind) + ",\"lo_hz\":" + num (e.loHz) + ",\"hi_hz\":" + num (e.hiHz)
+               + ",\"text\":" + str (e.text) + "}";
+    };
+    return std::string ("{") + "\"confidence\":" + str (roomeq::confidenceLabel (s.confidence))
+           + ",\"confidence_reasons\":" + list (s.confidenceReasons, str) + ",\"positions\":" + std::to_string (s.positions)
+           + ",\"variation_db\":" + opt (s.variationDb)
+           + ",\"coverage\":" + (s.coverage ? str (roomeq::ratingLabel (*s.coverage)) : std::string ("null"))
+           + ",\"usable\":[" + num (s.usable.first) + "," + num (s.usable.second) + "]"
+           + ",\"issue_db\":" + opt (s.issueDb) + ",\"issue_hz\":" + opt (s.issueHz)
+           + ",\"filters\":" + std::to_string (s.filters) + ",\"largest_cut_db\":" + num (s.largestCutDb)
+           + ",\"largest_boost_db\":" + num (s.largestBoostDb) + ",\"nulls_ignored\":" + std::to_string (s.nullsIgnored)
+           + ",\"before_db\":" + num (s.beforeDb) + ",\"after_db\":" + num (s.afterDb)
+           + ",\"explanations\":" + list (s.explanations, explanation) + "}";
 }
 
 std::string captureJson (const roomeq::Capture& c, double bandLo, double bandHi)
@@ -378,7 +398,7 @@ int run (int argc, char** argv)
 
     const auto fraction = static_cast<int> (args.get ("smoothing", 6));
     const auto summary = roomeq::summarizeSession (captures, fraction, roomeq::logFreqGrid (20.0, 20000.0, 48), bandLo, bandHi);
-    std::string correction = "null";
+    std::string correction = "null", system = "null";
     if (summary && args.values.count ("target") > 0)
     {
         const auto& name = args.values.at ("target");
@@ -397,11 +417,13 @@ int run (int argc, char** argv)
         ccfg.rangeHiHz = args.get ("range-hi", ccfg.rangeHiHz);
         ccfg.refBandLoHz = bandLo;
         ccfg.refBandHiHz = bandHi;
-        correction = correctionJson (roomeq::designCorrection (captures, *summary, *target, cfg.fs, ccfg));
+        const auto result = roomeq::designCorrection (captures, *summary, *target, cfg.fs, ccfg);
+        correction = correctionJson (result);
+        system = systemJson (roomeq::systemSummary (captures, *summary, result, ccfg));
     }
     std::cout << "{\"captures\":" << list (captures, [&] (const auto& c) { return captureJson (*c, bandLo, bandHi); })
               << ",\"summary\":" << (summary ? summaryJson (*summary) : "null")
-              << ",\"correction\":" << correction << "}\n";
+              << ",\"correction\":" << correction << ",\"system\":" << system << "}\n";
     return 0;
 }
 } // namespace

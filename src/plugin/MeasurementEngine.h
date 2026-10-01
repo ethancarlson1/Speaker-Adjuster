@@ -5,6 +5,7 @@
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
+#include "roomeq/quality.h"
 #include "roomeq/targets.h"
 
 #include <juce_events/juce_events.h>
@@ -72,6 +73,7 @@ public:
         std::vector<bool> excluded;
         std::vector<double> targetDb;                // anchored target on the display grid
         std::optional<roomeq::CorrectionResult> proposal;
+        std::optional<roomeq::SystemSummary> system;  // the proposal in words, and why it held back
         double fitFs = 48000.0;
         std::vector<double> verifiedDb;              // verify average, aligned to the fit average (empty if none)
         int verifiedCount = 0;

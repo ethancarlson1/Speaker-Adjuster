@@ -582,6 +582,7 @@ void MeasurementEngine::requestSummary()
                 v += offset;
             d->fitFs = settings.fs;
             d->proposal = roomeq::designCorrection (snapshot, d->summary, settings.target, settings.fs, settings.config);
+            d->system = roomeq::systemSummary (snapshot, d->summary, *d->proposal, settings.config);
 
             if (auto v = roomeq::summarizeSession (verifySnapshot, fraction, g, band.refBandLoHz, band.refBandHiHz))
             {

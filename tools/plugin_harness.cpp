@@ -1848,7 +1848,38 @@ int main (int argc, char** argv)
         const auto stem = outPath.upToLastOccurrenceOf (".", false, false);
         writeSnapshot (*editor, outPath);
         ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
-        writeSnapshot (*editor, stem + "-correct.png");
+        {
+            // The Correct tab shows the system summary where the capture list is.
+            auto& panel = ours->getSystemPanel();
+            const auto& sum = panel.getSummary();
+            const auto shown = proc.getEngine().getDisplay();
+            check (panel.isVisible() && ! ours->getCaptureList().isVisible() && sum && shown != nullptr && shown->proposal
+                       && sum->filters == static_cast<int> (shown->proposal->bands.size()) && sum->positions >= 4
+                       && sum->variationDb && sum->beforeDb > sum->afterDb && sum->issueDb,
+                   "Correct tab: the system summary (" + juce::String (sum ? sum->filters : -1) + " filters, "
+                       + juce::String (sum ? sum->beforeDb : 0.0, 1) + " -> " + juce::String (sum ? sum->afterDb : 0.0, 1)
+                       + " dB from target, positions differ by +-" + juce::String (sum && sum->variationDb ? *sum->variationDb : 0.0, 1)
+                       + " dB, confidence " + (sum ? roomeq::confidenceLabel (sum->confidence) : "none") + ")");
+            auto reasons = true;
+            for (const auto& e : sum ? sum->explanations : std::vector<roomeq::Explanation> {})
+                reasons = reasons && panel.getWhyText().contains (juce::String::fromUTF8 (e.text.c_str()));
+            check (sum && ! sum->explanations.empty() && reasons,
+                   "and where it held back: " + juce::String (sum ? static_cast<int> (sum->explanations.size()) : 0) + " reasons, e.g. \""
+                       + (sum && ! sum->explanations.empty() ? juce::String::fromUTF8 (sum->explanations.front().text.c_str()) : juce::String())
+                       + "\"");
+            writeSnapshot (*editor, stem + "-correct.png");
+            ours->getCapturesButton().triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (ours->getCaptureList().isVisible() && ! panel.isVisible(), "Captures switches to the capture list");
+            ours->getSummaryButton().triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            ours->showTab (AdaptiveRoomEQEditor::Tab::measure);
+            check (ours->getCaptureList().isVisible() && ! panel.isVisible(), "other tabs keep the capture list");
+            ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
+            check (panel.isVisible() && ! ours->getCaptureList().isVisible(), "and the Correct tab goes back to the summary");
+        }
         ours->selectVoicingBand (1);
         ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
         writeSnapshot (*editor, stem + "-voicing.png");

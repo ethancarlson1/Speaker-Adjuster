@@ -62,6 +62,23 @@ def assert_quality(cpp, py: capture.Capture, band=(250.0, 4000.0)):
     assert as_array(cpp["usable"]) == pytest.approx(np.array(q.usable), abs=1e-9, nan_ok=True), where
 
 
+def assert_system(cpp, captures, summary, result, cfg):
+    """The system summary; the fit's own numbers to the fit's tolerance, everything else exactly."""
+    py = quality.system_summary(captures, summary, result, cfg)
+    for key in ("confidence", "confidence_reasons", "positions", "coverage", "filters", "nulls_ignored"):
+        assert cpp[key] == getattr(py, key), key
+    for key in ("variation_db", "issue_db", "issue_hz", "before_db"):
+        value = getattr(py, key)
+        assert (cpp[key] is None) if value is None else cpp[key] == pytest.approx(value, abs=1e-9), key
+    assert cpp["usable"] == pytest.approx(list(py.usable), abs=1e-9)
+    for key in ("largest_cut_db", "largest_boost_db", "after_db"):
+        assert cpp[key] == pytest.approx(getattr(py, key), abs=FIT_TOL_DB), key
+    assert [(e["kind"], e["text"]) for e in cpp["explanations"]] == [(e.kind, e.text) for e in py.explanations]
+    for ce, pe in zip(cpp["explanations"], py.explanations):
+        assert [ce["lo_hz"], ce["hi_hz"]] == pytest.approx([pe.lo_hz, pe.hi_hz], abs=1e-9)
+    return py
+
+
 def test_sweep_generation_matches(tmp_path):
     for fs, duration in ((44100, 2.0), (48000, 5.0), (96000, 10.0)):
         out = tmp_path / f"sweep_{fs}_{duration}.f64"
@@ -223,6 +240,10 @@ def _fit_session(sim, tmp_path, positions, seed):
     ("flat", [(1, roomsim.NoiseSpec())], {}),                                            # quick mode
 ])
 def test_correction_fit_matches_python(sim, tmp_path, target_name, positions, limits):
+    _check_fit(sim, tmp_path, target_name, positions, limits)
+
+
+def _check_fit(sim, tmp_path, target_name, positions, limits):
     from roomeq import correction, filters, targets
 
     args, caps = _fit_session(sim, tmp_path, positions, 41 + len(positions))
@@ -253,6 +274,24 @@ def test_correction_fit_matches_python(sim, tmp_path, target_name, positions, li
     cpp_bands = [filters.Band(b["kind"], b["freq"], b["gain_db"], b["q"]) for b in cpp["bands"]]
     assert np.max(np.abs(filters.response_db(cpp_bands, py.grid, CFG.fs) - py.correction_db)) < FIT_TOL_DB
     assert cpp["rms_error_db"] == pytest.approx(py.rms_error_db, abs=FIT_TOL_DB)
+    system = assert_system(result["system"], caps, summary, py, cfg)
+    assert system.explanations, "the scenario should hold something back"
+    return system
+
+
+def test_the_scenarios_explain_every_kind_of_decision(sim, tmp_path):
+    """Across the fit scenarios, every kind of explanation comes up at least once."""
+    kinds = set()
+    for target_name, positions, limits in [
+        ("house", [(0, roomsim.NoiseSpec()), (1, roomsim.NoiseSpec()), (2, roomsim.NoiseSpec(rumble_dbfs=-25.0)),
+                   (3, roomsim.NoiseSpec())], {}),
+        ("speech", [(0, roomsim.NoiseSpec()), (2, roomsim.NoiseSpec()), (4, roomsim.NoiseSpec())],
+         {"max_cut_db": 9.0, "max_boost_db": 2.0, "range_hz": (60.0, 12000.0)}),
+        ("flat", [(1, roomsim.NoiseSpec())], {}),
+    ]:
+        system = _check_fit(sim, tmp_path, target_name, positions, limits)
+        kinds |= {e.kind for e in system.explanations}
+    assert kinds >= {"positions", "bandwidth", "limit", "noise"} and kinds & {"null", "disagreement"}, kinds
 
 
 def test_sub_zone_matches_python(tmp_path):
@@ -301,6 +340,7 @@ def test_sub_zone_matches_python(tmp_path):
     assert cpp["fit_range"] == pytest.approx(list(py.fit_range), abs=1e-9)
     assert len(cpp["bands"]) == len(py.bands) > 0
     assert np.max(np.abs(np.array(cpp["correction_db"]) - py.correction_db)) < FIT_TOL_DB
+    assert_system(result["system"], caps, summary, py, cfg)
 
 
 # ---------------------------------------------------------------------------

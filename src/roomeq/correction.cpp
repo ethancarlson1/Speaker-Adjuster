@@ -437,6 +437,36 @@ std::vector<Band> fitBands (const FitProblem& prob)
     return bands;
 }
 
+std::vector<std::vector<double>> levelAlignedPositions (const std::vector<std::shared_ptr<const Capture>>& captures,
+                                                        const SessionSummary& summary, double fraction,
+                                                        const std::vector<double>& grid)
+{
+    return alignedPositions (captures, summary, fraction, grid);
+}
+
+std::vector<double> positionSpread (std::size_t n, const std::vector<std::vector<double>>& positions)
+{
+    std::vector<double> spread (n, std::numeric_limits<double>::quiet_NaN());
+    if (positions.size() < 2)
+        return spread;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        int valid = 0;
+        auto hi = -std::numeric_limits<double>::infinity();
+        auto lo = std::numeric_limits<double>::infinity();
+        for (const auto& p : positions)
+            if (std::isfinite (p[i]))
+            {
+                ++valid;
+                hi = std::max (hi, p[i]);
+                lo = std::min (lo, p[i]);
+            }
+        if (valid >= 2)
+            spread[i] = hi - lo;
+    }
+    return spread;
+}
+
 std::vector<bool> detectNulls (const std::vector<double>& grid, const std::vector<double>& fineDb,
                                const std::vector<double>& trendDb, const std::vector<std::vector<double>>& positions,
                                const CorrectionConfig& cfg)
@@ -447,21 +477,10 @@ std::vector<bool> detectNulls (const std::vector<double>& grid, const std::vecto
         null[i] = fineDb[i] - trendDb[i] < -cfg.nullDipDb;
     if (positions.size() >= 2)
     {
+        const auto spread = positionSpread (n, positions);
         for (std::size_t i = 0; i < n; ++i)
-        {
-            int valid = 0;
-            auto hi = -std::numeric_limits<double>::infinity();
-            auto lo = std::numeric_limits<double>::infinity();
-            for (const auto& p : positions)
-                if (std::isfinite (p[i]))
-                {
-                    ++valid;
-                    hi = std::max (hi, p[i]);
-                    lo = std::min (lo, p[i]);
-                }
-            if (valid >= 2 && hi - lo > cfg.nullSpreadDb)
+            if (std::isfinite (spread[i]) && spread[i] > cfg.nullSpreadDb)
                 null[i] = true;
-        }
     }
     const auto margin = static_cast<std::ptrdiff_t> (std::lround (cfg.nullMarginOctaves * cfg.pointsPerOctave));
     if (margin > 0)
@@ -490,7 +509,8 @@ CorrectionResult designCorrection (const std::vector<std::shared_ptr<const Captu
     const auto fine = toDb (smoothPower (summary.freqs, summary.power, 6.0, g, &summary.weight));
     r.trendDb = toDb (smoothPower (summary.freqs, summary.power, 1.0, g, &summary.weight));
 
-    auto [lo, hi] = usableRange (g, r.trendDb, cfg.refBandLoHz, cfg.refBandHiHz, cfg.rolloffDb);
+    r.paRange = usableRange (g, r.trendDb, cfg.refBandLoHz, cfg.refBandHiHz, cfg.rolloffDb);
+    auto [lo, hi] = r.paRange;
     lo = std::max (lo, cfg.rangeLoHz);
     hi = std::min (hi, cfg.rangeHiHz);
     r.fitRange = { lo, hi };
@@ -509,7 +529,14 @@ CorrectionResult designCorrection (const std::vector<std::shared_ptr<const Captu
         maxBoost = std::min (maxBoost, *policy.maxCorrectionDb / r.strength);
     }
 
-    r.nullMask = detectNulls (g, fine, r.trendDb, alignedPositions (captures, summary, 3.0, g), cfg);
+    const auto positions = alignedPositions (captures, summary, 3.0, g);
+    r.nullMask = detectNulls (g, fine, r.trendDb, positions, cfg);
+    r.dipDb.resize (n);
+    for (std::size_t i = 0; i < n; ++i)
+        r.dipDb[i] = fine[i] - r.trendDb[i];
+    r.spreadDb = positionSpread (n, positions);
+    r.maxCutDb = maxCut;
+    r.maxBoostDb = maxBoost;
 
     FitProblem prob;
     prob.freqs = g;

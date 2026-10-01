@@ -72,3 +72,62 @@ def test_a_sub_is_judged_on_its_own_band():
                                       capture.AnalysisConfig(grading=grading.GradingConfig(passband=(40.0, 100.0))))
     lo, hi = quality.measurement_quality(c, (40.0, 100.0)).usable
     assert 20.0 <= lo < 40.0 and 100.0 < hi < 250.0
+
+
+# ---------------------------------------------------------------------------
+# System summary
+
+from roomeq import averaging, correction, spectrum, targets  # noqa: E402
+
+
+def session(sim, positions, noise=None, cfg=correction.CorrectionConfig(), seed=3):
+    rng = np.random.default_rng(seed)
+    caps = []
+    for i, p in enumerate(positions):
+        spec = (noise or {}).get(i, roomsim.NoiseSpec())
+        caps.append(capture.analyze_sweep_capture(f"P{i + 1}", [sim.play(PLAY, p, spec, rng) for _ in range(2)], CFG))
+    summary = averaging.summarize_session(caps)
+    result = correction.design_correction(caps, summary, targets.FLAT, CFG.fs, cfg)
+    return caps, summary, result, quality.system_summary(caps, summary, result, cfg)
+
+
+def test_four_clean_positions(sim):
+    caps, summary, result, s = session(sim, [0, 1, 2, 3])
+    assert s.confidence == quality.HIGH and s.confidence_reasons == [] and s.positions == 4
+    assert s.variation_db is not None and 0.3 < s.variation_db < 5.0 and s.coverage is not None
+    assert s.usable == summary.usable and s.filters == len(result.bands) > 0
+    assert s.largest_cut_db <= 0.0 <= s.largest_boost_db <= 3.0 + 1e-9
+    assert s.before_db > s.after_db == result.rms_error_db
+    assert s.issue_db is not None and abs(s.issue_db) > 1.0 and result.fit_range[0] <= s.issue_hz <= result.fit_range[1]
+    kinds = [e.kind for e in s.explanations]
+    assert "positions" not in kinds
+    # The simulated PA rolls off at the bottom: that's where the fit stops, and it says so (not at the top: it never drops).
+    low = [e for e in s.explanations if e.kind == "bandwidth"]
+    assert len(low) == 1 and low[0].text.startswith(f"Not correcting below {spectrum.format_hz(result.fit_range[0])}")
+    assert s.nulls_ignored == sum(1 for k in kinds if k in ("null", "disagreement"))
+
+
+def test_two_positions_are_quick_mode_and_say_so(sim):
+    _, _, result, s = session(sim, [0, 1])
+    assert s.confidence == quality.MEDIUM and s.confidence_reasons[0].startswith("2 good positions")
+    first = s.explanations[0]
+    assert first.kind == "positions" and first.text.startswith("Only 2 good positions: the fit smooths to 1/3 octave")
+    assert "75% strength, at most 6 dB. Measure 1 more" in first.text
+    limits = [e for e in s.explanations if e.kind == "limit"]
+    assert limits and all("(the quick-mode cap)" in e.text for e in limits if e.text.startswith("Boost"))
+
+
+def test_the_limits_and_noise_explain_themselves(sim):
+    cfg = correction.CorrectionConfig(max_cut_db=2.0)
+    caps, _, _, s = session(sim, [0, 1, 2, 3], noise={3: roomsim.NoiseSpec(rumble_dbfs=-25.0)}, cfg=cfg)
+    cuts = [e for e in s.explanations if e.kind == "limit" and e.text.startswith("Cut held to -2.0 dB")]
+    assert cuts and "(Max cut)" in cuts[0].text
+    noisy = [e for e in s.explanations if e.kind == "noise"]
+    assert noisy and all("P4 left out of the average there (too noisy)" in e.text for e in noisy)
+    assert {e.text.split(" Hz band")[0] for e in noisy} <= {"31.5", "63", "125"}
+    assert s.confidence == quality.MEDIUM and any(r.startswith("P4: ") for r in s.confidence_reasons)
+
+
+def test_the_users_range_is_not_explained_as_the_systems(sim):
+    _, _, result, s = session(sim, [0, 1, 2, 3], cfg=correction.CorrectionConfig(range_hz=(100.0, 10000.0)))
+    assert result.fit_range == (100.0, 10000.0) and not [e for e in s.explanations if e.kind == "bandwidth"]
