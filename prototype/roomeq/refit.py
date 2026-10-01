@@ -68,12 +68,10 @@ def fit_error(curve: np.ndarray, fitted: np.ndarray) -> tuple[float, float]:
     return float(np.max(np.abs(diff))) if len(diff) else 0.0, rms
 
 
-def refit_bands(bands: list[Band], fs: float, max_bands: int, shelves: bool = True,
-                max_octaves: float = CorrectionConfig.max_octaves) -> Refit:
-    """At most `max_bands` bands that play `bands`' curve as closely as they can."""
-    has_shelf = any(b.kind != BELL for b in bands)
-    if len(bands) <= max_bands and (shelves or not has_shelf):
-        return Refit(list(bands), False, len(bands), 0.0, 0.0)
+def refit_problem(bands: list[Band], fs: float, max_bands: int, shelves: bool = True,
+                  max_octaves: float = CorrectionConfig.max_octaves) -> FitProblem:
+    """The problem refit_bands solves: `bands`' curve on refit_grid() as the wanted correction,
+    with the refit's limits (correction.fit_cost scores any curve against it)."""
     grid = refit_grid()
     curve = filters.response_db(bands, grid, fs)
     max_boost = min(GAIN_LIMIT_DB, max(0.0, float(np.max(curve))) + BOOST_HEADROOM_DB)
@@ -81,15 +79,23 @@ def refit_bands(bands: list[Band], fs: float, max_bands: int, shelves: bool = Tr
     cfg = CorrectionConfig(max_bands=max_bands, max_cut_db=max_cut, max_boost_db=max_boost,
                            max_octaves=max_octaves, shelves=shelves, outside_weight=1.0,
                            min_gain_db=0.1, min_improvement=0.005, stop_rms_db=0.02)
-    prob = FitProblem(freqs=grid, fs=fs, desired=curve, weight=np.ones(len(grid)),
+    return FitProblem(freqs=grid, fs=fs, desired=curve, weight=np.ones(len(grid)),
                       upper=np.maximum(curve, 0.0) + BOOST_SLACK_DB,
                       lower=np.minimum(curve, 0.0) - CUT_SLACK_DB,
                       f_lo=20.0, f_hi=20000.0, max_cut=max_cut, max_boost=max_boost, cfg=cfg)
+
+
+def refit_bands(bands: list[Band], fs: float, max_bands: int, shelves: bool = True,
+                max_octaves: float = CorrectionConfig.max_octaves) -> Refit:
+    """At most `max_bands` bands that play `bands`' curve as closely as they can."""
+    has_shelf = any(b.kind != BELL for b in bands)
+    if len(bands) <= max_bands and (shelves or not has_shelf):
+        return Refit(list(bands), False, len(bands), 0.0, 0.0)
+    prob = refit_problem(bands, fs, max_bands, shelves, max_octaves)
     forward = fit_bands(prob) if max_bands > 0 else []
     backward = prune_bands(bands, prob, max_bands)
-    cost_f = fit_cost(prob, filters.response_db(forward, grid, fs))
-    cost_b = fit_cost(prob, filters.response_db(backward, grid, fs))
+    cost_f = fit_cost(prob, filters.response_db(forward, prob.freqs, fs))
+    cost_b = fit_cost(prob, filters.response_db(backward, prob.freqs, fs))
     fitted = backward if cost_b < cost_f else forward
-    max_err, rms = fit_error(curve, filters.response_db(fitted, grid, fs))
+    max_err, rms = fit_error(prob.desired, filters.response_db(fitted, prob.freqs, fs))
     return Refit(fitted, True, len(bands), max_err, rms)
-

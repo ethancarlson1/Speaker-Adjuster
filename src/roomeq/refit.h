@@ -26,6 +26,7 @@
 // largest difference on the grid, and the RMS over the points where either is
 // beyond 0.1 dB.
 
+#include "roomeq/correction.h"
 #include "roomeq/filters.h"
 
 #include <utility>
@@ -53,6 +54,10 @@ std::vector<double> refitGrid();
 
 // (largest difference, RMS over the points where either curve is beyond refitActiveDb).
 std::pair<double, double> fitError (const std::vector<double>& curveDb, const std::vector<double>& fittedDb);
+
+// The problem refitBands solves: `bands`' curve on refitGrid() as the wanted
+// correction, with the refit's limits (fitCost scores any curve against it).
+FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands, bool shelves = true, double maxOctaves = 3.0);
 
 // At most maxBands bands that play `bands`' curve as closely as they can.
 // maxOctaves: the widest bell (the correction's 3 octaves by default).
