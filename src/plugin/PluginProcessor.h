@@ -10,6 +10,8 @@
 #include "plugin/ZoneRegistry.h"
 #include "plugin/ZoneStage.h"
 
+#include "roomeq/eqexport.h"
+
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <array>
@@ -127,6 +129,12 @@ public:
     juce::Result startLatencyMeasurement();
     void setZoneDelayMs (double ms);                              // an engineer-approved alignment suggestion
     void setZonePolarity (bool invert);                           // ... and a sub's polarity
+
+    // The EQ as a file other tools can read (see roomeq/eqexport.h): the
+    // correction as it plays (or the proposal, if none is applied), the voicing
+    // bands that are on, the output level match, and the zone's delay and polarity.
+    roomeq::EqExport getEqExport() const;
+    juce::Result exportEq (const juce::File& file) const;   // .json, .csv or .txt, by the file's extension
 
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now

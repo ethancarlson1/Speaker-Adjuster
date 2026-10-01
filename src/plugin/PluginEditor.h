@@ -136,7 +136,10 @@ private:
         rangeHi { juce::Slider::LinearBar, juce::Slider::TextBoxRight };
     juce::Label amountLabel, maxCutLabel, maxBoostLabel, rangeLoLabel, rangeHiLabel;
     juce::TextButton applyButton { "Apply correction" }, compareButton { "Hear previous" }, undoButton { "Undo" },
-        verifyButton { "Verify: measure through the EQ" };
+        verifyButton { "Verify: measure through the EQ" }, exportButton { juce::String::fromUTF8 ("Export\xe2\x80\xa6") };
+    std::unique_ptr<juce::FileChooser> exportChooser;
+    void showExportMenu();
+    void saveExport (const juce::String& extension);
     std::unique_ptr<ComboAttachment> targetAttachment;
     std::unique_ptr<ButtonAttachment> correctionOnAttachment, levelMatchAttachment;
     std::unique_ptr<SliderAttachment> amountAttachment, maxCutAttachment, maxBoostAttachment, rangeLoAttachment,
@@ -203,12 +206,14 @@ public:
     SystemSummaryPanel& getSystemPanel() { return systemPanel; }  // tests
     juce::TextButton& getCapturesButton() { return capturesButton; }
     juce::TextButton& getSummaryButton() { return summaryButton; }
+    void copyEqToClipboard();                                     // Export... > Copy (tests too)
 private:
     ResponseGraph graph { processor };
     juce::TooltipWindow tooltips { this, 600 };
     std::unique_ptr<juce::AlertWindow> saveDialog;
 
     juce::String errorText;
+    juce::String noticeText;   // a done message (shown like the status, until the next action)
     float micLevelDb = -100.0f;
     float outputLevelDb = -100.0f;
 

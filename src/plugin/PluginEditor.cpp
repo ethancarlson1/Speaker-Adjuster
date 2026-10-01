@@ -272,7 +272,10 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     verifyButton.setTooltip ("Measure a position through the correction and voicing EQ, to check the result. "
                              "Verify captures never change the proposal.");
     verifyButton.onClick = [this] { if (micReady()) showResult (processor.startVerify()); };
-    for (auto* b : { &applyButton, &compareButton, &undoButton, &verifyButton })
+    exportButton.setTooltip ("The EQ as text to type into a console, or a CSV or JSON file another tool can read: the "
+                             "correction as it plays, the voicing, the output level match, the delay and polarity.");
+    exportButton.onClick = [this] { showExportMenu(); };
+    for (auto* b : { &applyButton, &compareButton, &undoButton, &verifyButton, &exportButton })
         button (*b, correctControls);
 
     // ---- Voicing tab
@@ -589,6 +592,7 @@ bool AdaptiveRoomEQEditor::micReady()
 void AdaptiveRoomEQEditor::showResult (const juce::Result& result)
 {
     errorText = result.failed() ? result.getErrorMessage() : juce::String();
+    noticeText.clear();
     refreshFromEngine();
 }
 
@@ -715,7 +719,10 @@ void AdaptiveRoomEQEditor::timerCallback()
     undoButton.setEnabled (! measuring && engine.hasPrevious());
     verifyButton.setEnabled (! measuring);
     if (measuring)
+    {
         errorText.clear();
+        noticeText.clear();
+    }
     if (processor.isNoiseSelected() != showingNoiseRows)   // also follows host automation
     {
         showingNoiseRows = processor.isNoiseSelected();
@@ -874,6 +881,8 @@ juce::String AdaptiveRoomEQEditor::statusText() const
     using Step = LoudnessController::Step;
     if (errorText.isNotEmpty())
         return errorText;
+    if (noticeText.isNotEmpty())
+        return noticeText;
     auto& engine = processor.getEngine();
     const auto& loud = processor.getLoudness();
     const auto step = loud.getStep();
@@ -1112,6 +1121,46 @@ void AdaptiveRoomEQEditor::showTargetMenu()
         folder.revealToUser();
     });
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (targetMenu));
+}
+
+void AdaptiveRoomEQEditor::showExportMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem ("Copy as text (for typing into a console)", [this] { copyEqToClipboard(); });
+    menu.addItem (juce::String::fromUTF8 ("Save as CSV\xe2\x80\xa6"), [this] { saveExport (".csv"); });
+    menu.addItem (juce::String::fromUTF8 ("Save as JSON\xe2\x80\xa6"), [this] { saveExport (".json"); });
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (exportButton));
+}
+
+void AdaptiveRoomEQEditor::copyEqToClipboard()
+{
+    juce::SystemClipboard::copyTextToClipboard (juce::String::fromUTF8 (roomeq::eqExportText (processor.getEqExport()).c_str()));
+    noticeText = "EQ copied as text.";
+    repaint();
+}
+
+void AdaptiveRoomEQEditor::saveExport (const juce::String& extension)
+{
+    const auto name = juce::File::createLegalFileName (processor.getZoneLabel() + " EQ" + extension);
+    exportChooser = std::make_unique<juce::FileChooser> ("Export the EQ",
+                                                         juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name),
+                                                         "*" + extension);
+    juce::Component::SafePointer<AdaptiveRoomEQEditor> safe (this);
+    exportChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                    | juce::FileBrowserComponent::warnAboutOverwriting,
+                                [safe, extension] (const juce::FileChooser& chooser)
+                                {
+                                    if (safe == nullptr || chooser.getResult() == juce::File())
+                                        return;
+                                    const auto file = chooser.getResult().withFileExtension (extension);
+                                    const auto result = safe->processor.exportEq (file);
+                                    safe->showResult (result);
+                                    if (result.wasOk())
+                                    {
+                                        safe->noticeText = "EQ exported to " + file.getFileName() + ".";
+                                        safe->repaint();
+                                    }
+                                });
 }
 
 void AdaptiveRoomEQEditor::askToSaveTarget()
@@ -1437,7 +1486,13 @@ void AdaptiveRoomEQEditor::resized()
                 compareButton.setBounds (r);
                 content.removeFromTop (8);
             }
-            fullRow (verifyButton, 30);
+            {
+                auto r = content.removeFromTop (30);
+                exportButton.setBounds (r.removeFromRight (90));
+                r.removeFromRight (8);
+                verifyButton.setBounds (r);
+                content.removeFromTop (8);
+            }
             break;
         }
         case Tab::voicing:

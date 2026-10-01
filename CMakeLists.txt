@@ -36,6 +36,7 @@ add_library(roomeq_core STATIC
     src/roomeq/capture.cpp
     src/roomeq/correction.cpp
     src/roomeq/dualfft.cpp
+    src/roomeq/eqexport.cpp
     src/roomeq/fft.cpp
     src/roomeq/filters.cpp
     src/roomeq/grading.cpp
@@ -84,6 +85,7 @@ if(ARE_BUILD_TESTS)
         tests/cpp/test_correction.cpp
         tests/cpp/test_dualfft.cpp
         tests/cpp/test_eq.cpp
+        tests/cpp/test_eqexport.cpp
         tests/cpp/test_filters.cpp
         tests/cpp/test_grading.cpp
         tests/cpp/test_levelmatch.cpp
@@ -187,6 +189,7 @@ target_include_directories(AdaptiveRoomEQ PRIVATE src)
 
 target_compile_definitions(AdaptiveRoomEQ
     PUBLIC
+        "ARE_VERSION=\"${PROJECT_VERSION}\""
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0)
@@ -231,6 +234,7 @@ if(ARE_BUILD_TESTS)
     target_compile_definitions(AdaptiveRoomEQ_Harness
         PRIVATE
             "JucePlugin_Name=\"${ARE_PRODUCT_NAME}\""
+            "ARE_VERSION=\"${PROJECT_VERSION}\""
             JucePlugin_Build_Standalone=0
             JUCE_MODAL_LOOPS_PERMITTED=1   # lets the harness pump the message loop
             JUCE_WEB_BROWSER=0

@@ -1880,6 +1880,49 @@ int main (int argc, char** argv)
             ours->showTab (AdaptiveRoomEQEditor::Tab::correct);
             check (panel.isVisible() && ! ours->getCaptureList().isVisible(), "and the Correct tab goes back to the summary");
         }
+        {
+            // Export: the EQ as it plays, in three forms.
+            const auto exp = proc.getEqExport();
+            const auto settings = proc.getEqSettings();
+            const auto& applied = proc.getEngine().getApplied();
+            auto gainsAsPlayed = exp.correction.size() == applied.size() && exp.correctionStatus == "applied";
+            for (std::size_t i = 0; gainsAsPlayed && i < applied.size(); ++i)
+                gainsAsPlayed = std::abs (exp.correction[i].gainDb - applied[i].gainDb * settings.amount) < 1e-12
+                                && juce::exactlyEqual (exp.correction[i].freq, applied[i].freq);
+            const auto voicingOn = static_cast<std::size_t> (std::count_if (settings.voicing.begin(), settings.voicing.end(),
+                                                                            [] (const auto& v) { return v.on; }));
+            check (gainsAsPlayed && exp.voicing.size() == voicingOn && std::abs (exp.outputGainDb - proc.getMakeupDb()) < 1e-6,
+                   "export: the applied correction at Amount " + juce::String (juce::roundToInt (settings.amount * 100)) + "%, "
+                       + juce::String (static_cast<int> (exp.voicing.size())) + " voicing bands, output gain "
+                       + juce::String (exp.outputGainDb, 2) + " dB");
+
+            const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("are-export-check");
+            dir.createDirectory();
+            const auto json = dir.getChildFile ("Mains EQ.json"), csv = dir.getChildFile ("Mains EQ.csv"), txt = dir.getChildFile ("Mains EQ.txt");
+            check (proc.exportEq (json).wasOk() && proc.exportEq (csv).wasOk() && proc.exportEq (txt).wasOk(), "export: three files written");
+            const auto parsed = juce::JSON::parse (json);
+            const auto* corrFilters = parsed["correction"]["filters"].getArray();
+            check (parsed["format"].toString() == "adaptive-room-eq.eq" && static_cast<int> (parsed["version"]) == 1
+                       && corrFilters != nullptr && corrFilters->size() == static_cast<int> (applied.size())
+                       && parsed["voicing"]["filters"].getArray() != nullptr
+                       && parsed["voicing"]["filters"].getArray()->size() == static_cast<int> (voicingOn)
+                       && std::abs (static_cast<double> ((*corrFilters)[0]["gain_db"]) - exp.correction[0].gainDb) < 0.006,
+                   "the JSON parses: format adaptive-room-eq.eq version 1, every filter");
+            juce::StringArray rows;
+            rows.addLines (csv.loadFileAsString());
+            rows.removeEmptyStrings();
+            int data = 0;
+            for (const auto& r : rows)
+                data += r.startsWith ("#") ? 0 : 1;
+            check (data == 1 + static_cast<int> (applied.size() + voicingOn) + 3,
+                   "the CSV: a header and one row per filter or setting (" + juce::String (data) + " rows)");
+            ours->copyEqToClipboard();
+            const auto copied = juce::SystemClipboard::getTextFromClipboard();
+            const auto body = [] (const juce::String& t) { return t.fromFirstOccurrenceOf ("\n\n", false, false); };   // after the dated header
+            check (copied.contains ("Correction (applied, Amount") && body (copied) == body (txt.loadFileAsString()),
+                   "Copy puts the same text on the clipboard");
+            dir.deleteRecursively();
+        }
         ours->selectVoicingBand (1);
         ours->showTab (AdaptiveRoomEQEditor::Tab::voicing);
         writeSnapshot (*editor, stem + "-voicing.png");

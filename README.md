@@ -186,6 +186,32 @@ How it chooses and what it tells you:
 
 **Quick mode:** with one good position the applied correction is half strength and within ±3 dB; with two, 75% and ±6 dB. Full strength needs three.
 
+**Export…** (beside Verify) writes the EQ so the plugin needn't stay in the signal path:
+- **Copy as text:** laid out for typing into a console, one band per line with its type, frequency, gain, Q and bandwidth.
+- **Save as CSV… / Save as JSON…:** files another tool can read, versioned (`"format": "adaptive-room-eq.eq", "version": 1`) and independent of the plugin's saved session.
+
+Each holds, in processing order:
+- the correction as it plays: its gains already scaled by **Amount**. If nothing is applied yet, the proposal is exported, marked "proposed";
+- the voicing bands that are on;
+- the output level match's gain;
+- the zone's delay and polarity.
+
+Level compensation isn't included, because it follows the show level as it changes. The filters are RBJ Audio EQ Cookbook biquads. A bell's Q sets its bandwidth between the points at half its gain in dB (`bandwidth_octaves` gives the same width), so a console that measures Q at −3 dB from the peak needs a different Q for small gains. A shelf's frequency is its half-gain point. Numbers always use a decimal point, whatever the computer's language.
+
+```
+Correction (applied, Amount 100%):
+  1  Bell        147 Hz     -2.1 dB   Q 2.50 (0.57 oct)
+  2  High shelf  2.93 kHz   -0.8 dB   Q 0.71
+```
+
+```csv
+section,index,type,frequency_hz,gain_db,q,bandwidth_octaves,slope_db_per_octave,value
+correction,1,bell,147.00,-2.10,2.500,0.573,,
+voicing,1,high_pass,35.00,,,,24,
+output,1,gain,,0.42,,,,
+zone,1,delay_ms,,,,,,12.500
+```
+
 **System summary.** On the Correct tab, the space above the graph shows the System summary instead of the capture list. Switch with **System summary / Captures**; the other tabs always show the list. It's an overview, not a replacement for the graph:
 
 | Measurements | |
@@ -416,6 +442,7 @@ The harness drives the real processor against a simulated room. It checks:
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
 - the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at 1 kHz and keeping up with the music; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
+- export: the applied correction at the current Amount, the voicing bands that are on and the output gain; JSON, CSV and text files written and read back (the JSON parses, the CSV has a row per filter); and Copy putting the same text on the clipboard;
 - the Correct tab's system summary: its filters matching the proposal, the improvement, the positions' variation, every reason shown, and the switch to the capture list and back;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;
 - sub alignment: the mains (high-passed at 90 Hz, 1.5 ms of processing, 9 m) and a sub (low-passed at 90 Hz, 6 m) swept at the same spot; the sub's panel suggesting about 10.9 ms, normal polarity; then the mains' sweep fed through the sub instance too, so the two are measured together as they were and with the suggestion applied: the measured gain over the crossover matches the prediction (+1.62 dB against +1.64 dB), and the sub's response is saved with the session;

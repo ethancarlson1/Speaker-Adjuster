@@ -293,6 +293,52 @@ EqSettings AdaptiveRoomEQProcessor::getEqSettings() const noexcept
     return s;
 }
 
+roomeq::EqExport AdaptiveRoomEQProcessor::getEqExport() const
+{
+    roomeq::EqExport e;
+    e.generator = juce::String (JucePlugin_Name).toStdString() + " " + ARE_VERSION;
+    e.created = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+    e.source = getZoneLabel().toStdString();
+    e.sampleRate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+
+    const auto settings = getEqSettings();
+    std::vector<roomeq::Band> bands = engine.getApplied();
+    if (! bands.empty())
+        e.correctionStatus = "applied";
+    else if (const auto d = engine.getDisplay(); d != nullptr && d->proposal && ! d->proposal->bands.empty())
+    {
+        e.correctionStatus = "proposed";
+        bands = d->proposal->bands;
+    }
+    e.correctionOn = settings.correctionOn;
+    e.amount = settings.amount;
+    for (const auto& b : bands)
+        e.correction.push_back (b.scaled (settings.amount));
+
+    e.voicingOn = settings.voicingOn;
+    for (const auto& v : settings.voicing)
+        if (v.on)
+            e.voicing.push_back (v);
+    e.outputGainDb = settings.levelMatch ? static_cast<double> (getMakeupDb()) : 0.0;
+    if (! isStandalone())
+    {
+        const auto zone = getZoneSettings();
+        e.delayMs = zone.delayMs;
+        e.polarityInverted = zone.invert;
+    }
+    return e;
+}
+
+juce::Result AdaptiveRoomEQProcessor::exportEq (const juce::File& file) const
+{
+    const auto data = getEqExport();
+    const auto ext = file.getFileExtension().toLowerCase();
+    const auto text = ext == ".json" ? roomeq::eqExportJson (data) : ext == ".csv" ? roomeq::eqExportCsv (data) : roomeq::eqExportText (data);
+    if (! file.replaceWithText (juce::String::fromUTF8 (text.c_str()), false, false, "\n"))
+        return juce::Result::fail ("Couldn't write " + file.getFullPathName());
+    return juce::Result::ok();
+}
+
 LoudnessSettings AdaptiveRoomEQProcessor::getLoudnessSettings() const noexcept
 {
     const auto& p = loudnessParams;
