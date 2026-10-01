@@ -194,7 +194,23 @@ std::string correctionWords (const EqExport& e)
         return "proposed, not applied yet";
     return "none";
 }
+
+// "fitted to 6 bands from 9: within 1.7 dB of the correction as it plays (0.5 dB RMS)"
+std::string fitWords (const EqExport::Fit& f, int decimals)
+{
+    return "fitted to " + std::to_string (f.maxBands) + " bands from " + std::to_string (f.fromBands) + ": within "
+           + number (f.maxErrorDb, decimals) + " dB of the correction as it plays (" + number (f.rmsErrorDb, decimals) + " dB RMS)";
+}
 } // namespace
+
+EqExport withFewerBands (EqExport e, const Refit& refit, int maxBands)
+{
+    if (! refit.refitted)
+        return e;
+    e.correction = refit.bands;
+    e.fit = EqExport::Fit { maxBands, refit.originalBands, refit.maxErrorDb, refit.rmsErrorDb };
+    return e;
+}
 
 std::string eqExportJson (const EqExport& e)
 {
@@ -210,6 +226,9 @@ std::string eqExportJson (const EqExport& e)
     s += "    \"status\": " + jsonString (e.correctionStatus) + ",\n";
     s += "    \"enabled\": " + std::string (e.correctionOn ? "true" : "false") + ",\n";
     s += "    \"amount\": " + number (e.amount, 3) + ",\n";
+    if (e.fit)
+        s += "    \"fit\": {\"max_bands\": " + std::to_string (e.fit->maxBands) + ", \"from_bands\": " + std::to_string (e.fit->fromBands)
+             + ", \"max_error_db\": " + number (e.fit->maxErrorDb, 2) + ", \"rms_error_db\": " + number (e.fit->rmsErrorDb, 2) + "},\n";
     s += "    \"filters\": " + filtersJson (correctionFilters (e)) + "\n  },\n";
     s += "  \"voicing\": {\n";
     s += "    \"enabled\": " + std::string (e.voicingOn ? "true" : "false") + ",\n";
@@ -230,6 +249,8 @@ std::string eqExportCsv (const EqExport& e)
     s += "# source: " + e.source + "\n";
     s += "# sample rate: " + number (e.sampleRate, 0) + " Hz\n";
     s += "# correction: " + correctionWords (e) + " (gains as they play)\n";
+    if (e.fit)
+        s += "# correction " + fitWords (*e.fit, 2) + "\n";
     s += "# voicing: " + std::string (e.voicingOn ? "on" : "switched off") + "\n";
     s += "# filters: " + std::string (filterDefinition) + "\n";
     s += "# not included: " + std::string (notIncluded) + "\n";
@@ -258,6 +279,8 @@ std::string eqExportText (const EqExport& e)
     s += "Created " + e.created + ", at " + number (e.sampleRate / 1000.0, 1) + " kHz\n\n";
     const auto correction = correctionFilters (e);
     s += "Correction (" + correctionWords (e) + ")" + (correction.empty() ? ": no filters\n" : ":\n" + filterLines (correction));
+    if (e.fit)
+        s += "  (" + fitWords (*e.fit, 1) + ")\n";
     const auto voicing = voicingFilters (e);
     s += std::string ("Voicing") + (e.voicingOn ? "" : " (switched off)")
          + (voicing.empty() ? ": no bands on\n" : ":\n" + filterLines (voicing));

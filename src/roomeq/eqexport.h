@@ -17,8 +17,10 @@
 // Butterworth sections).
 
 #include "roomeq/filters.h"
+#include "roomeq/refit.h"
 #include "roomeq/voicing.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,17 @@ struct EqExport
     double amount = 1.0;                   // already in the exported gains
     std::vector<Band> correction;          // as they play: gains scaled by the amount
 
+    // Set when the correction was refitted to fewer bands for an output that has
+    // only so many (refit.h): JSON "correction.fit", a CSV comment, a text line.
+    struct Fit
+    {
+        int maxBands = 0;                  // fitted to at most this many
+        int fromBands = 0;                 // the bands the correction plays with
+        double maxErrorDb = 0.0;           // the refit vs the correction as it plays
+        double rmsErrorDb = 0.0;
+    };
+    std::optional<Fit> fit;
+
     bool voicingOn = true;
     std::vector<VoicingBand> voicing;      // the bands that are on
 
@@ -46,6 +59,9 @@ struct EqExport
     double delayMs = 0.0;
     bool polarityInverted = false;
 };
+
+// The export with its correction refitted to at most maxBands (unchanged when it already fits).
+EqExport withFewerBands (EqExport e, const Refit& refit, int maxBands);
 
 std::string eqExportJson (const EqExport& e);
 std::string eqExportCsv (const EqExport& e);

@@ -1990,6 +1990,64 @@ int main (int argc, char** argv)
             const auto body = [] (const juce::String& t) { return t.fromFirstOccurrenceOf ("\n\n", false, false); };   // after the dated header
             check (copied.contains ("Correction (applied, Amount") && body (copied) == body (txt.loadFileAsString()),
                    "Copy puts the same text on the clipboard");
+            {
+                // The Export panel: as played, fitted to fewer bands, and an X32 / M32 snippet.
+                const auto wasChoice = proc.getExportChoice();
+                proc.setExportChoice ({});
+                auto panelPtr = ours->createExportPanel();
+                auto& ep = *panelPtr;
+                const auto count = static_cast<int> (exp.correction.size());
+                const auto text = [] (const std::optional<std::string>& c) { return c ? juce::String::fromUTF8 (c->c_str()) : juce::String(); };
+                check (ep.getOptions().format == ExportPanel::Format::text && ! ep.isFitting() && body (text (ep.getContent())) == body (copied)
+                           && ep.getFitText().startsWith ("All " + juce::String (count)),
+                       "export panel: text, all bands as played, the same as Copy");
+
+                ExportPanel::Options o;
+                const auto n = count > 8 ? 8 : count > 6 ? 6 : count > 4 ? 4 : 0;
+                if (n > 0)
+                {
+                    o.format = ExportPanel::Format::json;
+                    o.bands = n;
+                    ep.setOptions (o);
+                    ep.waitForFit();
+                    const auto fitted = juce::JSON::parse (text (ep.getContent()));
+                    const auto* filters = fitted["correction"]["filters"].getArray();
+                    const auto maxErr = static_cast<double> (fitted["correction"]["fit"]["max_error_db"]);
+                    check (filters != nullptr && filters->size() <= n && static_cast<int> (fitted["correction"]["fit"]["max_bands"]) == n
+                               && static_cast<int> (fitted["correction"]["fit"]["from_bands"]) == count && std::isfinite (maxErr)
+                               && ep.getFitText().startsWith ("Fitted to"),
+                           "export panel: the correction fitted to " + juce::String (filters != nullptr ? filters->size() : -1) + " bands from "
+                               + juce::String (count) + ", within " + juce::String (maxErr, 2) + " dB");
+                    ep.setSize (ExportPanel::preferredWidth, ExportPanel::preferredHeight);
+                    writeSnapshot (ep, stem + "-export-fit.png");
+                }
+                else
+                    check (true, "export panel: " + juce::String (count) + " bands, already few enough");
+
+                o.format = ExportPanel::Format::x32;
+                o.destination = { roomeq::x32::Strip::matrix, 2 };
+                ep.setOptions (o);
+                ep.waitForFit();
+                juce::StringArray snp;
+                snp.addLines (text (ep.getContent()));
+                snp.removeEmptyStrings();
+                auto bandLines = true;
+                for (int i = 2; i < snp.size(); ++i)
+                    bandLines = bandLines && snp[i].startsWith ("/mtx/02/eq/" + juce::String (i - 1) + " PEQ ")
+                                && juce::StringArray::fromTokens (snp[i], " ", "").size() == 5;
+                check (snp.size() == 8 && snp[0].length() == 127 && snp[0].startsWith ("#4.0# \"") && snp[0].contains ("\" 4 0 0 2 1")
+                           && snp[1] == "/mtx/02/eq ON" && bandLines && ep.getSummary().contains ("Matrix 2"),
+                       "export panel: an X32 / M32 snippet for Matrix 2 (" + ep.getSummary() + ")");
+                ep.setSize (ExportPanel::preferredWidth, ExportPanel::preferredHeight);
+                writeSnapshot (ep, stem + "-export-x32.png");
+
+                proc.setExportChoice ({ 3, 6, 0, 5 });
+                auto again = ours->createExportPanel();
+                check (again->getOptions().format == ExportPanel::Format::x32 && again->getOptions().bands == 6
+                           && again->getOptions().destination.strip == roomeq::x32::Strip::bus && again->getOptions().destination.number == 5,
+                       "export panel: the last choices come back");
+                proc.setExportChoice (wasChoice);
+            }
             dir.deleteRecursively();
         }
         {

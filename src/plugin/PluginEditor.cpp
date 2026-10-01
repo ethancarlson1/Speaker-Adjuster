@@ -315,9 +315,10 @@ AdaptiveRoomEQEditor::AdaptiveRoomEQEditor (AdaptiveRoomEQProcessor& p)
     verifyButton.setTooltip ("Measure a position through the correction and voicing EQ, to check the result. "
                              "Verify captures never change the proposal.");
     verifyButton.onClick = [this] { if (micReady()) showResult (processor.startVerify()); };
-    exportButton.setTooltip ("The EQ as text to type into a console, or a CSV or JSON file another tool can read: the "
-                             "correction as it plays, the voicing, the output level match, the delay and polarity.");
-    exportButton.onClick = [this] { showExportMenu(); };
+    exportButton.setTooltip ("The EQ as text to type into a console, a CSV or JSON file another tool can read, or a "
+                             "snippet for a Behringer X32 / Midas M32 bus, matrix or main; the correction can be fitted "
+                             "to fewer bands for an output that has only so many.");
+    exportButton.onClick = [this] { showExportPanel(); };
     for (auto* b : { &applyButton, &compareButton, &undoButton, &exportButton })
         button (*b, correctControls);
     verifyButton.setColour (juce::TextButton::buttonColourId, theme::blue);
@@ -1283,13 +1284,34 @@ void AdaptiveRoomEQEditor::showTargetMenu()
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (targetMenu));
 }
 
-void AdaptiveRoomEQEditor::showExportMenu()
+std::unique_ptr<ExportPanel> AdaptiveRoomEQEditor::createExportPanel()
 {
-    juce::PopupMenu menu;
-    menu.addItem ("Copy as text (for typing into a console)", [this] { copyEqToClipboard(); });
-    menu.addItem (juce::String::fromUTF8 ("Save as CSV\xe2\x80\xa6"), [this] { saveExport (".csv"); });
-    menu.addItem (juce::String::fromUTF8 ("Save as JSON\xe2\x80\xa6"), [this] { saveExport (".json"); });
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (exportButton));
+    const auto choice = processor.getExportChoice();
+    ExportPanel::Options options;
+    options.format = static_cast<ExportPanel::Format> (choice.format);
+    options.bands = choice.bands;
+    options.destination = { static_cast<roomeq::x32::Strip> (choice.strip), choice.number };
+    auto panel = std::make_unique<ExportPanel> (processor.getEqExport(), options);
+    juce::Component::SafePointer<AdaptiveRoomEQEditor> safe (this);
+    panel->onOptionsChanged = [safe] (const ExportPanel::Options& o)
+    {
+        if (safe != nullptr)
+            safe->processor.setExportChoice ({ static_cast<int> (o.format), o.bands, static_cast<int> (o.destination.strip), o.destination.number });
+    };
+    auto* raw = panel.get();
+    panel->onExport = [safe, raw] (const ExportPanel::Options& o, const std::string& content, const juce::String& summary)
+    {
+        if (auto* box = raw->findParentComponentOfClass<juce::CallOutBox>())
+            box->dismiss();
+        if (safe != nullptr)
+            safe->exportFromPanel (o, content, summary);
+    };
+    return panel;
+}
+
+void AdaptiveRoomEQEditor::showExportPanel()
+{
+    juce::CallOutBox::launchAsynchronously (createExportPanel(), exportButton.getScreenBounds(), nullptr);
 }
 
 void AdaptiveRoomEQEditor::copyEqToClipboard()
@@ -1300,28 +1322,40 @@ void AdaptiveRoomEQEditor::copyEqToClipboard()
     repaint();
 }
 
-void AdaptiveRoomEQEditor::saveExport (const juce::String& extension)
+void AdaptiveRoomEQEditor::exportFromPanel (const ExportPanel::Options& options, const std::string& content, const juce::String& summary)
 {
+    const auto text = juce::String::fromUTF8 (content.c_str());
+    const auto details = summary.isEmpty() ? juce::String() : " (" + summary + ")";
+    if (options.format == ExportPanel::Format::text)
+    {
+        juce::SystemClipboard::copyTextToClipboard (text);
+        noticeText = "EQ copied as text" + details + ".";
+        noticeTime = juce::Time::getMillisecondCounter();
+        repaint();
+        return;
+    }
+    const auto isX32 = options.format == ExportPanel::Format::x32;
+    const juce::String extension = isX32 ? ".snp" : options.format == ExportPanel::Format::csv ? ".csv" : ".json";
     const auto name = juce::File::createLegalFileName (processor.getZoneLabel() + " EQ" + extension);
-    exportChooser = std::make_unique<juce::FileChooser> ("Export the EQ",
+    exportChooser = std::make_unique<juce::FileChooser> (isX32 ? "Save an X32 / M32 snippet" : "Export the EQ",
                                                          juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name),
                                                          "*" + extension);
     juce::Component::SafePointer<AdaptiveRoomEQEditor> safe (this);
     exportChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                     | juce::FileBrowserComponent::warnAboutOverwriting,
-                                [safe, extension] (const juce::FileChooser& chooser)
+                                [safe, extension, text, details, isX32] (const juce::FileChooser& chooser)
                                 {
                                     if (safe == nullptr || chooser.getResult() == juce::File())
                                         return;
                                     const auto file = chooser.getResult().withFileExtension (extension);
-                                    const auto result = safe->processor.exportEq (file);
-                                    safe->showResult (result);
-                                    if (result.wasOk())
+                                    if (! file.replaceWithText (text, false, false, "\n"))
                                     {
-                                        safe->noticeText = "EQ exported to " + file.getFileName() + ".";
-                                        safe->noticeTime = juce::Time::getMillisecondCounter();
-                                        safe->repaint();
+                                        safe->showResult (juce::Result::fail ("Couldn't write " + file.getFullPathName()));
+                                        return;
                                     }
+                                    safe->noticeText = (isX32 ? "X32 / M32 snippet saved to " : "EQ exported to ") + file.getFileName() + details + ".";
+                                    safe->noticeTime = juce::Time::getMillisecondCounter();
+                                    safe->repaint();
                                 });
 }
 
@@ -1332,11 +1366,11 @@ void AdaptiveRoomEQEditor::chooseTargetFile (bool importing, const juce::String&
     targetChooser = std::make_unique<juce::FileChooser> (importing ? "Import a target" : "Export the target",
                                                          importing ? start : start.getChildFile (name),
                                                          importing ? "*.csv;*.txt;*.json" : "*" + extension);
-    const auto flags = importing ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+    const auto chooserFlags = importing ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
                                  : juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                        | juce::FileBrowserComponent::warnAboutOverwriting;
     juce::Component::SafePointer<AdaptiveRoomEQEditor> safe (this);
-    targetChooser->launchAsync (flags, [safe, importing, extension] (const juce::FileChooser& chooser)
+    targetChooser->launchAsync (chooserFlags, [safe, importing, extension] (const juce::FileChooser& chooser)
     {
         if (safe == nullptr || chooser.getResult() == juce::File())
             return;

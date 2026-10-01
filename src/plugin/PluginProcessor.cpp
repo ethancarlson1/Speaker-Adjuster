@@ -331,6 +331,19 @@ roomeq::EqExport AdaptiveRoomEQProcessor::getEqExport() const
     return e;
 }
 
+AdaptiveRoomEQProcessor::ExportChoice AdaptiveRoomEQProcessor::getExportChoice() const noexcept
+{
+    return { exportFormat.load(), exportBands.load(), x32Strip.load(), x32Number.load() };
+}
+
+void AdaptiveRoomEQProcessor::setExportChoice (ExportChoice c) noexcept
+{
+    exportFormat = juce::jlimit (0, 3, c.format);
+    exportBands = c.bands == 8 || c.bands == 6 || c.bands == 4 ? c.bands : 0;
+    x32Strip = juce::jlimit (0, 3, c.strip);
+    x32Number = juce::jlimit (1, c.strip == 1 ? 6 : 16, c.number);
+}
+
 juce::Result AdaptiveRoomEQProcessor::exportEq (const juce::File& file) const
 {
     const auto data = getEqExport();
@@ -858,6 +871,10 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.appendChild (loudnessControl.toValueTree(), nullptr);
     root.setProperty ("uiMode", uiMode.load(), nullptr);
     root.setProperty ("advanced", advancedView.load(), nullptr);
+    root.setProperty ("exportFormat", exportFormat.load(), nullptr);
+    root.setProperty ("exportBands", exportBands.load(), nullptr);
+    root.setProperty ("x32Strip", x32Strip.load(), nullptr);
+    root.setProperty ("x32Number", x32Number.load(), nullptr);
     root.setProperty ("showPanel", showPanel.load(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
@@ -897,6 +914,8 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     // Sessions from before the modes saved only whether the show view was on.
     setUiMode (root.hasProperty ("uiMode") ? static_cast<int> (root["uiMode"]) : static_cast<bool> (root.getProperty ("showView", false)) ? 2 : 1);
     advancedView = static_cast<bool> (root.getProperty ("advanced", false));
+    setExportChoice ({ static_cast<int> (root.getProperty ("exportFormat", 0)), static_cast<int> (root.getProperty ("exportBands", 0)),
+                       static_cast<int> (root.getProperty ("x32Strip", 0)), static_cast<int> (root.getProperty ("x32Number", 1)) });
     showPanel = juce::jlimit (0, 2, static_cast<int> (root.getProperty ("showPanel", 0)));
 }
 

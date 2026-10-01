@@ -2,6 +2,7 @@
 
 #include "plugin/AlignmentPanel.h"
 #include "plugin/CaptureList.h"
+#include "plugin/ExportPanel.h"
 #include "plugin/PluginProcessor.h"
 #include "plugin/QualityCard.h"
 #include "plugin/ResponseGraph.h"
@@ -170,8 +171,8 @@ private:
     juce::TextButton applyButton { "Apply System Correction" }, compareButton { "Hear previous" }, undoButton { "Undo" },
         verifyButton { "Verify: measure through the EQ" }, exportButton { juce::String::fromUTF8 ("Export\xe2\x80\xa6") };
     std::unique_ptr<juce::FileChooser> exportChooser;
-    void showExportMenu();
-    void saveExport (const juce::String& extension);
+    void showExportPanel();
+    void exportFromPanel (const ExportPanel::Options& options, const std::string& content, const juce::String& summary);
     std::unique_ptr<ComboAttachment> targetAttachment;
     std::unique_ptr<ButtonAttachment> correctionOnAttachment, levelMatchAttachment;
     std::unique_ptr<SliderAttachment> amountAttachment, maxCutAttachment, maxBoostAttachment, rangeLoAttachment,
@@ -241,7 +242,8 @@ public:
     bool isPageButtonShown (Tab t);                               // tests: the page's button is in the tab bar
     const std::vector<juce::Component*>& getAdvancedControls() const { return advancedControls; }
     juce::TextButton& getModeButton (Mode m) { return m == Mode::setup ? setupButton : m == Mode::show ? showButton : tuneButton; }
-    void copyEqToClipboard();                                     // Export... > Copy (tests too)
+    void copyEqToClipboard();                                     // the EQ as played, as text (tests)
+    std::unique_ptr<ExportPanel> createExportPanel();             // what Export... opens (tests too)
 private:
     ResponseGraph graph { processor };
     juce::TooltipWindow tooltips { this, 600 };

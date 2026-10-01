@@ -225,11 +225,17 @@ Tune › **3 Correct**, then **4 Verify**.
 
 **Quick mode:** with one good position the applied correction is half strength and within ±3 dB; with two, 75% and ±6 dB. Full strength needs three.
 
-**Export…** (beside Verify) writes the EQ so the plugin needn't stay in the signal path:
-- **Copy as text:** laid out for typing into a console, one band per line with its type, frequency, gain, Q and bandwidth.
-- **Save as CSV… / Save as JSON…:** files another tool can read, versioned (`"format": "adaptive-room-eq.eq", "version": 1`) and independent of the plugin's saved session.
+**Export…** (beside Verify) writes the EQ so the plugin needn't stay in the signal path. It opens a panel:
+- **Export as:**
+  - **Text, copied:** laid out for typing into a console, one band per line with its type, frequency, gain, Q and bandwidth.
+  - **CSV file… / JSON file…:** files another tool can read, versioned (`"format": "adaptive-room-eq.eq", "version": 1`) and independent of the plugin's saved session.
+  - **Behringer X32 / Midas M32 snippet…:** a `.snp` file the desk loads (below).
+- **Correction bands:** all of them, as played, or **fitted to 8, 6 or 4** for an output EQ with only so many bands.
+- **X32 / M32 strip:** for the snippet, Bus 1–16, Matrix 1–6, Main LR or Main M/C.
 
-Each holds, in processing order:
+A graph shows the correction as it plays and what the export plays, and the line under it says how far apart they are (the largest difference, and the RMS). The panel remembers its choices with the session.
+
+The text, CSV and JSON exports hold, in processing order:
 - the correction as it plays: its gains already scaled by **Amount**. If nothing is applied yet, the proposal is exported, marked "proposed";
 - the voicing bands that are on;
 - the output level match's gain;
@@ -250,6 +256,25 @@ voicing,1,high_pass,35.00,,,,24,
 output,1,gain,,0.42,,,,
 zone,1,delay_ms,,,,,,12.500
 ```
+
+**Fitting to fewer bands.** The correction can use up to 10 bands; many console outputs and matrices have 4–8. Rather than drop the smallest, the curve the correction plays is fitted again with at most that many, by the correction's own fit, and the closer of two fits is kept: one adds bands to a flat start, the other starts from the correction's bands and drops the least useful one at a time (it keeps a narrow, deep cut the first would merge into a broad one). The refit never boosts more than 0.5 dB beyond the correction, keeps the correction's width limits, and may use one low and one high shelf. Bands that already fit are exported unchanged. A fitted export says so: JSON `"correction": {"fit": {"max_bands": 6, "from_bands": 9, "max_error_db": 1.67, "rms_error_db": 0.54}}`, a CSV comment, and a line in the text.
+
+**X32 / M32 snippet.** Mix buses, matrices and the mains have six EQ bands, so the correction is fitted to six bells. A console's shelf Q is its own, so no shelves are used, and the widest bell is the desk's Q 0.3. Every value is then put on the desk's own steps, and the steps either side of each value are tried while that brings the curve closer:
+- frequency: 201 steps, log-spaced 20 Hz–20 kHz;
+- gain: 0.25 dB steps within ±15 dB;
+- Q: the desk's 72 steps from 10 to 0.3, limited to those a one-decimal value reaches, since that is how the desk writes them.
+
+The file sets that strip's EQ on and all six of its bands (unused bands flat, so nothing already on the strip stays) and nothing else: voicing, output gain, delay and polarity stay in the plugin. Load it with X32-Edit / M32-Edit, or on the desk from a USB stick (Scenes, Snippets).
+
+```
+#4.0# "Mains (PA)" 4 0 0 2 1                     (padded to 127 characters)
+/mtx/02/eq ON
+/mtx/02/eq/1 PEQ 94.6 -5.75 4.5
+/mtx/02/eq/2 PEQ 182.4 -4.50 1.1
+...
+```
+
+The format is the community-documented one: Patrick-Gilles Maillot's unofficial X32/M32 OSC protocol, and files desks have written. The header's masks say what the snippet recalls: EQ, and the one strip. The files were checked with the x32scene project's reader and validator, but not yet on a desk. The desk's PEQ is taken to shape a bell as the plugin does; Behringer doesn't publish how its Q is defined. To check, load the snippet, switch the plugin's correction off, and measure one position through the desk: it should land where the correction did.
 
 **System summary.** On the Correct page, the space above the graph shows the System summary instead of the capture list. Switch with **System summary / Captures**; the other pages always show the list. It's an overview, not a replacement for the graph:
 
@@ -469,7 +494,7 @@ cd prototype && ROOMEQ_CLI=../build/roomeq_cli pytest               # Python tes
 ./build/AdaptiveRoomEQ_Harness_artefacts/Release/AdaptiveRoomEQ_Harness --out ui.png   # end to end
 ```
 
-The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, coherence, grade, quality rating, reason string and curve must agree to within 1e-6 dB. The fitted correction must agree to within 0.05 dB; locally it's within 2e-6 dB.
+The cross-check (`prototype/tests/test_cpp_port.py`) runs the C++ core and the Python prototype on the same simulated recordings. Every delay, band SNR, coherence, grade, quality rating, reason string and curve must agree to within 1e-6 dB. The fitted correction, and its refit to fewer bands for export, must agree to within 0.05 dB; locally it's within 2e-6 dB.
 
 The harness drives the real processor against a simulated room. It checks:
 - the speakers get exactly the predicted correction and voicing, plus the output level match's make-up, and pink noise comes out as loud as it goes in;
@@ -485,6 +510,7 @@ The harness drives the real processor against a simulated room. It checks:
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - targets as files: House exported as CSV and JSON and imported back exactly, another tool's tab-separated text file imported, and a file that isn't a target refused with its line number;
 - export: the applied correction at the current Amount, the voicing bands that are on and the output gain; JSON, CSV and text files written and read back (the JSON parses, the CSV has a row per filter); and Copy putting the same text on the clipboard;
+- the Export panel: the same text as Copy when exported as played; the correction fitted to fewer bands (JSON with the fit and its error); an X32 / M32 snippet for Matrix 2 with the right header, masks and six band lines; its choices remembered (snapshots: `-export-fit.png`, `-export-x32.png`);
 - the modes: Tune with its four steps, Setup with Zone and Level Compensation, Show with Monitor and Engineer Voicing, only the chosen mode's button lit; Advanced showing Correct's limits; the mode and Advanced saved; and the app with no Show mode or Align step;
 - the Correct page's system summary: its filters matching the proposal, the improvement, the positions' variation, every reason shown, and the switch to the capture list and back;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;

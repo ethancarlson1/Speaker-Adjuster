@@ -137,6 +137,15 @@ public:
     // bands that are on, the output level match, and the zone's delay and polarity.
     roomeq::EqExport getEqExport() const;
     juce::Result exportEq (const juce::File& file) const;   // .json, .csv or .txt, by the file's extension
+    // The Export panel's choices: format (0 text, 1 CSV, 2 JSON, 3 X32/M32), correction
+    // bands (0 all, or 8 / 6 / 4) and the X32/M32 strip (roomeq::x32::Strip, and its number).
+    // Saved with the session.
+    struct ExportChoice
+    {
+        int format = 0, bands = 0, strip = 0, number = 1;
+    };
+    ExportChoice getExportChoice() const noexcept;
+    void setExportChoice (ExportChoice c) noexcept;
 
     MeasurementEngine::CorrectionSettings getCorrectionSettings() const;
     EqSettings getEqSettings() const noexcept;                    // what the audio path uses now
@@ -195,6 +204,7 @@ private:
     std::atomic<int> uiMode { 1 };
     std::atomic<bool> advancedView { false };
     std::atomic<int> showPanel { 0 };
+    std::atomic<int> exportFormat { 0 }, exportBands { 0 }, x32Strip { 0 }, x32Number { 1 };
     SplMeter spl;
     SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips
     juce::TimedCallback splCollector { [this] { spl.collect(); } };   // keeps the Leqs going with the editor closed

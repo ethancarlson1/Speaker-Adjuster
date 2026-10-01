@@ -104,3 +104,33 @@ TEST_CASE ("text export: for typing into a console")
     CHECK (empty.find ("Voicing (switched off): no bands on\n") != std::string::npos);
     CHECK (eqExportJson (none).find ("\"filters\": []") != std::string::npos);
 }
+
+TEST_CASE ("export fitted to fewer bands: the refit's bands and how close they come")
+{
+    Refit refit;
+    refit.bands = { Band { BandKind::bell, 180.0, -3.0, 1.5 } };
+    refit.refitted = true;
+    refit.originalBands = 2;
+    refit.maxErrorDb = 1.234;
+    refit.rmsErrorDb = 0.456;
+    const auto e = withFewerBands (example(), refit, 1);
+    REQUIRE (e.fit.has_value());
+    CHECK (e.correction == refit.bands);
+    CHECK (e.fit->maxBands == 1);
+    CHECK (e.fit->fromBands == 2);
+    CHECK (eqExportJson (e).find ("\"fit\": {\"max_bands\": 1, \"from_bands\": 2, \"max_error_db\": 1.23, \"rms_error_db\": 0.46},")
+           != std::string::npos);
+    CHECK (eqExportCsv (e).find ("# correction fitted to 1 bands from 2: within 1.23 dB of the correction as it plays (0.46 dB RMS)\n")
+           != std::string::npos);
+    CHECK (eqExportText (e).find ("  1  Bell        180 Hz     -3.0 dB   Q 1.50 (0.94 oct)\n"
+                                  "  (fitted to 1 bands from 2: within 1.2 dB of the correction as it plays (0.5 dB RMS))\n")
+           != std::string::npos);
+
+    // Bands that already fit: unchanged, nothing said.
+    Refit same;
+    same.bands = example().correction;
+    const auto kept = withFewerBands (example(), same, 4);
+    CHECK_FALSE (kept.fit.has_value());
+    CHECK (kept.correction == example().correction);
+    CHECK (eqExportJson (kept).find ("\"fit\"") == std::string::npos);
+}
