@@ -17,9 +17,10 @@
 // of its buses, matrices or mains.
 //
 // For an output with only so many bands, the correction can be fitted to 8, 6
-// or 4 (roomeq/refit.h); X32/M32 always gets six bells on the desk's own steps
-// (roomeq/x32.h). Fits run in the background. A graph shows the correction as
-// it plays and what the export plays, with the largest difference between them.
+// or 4 (roomeq/refit.h). X32/M32 gets the correction and the voicing combined,
+// as six bells on the desk's own steps (roomeq/x32.h). Fits run in the
+// background. A graph shows what the plugin plays and what the export plays,
+// with the largest difference between them.
 class ExportPanel final : public juce::Component, private juce::Timer
 {
 public:
@@ -62,8 +63,11 @@ private:
     std::optional<roomeq::x32::Fit> deskFit() const;
     std::optional<roomeq::EqExport> exportData() const;   // the export with the chosen fit
     int correctionBands() const { return static_cast<int> (base.correction.size()); }
+    const std::vector<double>& referenceDb() const { return options.format == Format::x32 ? deskPlayedDb : playedDb; }
 
     roomeq::EqExport base;
+    roomeq::x32::DeskCurve deskCurve;           // the correction and voicing, for X32/M32
+    std::vector<double> deskPlayedDb;
     Options options;
     std::vector<double> grid, playedDb, exportDb;
     std::map<int, std::shared_future<roomeq::Refit>> refits;

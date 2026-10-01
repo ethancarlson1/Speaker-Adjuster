@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
@@ -186,4 +187,41 @@ TEST_CASE ("x32: the snippet a desk loads")
     CHECK (x32::destinationName ({ x32::Strip::matrix, 2 }) == "Matrix 2");
     CHECK (x32::destinationName ({ x32::Strip::mainStereo, 1 }) == "Main LR");
     CHECK (x32::destinationName ({ x32::Strip::mainMono, 1 }) == "Main M/C");
+}
+
+TEST_CASE ("x32: the desk gets the correction and the voicing's bells and shelves")
+{
+    EqExport e;
+    e.correction = { band (BandKind::bell, 97, -5.3, 4.1), band (BandKind::bell, 410, 1.7, 1.3) };
+    VoicingBand hp { true, VoicingType::highPass24, 35.0, 0.0, 0.7 };
+    VoicingBand presence { true, VoicingType::bell, 3150.0, 2.5, 6.0 };   // narrower than the correction may go
+    VoicingBand air { true, VoicingType::highShelf, 9000.0, 1.5, 0.7 };
+    VoicingBand off { false, VoicingType::bell, 800.0, -4.0, 1.0 };
+    VoicingBand lp { true, VoicingType::lowPass12, 18000.0, 0.0, 0.7 };
+    e.voicing = { hp, presence, air, off, lp };
+
+    const auto curve = x32::deskCurve (e);
+    CHECK (curve.voicing);
+    REQUIRE (curve.bands.size() == 4);   // two correction bells, the presence bell and the air shelf
+    CHECK (curve.bands[2].freq == 3150.0);
+    CHECK (curve.bands[3].kind == BandKind::highShelf);
+    REQUIRE (curve.passFilters.size() == 2);   // not on the desk
+    CHECK (curve.passFilters[0].type == VoicingType::highPass24);
+    CHECK (curve.passFilters[1].type == VoicingType::lowPass12);
+
+    // The shelf becomes bells; the narrow presence bell is kept as narrow as the desk allows.
+    const auto fit = x32::fitForDesk (curve.bands, fs);
+    CHECK (fit.refitted);
+    CHECK (fit.bands.size() <= 6);
+    checkOnSteps (fit.bands);
+    CHECK (std::any_of (fit.bands.begin(), fit.bands.end(), [] (const Band& b)
+                        { return b.freq > 2900.0 && b.freq < 3400.0 && b.gainDb > 1.5 && b.q > 4.0; }));
+    CHECK (fit.maxErrorDb < 1.0);
+
+    // Voicing alone, and nothing at all.
+    e.correction.clear();
+    CHECK (x32::deskCurve (e).bands.size() == 2);
+    e.voicing = { hp, off };
+    CHECK (x32::deskCurve (e).bands.empty());
+    CHECK_FALSE (x32::deskCurve (e).voicing);
 }

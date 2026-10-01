@@ -15,7 +15,9 @@
 // - each band's gain stays within the curve's largest boost + 1 dB and its
 //   largest cut + 3 dB (both at most 15 dB); widths are the correction's;
 // - shelves are optional (consoles define a shelf's Q differently), and the
-//   widest bell is a setting (consoles go to Q 0.3, about 3.7 octaves).
+//   widest bell is a setting (consoles go to Q 0.3, about 3.7 octaves), as is
+//   the narrowest (by default the correction's: a console's for a curve that
+//   includes the engineer's voicing).
 //
 // Two fits, and the closer one is kept (by the fit's own cost): the greedy
 // forward fit (fitBands) and the backward one (pruneBands), which keeps a
@@ -57,9 +59,12 @@ std::pair<double, double> fitError (const std::vector<double>& curveDb, const st
 
 // The problem refitBands solves: `bands`' curve on refitGrid() as the wanted
 // correction, with the refit's limits (fitCost scores any curve against it).
-FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands, bool shelves = true, double maxOctaves = 3.0);
+// narrowestOctaves: the narrowest bell, boost or cut (0: the correction's limits).
+FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands, bool shelves = true, double maxOctaves = 3.0,
+                         double narrowestOctaves = 0.0);
 
 // At most maxBands bands that play `bands`' curve as closely as they can.
 // maxOctaves: the widest bell (the correction's 3 octaves by default).
-Refit refitBands (const std::vector<Band>& bands, double fs, int maxBands, bool shelves = true, double maxOctaves = 3.0);
+Refit refitBands (const std::vector<Band>& bands, double fs, int maxBands, bool shelves = true, double maxOctaves = 3.0,
+                  double narrowestOctaves = 0.0);
 } // namespace roomeq

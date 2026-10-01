@@ -47,6 +47,8 @@ ExportPanel::ExportPanel (roomeq::EqExport asPlayed, Options initial)
 {
     grid = roomeq::refitGrid();
     playedDb = roomeq::responseDb (base.correction, grid, base.sampleRate);
+    deskCurve = roomeq::x32::deskCurve (base);
+    deskPlayedDb = roomeq::responseDb (deskCurve.bands, grid, base.sampleRate);
 
     formatBox.addItem ("Text, copied (for typing into a console)", 1);
     formatBox.addItem (juce::String::fromUTF8 ("CSV file\xe2\x80\xa6"), 2);
@@ -133,8 +135,8 @@ void ExportPanel::startFit()
     const auto fs = base.sampleRate;
     if (options.format == Format::x32)
     {
-        if (! desk.valid() && ! bands.empty())
-            desk = std::async (std::launch::async, [bands, fs] { return roomeq::x32::fitForDesk (bands, fs); }).share();
+        if (! desk.valid() && ! deskCurve.bands.empty())
+            desk = std::async (std::launch::async, [curve = deskCurve.bands, fs] { return roomeq::x32::fitForDesk (curve, fs); }).share();
     }
     else if (options.bands > 0 && options.bands < correctionBands() && refits.count (options.bands) == 0)
     {
@@ -242,25 +244,30 @@ juce::String ExportPanel::getFitText() const
 {
     const auto count = correctionBands();
     const auto dest = juce::String (roomeq::x32::destinationName (options.destination));
-    if (count == 0)
-        return options.format == Format::x32 ? "No correction to put on the desk yet."
-                                             : "No correction yet: the export has the voicing, output gain, delay and polarity.";
-    if (isFitting())
-        return options.format == Format::x32 ? juce::String::fromUTF8 ("Fitting six bells on the desk's steps\xe2\x80\xa6")
-                                             : juce::String::fromUTF8 ("Fitting the correction to ") + juce::String (options.bands)
-                                                   + juce::String::fromUTF8 (" bands\xe2\x80\xa6");
-    const auto within = [] (double maxDb, double rmsDb)
-    { return "within " + db1 (maxDb) + " of the correction as it plays (" + db1 (rmsDb) + " RMS)."; };
+    const auto within = [] (double maxDb, double rmsDb, const juce::String& what)
+    { return "within " + db1 (maxDb) + " of " + what + " (" + db1 (rmsDb) + " RMS)."; };
     if (options.format == Format::x32)
     {
-        if (const auto fit = deskFit())
-            return juce::String (fit->bands.size()) + (fit->bands.size() == 1 ? " bell" : " bells") + " on " + dest
-                   + "'s EQ, on the desk's steps: " + within (fit->maxErrorDb, fit->rmsErrorDb);
-        return {};
+        if (deskCurve.bands.empty())
+            return "Nothing to put on the desk yet: no correction, and no voicing bells or shelves on.";
+        if (isFitting())
+            return juce::String::fromUTF8 ("Fitting six bells on the desk's steps\xe2\x80\xa6");
+        const auto fit = deskFit();
+        if (! fit)
+            return {};
+        const auto what = count > 0 && deskCurve.voicing ? juce::String ("the correction and voicing")
+                          : deskCurve.voicing            ? juce::String ("the voicing")
+                                                         : juce::String ("the correction");
+        return juce::String (fit->bands.size()) + (fit->bands.size() == 1 ? " bell" : " bells") + " on " + dest + "'s EQ for "
+               + what + ", on the desk's steps: " + within (fit->maxErrorDb, fit->rmsErrorDb, "what the plugin plays");
     }
+    if (count == 0)
+        return "No correction yet: the export has the voicing, output gain, delay and polarity.";
+    if (isFitting())
+        return juce::String::fromUTF8 ("Fitting the correction to ") + juce::String (options.bands) + juce::String::fromUTF8 (" bands\xe2\x80\xa6");
     if (const auto r = refitFor (options.bands))
         return "Fitted to " + juce::String (r->bands.size()) + " bands from " + juce::String (count) + ": "
-               + within (r->maxErrorDb, r->rmsErrorDb);
+               + within (r->maxErrorDb, r->rmsErrorDb, "the correction as it plays");
     return "All " + juce::String (count) + (count == 1 ? " band" : " bands") + ", exactly as they play.";
 }
 
@@ -292,7 +299,7 @@ void ExportPanel::refresh()
         exportDb = e->fit ? roomeq::responseDb (e->correction, grid, base.sampleRate) : playedDb;
 
     exportButton.setButtonText (options.format == Format::text ? "Copy" : juce::String::fromUTF8 ("Save\xe2\x80\xa6"));
-    exportButton.setEnabled (getContent().has_value() && ! (isX32 && correctionBands() == 0));
+    exportButton.setEnabled (getContent().has_value() && ! (isX32 && deskCurve.bands.empty()));
     repaint();
 }
 
@@ -332,7 +339,7 @@ void ExportPanel::paint (juce::Graphics& g)
     g.drawRect (graphArea);
     auto plot = graphArea.reduced (8, 18).toFloat();
     double largest = 3.0;
-    for (const auto* curve : { &playedDb, &exportDb })
+    for (const auto* curve : { &referenceDb(), static_cast<const std::vector<double>*> (&exportDb) })
         for (auto v : *curve)
             largest = std::max (largest, std::abs (v));
     const auto range = 3.0 * std::ceil ((largest + 0.5) / 3.0);
@@ -372,8 +379,8 @@ void ExportPanel::paint (juce::Graphics& g)
         g.setColour (colour);
         g.strokePath (p, juce::PathStrokeType (thickness));
     };
-    draw (playedDb, theme::aqua, 2.2f);
-    if (exportDb != playedDb)
+    draw (referenceDb(), theme::aqua, 2.2f);
+    if (exportDb != referenceDb())
         draw (exportDb, theme::gold, 1.6f);
     auto legend = graphArea.reduced (10, 3).removeFromTop (14);
     const auto key = [&] (const juce::String& text, juce::Colour colour)
@@ -384,8 +391,10 @@ void ExportPanel::paint (juce::Graphics& g)
         g.setColour (theme::ink2);
         g.drawText (text, legend.removeFromLeft (170), juce::Justification::centredLeft);
     };
-    key ("Correction as it plays", theme::aqua);
-    if (! exportDb.empty() && exportDb != playedDb)
+    key (options.format == Format::x32 && deskCurve.voicing ? (correctionBands() > 0 ? "Correction and voicing" : "Voicing")
+                                                             : "Correction as it plays",
+         theme::aqua);
+    if (! exportDb.empty() && exportDb != referenceDb())
         key (options.format == Format::x32 ? "On the desk" : "As exported", theme::gold);
 
     auto text = textArea;
@@ -395,13 +404,24 @@ void ExportPanel::paint (juce::Graphics& g)
     text.removeFromTop (4);
     g.setColour (theme::muted);
     g.setFont (juce::FontOptions (12.0f));
-    const auto note = options.format == Format::x32
-        ? juce::String ("Load it with X32-Edit / M32-Edit, or on the desk from a USB stick (Scenes, Snippets). It sets only "
-                        "that strip's EQ: voicing, output gain, delay and polarity stay in the plugin. The desk's PEQ is taken "
-                        "to shape a bell as the plugin does; to check, measure once through the desk with the plugin's "
-                        "correction off.")
-        : juce::String ("Bells and shelves as RBJ cookbook filters (the Q of a bell is its width between its half-gain points): "
-                        "a console that measures Q another way needs other values. Includes the voicing bands that are on, the "
-                        "output gain, delay and polarity; level compensation follows the show, so it isn't exported.");
+    juce::String note;
+    if (options.format == Format::x32)
+    {
+        note = "Load it with X32-Edit / M32-Edit, or on the desk from a USB stick (Scenes, Snippets). It sets only that "
+               "strip's EQ, so switch the plugin's correction and voicing off while the desk plays them; output gain, delay "
+               "and polarity stay in the plugin.";
+        for (const auto& v : deskCurve.passFilters)
+        {
+            const auto high = v.type == roomeq::VoicingType::highPass12 || v.type == roomeq::VoicingType::highPass24;
+            const auto slope = v.type == roomeq::VoicingType::highPass24 || v.type == roomeq::VoicingType::lowPass24 ? 24 : 12;
+            note << " The voicing's " << theme::formatHz (v.freq) << (high ? " high-pass" : " low-pass") << " (" << slope
+                 << " dB/oct) isn't on the desk.";
+        }
+        note << " The desk's PEQ is taken to shape a bell as the plugin does; to check, measure once through the desk.";
+    }
+    else
+        note = "Bells and shelves as RBJ cookbook filters (the Q of a bell is its width between its half-gain points): "
+               "a console that measures Q another way needs other values. Includes the voicing bands that are on, the "
+               "output gain, delay and polarity; level compensation follows the show, so it isn't exported.";
     g.drawFittedText (note, text, juce::Justification::topLeft, 5, 0.9f);
 }

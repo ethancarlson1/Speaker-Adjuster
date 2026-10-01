@@ -9,7 +9,7 @@
 //   roomeq_cli track --fs 48000 --in output.f64 [--mic mic.f64] [--speed 5] [--block 512]
 //   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
 //   roomeq_cli refit --fs 48000 --bands bell:95:-6:4,low_shelf:60:2.5:0.7071 --max-bands 6
-//                    [--shelves 1 --max-octaves 3]
+//                    [--shelves 1 --max-octaves 3 --narrowest 0]
 //   roomeq_cli align-sub --fs 48000 --duration 5 --position MAINS=a.f64,b.f64 --position SUB=c.f64,d.f64
 //                        [--main-delay 0 --main-invert 0 --sub-delay 0 --sub-invert 0]
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
@@ -353,7 +353,7 @@ int run (int argc, char** argv)
             bands.push_back (b);
         }
         const auto r = roomeq::refitBands (bands, cfg.fs, static_cast<int> (args.get ("max-bands", 6)),
-                                           args.get ("shelves", 1) != 0.0, args.get ("max-octaves", 3.0));
+                                           args.get ("shelves", 1) != 0.0, args.get ("max-octaves", 3.0), args.get ("narrowest", 0.0));
         std::cout << "{\"refitted\":" << (r.refitted ? "true" : "false") << ",\"original_bands\":" << r.originalBands
                   << ",\"bands\":" << list (r.bands, bandJson) << ",\"max_error_db\":" << num (r.maxErrorDb)
                   << ",\"rms_error_db\":" << num (r.rmsErrorDb) << "}\n";

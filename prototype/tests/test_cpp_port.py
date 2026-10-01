@@ -482,20 +482,24 @@ def test_sub_alignment_matches_python(tmp_path):
         assert cpp["confidence"] == py.confidence and cpp["reasons"] == py.reasons and cpp["note"] == py.note, settings
 
 
-@pytest.mark.parametrize("max_bands, shelves", [(6, True), (4, True), (6, False)])
-def test_refit_matches_python(max_bands, shelves):
-    """Fit to N bands: same bands, same curve, same fit error."""
+@pytest.mark.parametrize("max_bands, shelves, narrow", [(6, True, False), (4, True, False), (6, False, False), (6, False, True)])
+def test_refit_matches_python(max_bands, shelves, narrow):
+    """Fit to N bands: same bands, same curve, same fit error. `narrow`: a desk's widths and a voicing-style narrow bell."""
     from roomeq import filters, refit
     from roomeq.filters import BELL, HIGH_SHELF, LOW_SHELF, Band
 
     bands = [Band(LOW_SHELF, 60, 2.5), Band(BELL, 95, -6, 4.0), Band(BELL, 160, -4, 3.0), Band(BELL, 240, -3, 2.5),
              Band(BELL, 500, 1.5, 1.2), Band(BELL, 1200, -2.5, 2.0), Band(BELL, 2500, 2, 1.3), Band(BELL, 5000, -3, 2.0),
              Band(HIGH_SHELF, 9000, -2)]
+    if narrow:
+        bands.append(Band(BELL, 3150, 2.5, 6.0))
     octaves = 3.0 if shelves else filters.bandwidth_for_q(0.3)
+    narrowest = filters.bandwidth_for_q(10.0) if narrow else 0.0
     spec = ",".join(f"{b.kind}:{float(b.freq)!r}:{float(b.gain_db)!r}:{float(b.q)!r}" for b in bands)
     cpp = run_cli("refit", "--fs", CFG.fs, "--bands", spec, "--max-bands", max_bands, "--shelves", int(shelves),
-                  "--max-octaves", repr(float(octaves)))
-    py = refit.refit_bands(bands, CFG.fs, max_bands, shelves=shelves, max_octaves=octaves)
+                  "--max-octaves", repr(float(octaves)), "--narrowest", repr(float(narrowest)))
+    py = refit.refit_bands(bands, CFG.fs, max_bands, shelves=shelves, max_octaves=octaves,
+                           narrowest_octaves=narrowest if narrow else None)
 
     assert cpp["refitted"] == py.refitted and cpp["original_bands"] == py.original_bands
     assert [b["kind"] for b in cpp["bands"]] == [b.kind for b in py.bands]

@@ -259,12 +259,14 @@ zone,1,delay_ms,,,,,,12.500
 
 **Fitting to fewer bands.** The correction can use up to 10 bands; many console outputs and matrices have 4–8. Rather than drop the smallest, the curve the correction plays is fitted again with at most that many, by the correction's own fit, and the closer of two fits is kept: one adds bands to a flat start, the other starts from the correction's bands and drops the least useful one at a time (it keeps a narrow, deep cut the first would merge into a broad one). The refit never boosts more than 0.5 dB beyond the correction, keeps the correction's width limits, and may use one low and one high shelf. Bands that already fit are exported unchanged. A fitted export says so: JSON `"correction": {"fit": {"max_bands": 6, "from_bands": 9, "max_error_db": 1.67, "rms_error_db": 0.54}}`, a CSV comment, and a line in the text.
 
-**X32 / M32 snippet.** Mix buses, matrices and the mains have six EQ bands, so the correction is fitted to six bells. A console's shelf Q is its own, so no shelves are used, and the widest bell is the desk's Q 0.3. Every value is then put on the desk's own steps, and the steps either side of each value are tried while that brings the curve closer:
+**X32 / M32 snippet.** Mix buses, matrices and the mains have six EQ bands. The snippet carries the correction (as it plays, at **Amount**) and the Engineer Voicing bands that are on, combined into one curve and fitted to six bells. A console's shelf Q is its own, so no shelves are used: the voicing's shelves become bells too. The bells range from the desk's widest, Q 0.3, to its narrowest, Q 10, so a narrow voicing bell stays narrow. Every value is then put on the desk's own steps, and the steps either side of each value are tried while that brings the curve closer:
 - frequency: 201 steps, log-spaced 20 Hz–20 kHz;
 - gain: 0.25 dB steps within ±15 dB;
 - Q: the desk's 72 steps from 10 to 0.3, limited to those a one-decimal value reaches, since that is how the desk writes them.
 
-The file sets that strip's EQ on and all six of its bands (unused bands flat, so nothing already on the strip stays) and nothing else: voicing, output gain, delay and polarity stay in the plugin. Load it with X32-Edit / M32-Edit, or on the desk from a USB stick (Scenes, Snippets).
+The voicing's high- and low-pass filters aren't on the desk yet: the desk's cut filters are reportedly 12 dB/octave, so how to carry a 24 dB/octave one is still to decide. The panel names any that are left out. The graph compares the desk's curve with the correction and voicing as the plugin plays them.
+
+The file sets that strip's EQ on and all six of its bands (unused bands flat, so nothing already on the strip stays) and nothing else. Switch the plugin's correction and voicing off while the desk plays them, or the EQ is applied twice; output gain, delay and polarity stay in the plugin. Load it with X32-Edit / M32-Edit, or on the desk from a USB stick (Scenes, Snippets).
 
 ```
 #4.0# "Mains (PA)" 4 0 0 2 1                     (padded to 127 characters)
@@ -274,7 +276,7 @@ The file sets that strip's EQ on and all six of its bands (unused bands flat, so
 ...
 ```
 
-The format is the community-documented one: Patrick-Gilles Maillot's unofficial X32/M32 OSC protocol, and files desks have written. The header's masks say what the snippet recalls: EQ, and the one strip. The files were checked with the x32scene project's reader and validator, but not yet on a desk. The desk's PEQ is taken to shape a bell as the plugin does; Behringer doesn't publish how its Q is defined. To check, load the snippet, switch the plugin's correction off, and measure one position through the desk: it should land where the correction did.
+The format is the community-documented one: Patrick-Gilles Maillot's unofficial X32/M32 OSC protocol, and files desks have written. The header's masks say what the snippet recalls: EQ, and the one strip. The files were checked with the x32scene project's reader and validator, but not yet on a desk. The desk's PEQ is taken to shape a bell as the plugin does; Behringer doesn't publish how its Q is defined. To check, load the snippet, switch the plugin's correction and voicing off, and measure one position through the desk: it should land where the plugin did.
 
 **System summary.** On the Correct page, the space above the graph shows the System summary instead of the capture list. Switch with **System summary / Captures**; the other pages always show the list. It's an overview, not a replacement for the graph:
 
@@ -510,7 +512,7 @@ The harness drives the real processor against a simulated room. It checks:
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - targets as files: House exported as CSV and JSON and imported back exactly, another tool's tab-separated text file imported, and a file that isn't a target refused with its line number;
 - export: the applied correction at the current Amount, the voicing bands that are on and the output gain; JSON, CSV and text files written and read back (the JSON parses, the CSV has a row per filter); and Copy putting the same text on the clipboard;
-- the Export panel: the same text as Copy when exported as played; the correction fitted to fewer bands (JSON with the fit and its error); an X32 / M32 snippet for Matrix 2 with the right header, masks and six band lines; its choices remembered (snapshots: `-export-fit.png`, `-export-x32.png`);
+- the Export panel: the same text as Copy when exported as played; the correction fitted to fewer bands (JSON with the fit and its error); an X32 / M32 snippet for Matrix 2 with the right header, masks and six band lines, carrying the correction and the voicing's bells and shelves; its choices remembered (snapshots: `-export-fit.png`, `-export-x32.png`);
 - the modes: Tune with its four steps, Setup with Zone and Level Compensation, Show with Monitor and Engineer Voicing, only the chosen mode's button lit; Advanced showing Correct's limits; the mode and Advanced saved; and the app with no Show mode or Align step;
 - the Correct page's system summary: its filters matching the proposal, the improvement, the positions' variation, every reason shown, and the switch to the capture list and back;
 - alignment: a loopback setting the system latency (a speaker in a room refused as one); the mains at 12 m and a front fill at 3 m measured at the same spot; the fill instance seeing "Mains (PA)" through the registry, suggesting 26.25 ms, changing nothing until Apply, and then Verify arriving with the mains; a typed arrival; and a closed instance leaving the registry;

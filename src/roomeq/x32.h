@@ -1,14 +1,15 @@
 #pragma once
 
-// The correction as a Behringer X32 / Midas M32 snippet (.snp): a file the
-// desk (or X32-Edit / M32-Edit) loads to set one output strip's EQ, leaving
-// the rest of the desk as it is.
+// The correction and the engineer's voicing as a Behringer X32 / Midas M32
+// snippet (.snp): a file the desk (or X32-Edit / M32-Edit) loads to set one
+// output strip's EQ, leaving the rest of the desk as it is.
 //
 // Mix buses, matrices and the main LR and M/C strips have six EQ bands. The
-// correction, as it plays, is refitted to six bells (refit.h: no shelves, as
-// a console's shelf Q is its own; the widest bell is the desk's Q 0.3), then
-// every value is put on the desk's own steps and the steps nearest each value
-// searched for the closest curve:
+// combined curve (the correction as it plays, and the voicing's bells and
+// shelves) is refitted to six bells (refit.h: no shelves, as a console's shelf
+// Q is its own; from the desk's widest bell, Q 0.3, to its narrowest, Q 10),
+// then every value is put on the desk's own steps and the steps nearest each
+// value searched for the closest curve:
 //
 // - frequency: 201 steps, log-spaced 20 Hz-20 kHz, written "85.3" below
 //   1 kHz and "4k53" above (k for the decimal point);
@@ -32,6 +33,7 @@
 // (4: EQ), channels, aux-ins / FX returns / buses (bus n: bit 15 + n), and
 // matrices / main LR (bit 6) / M/C (bit 7) / DCAs, as signed 32-bit numbers.
 
+#include "roomeq/eqexport.h"
 #include "roomeq/filters.h"
 #include "roomeq/refit.h"
 
@@ -75,17 +77,28 @@ std::string frequencyToken (double hz);         // "85.3", "4k53", "20k00"
 std::string gainToken (double db);              // "+4.75", "-0.25", "+10.2"
 std::string qToken (double q);                  // "2.0", "0.3", "10"
 
+// What goes on the desk: the correction as it plays (gains scaled by the
+// amount) and the voicing bands that are on, as in the other exports. Not yet
+// the voicing's high- and low-pass filters: those are `passFilters`.
+struct DeskCurve
+{
+    std::vector<Band> bands;
+    std::vector<VoicingBand> passFilters;   // left out
+    bool voicing = false;                   // the curve includes voicing bands
+};
+DeskCurve deskCurve (const EqExport& e);
+
 struct Fit
 {
     std::vector<Band> bands;     // bells on the desk's steps, by frequency (at most six)
     int originalBands = 0;
-    bool refitted = false;       // the correction needed fitting to six bells
-    double maxErrorDb = 0.0;     // the desk's EQ vs the correction as it plays (refit grid)
+    bool refitted = false;       // the curve needed fitting to six bells
+    double maxErrorDb = 0.0;     // the desk's EQ vs the curve as it plays (refit grid)
     double rmsErrorDb = 0.0;
 };
 
-// The correction as played (gains already scaled by the amount), for the desk.
-Fit fitForDesk (const std::vector<Band>& correction, double fs);
+// The curve's bands (a DeskCurve's, or any bells and shelves), for the desk.
+Fit fitForDesk (const std::vector<Band>& curve, double fs);
 
 // The .snp text: header, the strip's EQ switched on, and all six bands (bands
 // past the fit's are flat, so nothing already on the strip stays). `name` is

@@ -158,18 +158,39 @@ std::string qToken (double q)
     return std::round (q * 10.0) / 10.0 >= 10.0 ? "10" : format ("%.1f", q);
 }
 
-Fit fitForDesk (const std::vector<Band>& correction, double fs)
+DeskCurve deskCurve (const EqExport& e)
+{
+    DeskCurve c;
+    c.bands = e.correction;
+    for (const auto& v : e.voicing)
+    {
+        if (! v.on)
+            continue;
+        if (! hasGain (v.type))
+        {
+            c.passFilters.push_back (v);
+            continue;
+        }
+        const auto sections = voicingSections (v);
+        for (int i = 0; i < sections.count; ++i)
+            c.bands.push_back (sections.bands[static_cast<std::size_t> (i)]);
+        c.voicing = true;
+    }
+    return c;
+}
+
+Fit fitForDesk (const std::vector<Band>& curve, double fs)
 {
     Fit fit;
-    fit.originalBands = static_cast<int> (correction.size());
-    if (correction.empty())
+    fit.originalBands = static_cast<int> (curve.size());
+    if (curve.empty())
         return fit;
-    const auto widest = bandwidthForQ (minQ);
-    const auto refit = refitBands (correction, fs, numBands, false, widest);
+    const auto widest = bandwidthForQ (minQ), narrowest = bandwidthForQ (maxQ);
+    const auto refit = refitBands (curve, fs, numBands, false, widest, narrowest);
     fit.refitted = refit.refitted;
 
     // On the desk's steps, then each value moved a step either way while that brings the curve closer.
-    const auto prob = refitProblem (correction, fs, numBands, false, widest);
+    const auto prob = refitProblem (curve, fs, numBands, false, widest, narrowest);
     std::vector<Steps> steps;
     for (const auto& b : refit.bands)
         steps.push_back ({ frequencyIndex (b.freq), static_cast<int> (std::lround (snapGain (b.gainDb) / gainStepDb)), qIndex (b.q) });

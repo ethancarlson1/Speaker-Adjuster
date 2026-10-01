@@ -30,7 +30,8 @@ std::pair<double, double> fitError (const std::vector<double>& curveDb, const st
     return { largest, active > 0 ? std::sqrt (sumSq / active) : 0.0 };
 }
 
-FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands, bool shelves, double maxOctaves)
+FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands, bool shelves, double maxOctaves,
+                         double narrowestOctaves)
 {
     const auto grid = refitGrid();
     const auto curve = responseDb (bands, grid, fs);
@@ -63,16 +64,19 @@ FitProblem refitProblem (const std::vector<Band>& bands, double fs, int maxBands
     prob.cfg.minGainDb = 0.1;
     prob.cfg.minImprovement = 0.005;
     prob.cfg.stopRmsDb = 0.02;
+    if (narrowestOctaves > 0.0)
+        prob.cfg.boostMinOctaves = prob.cfg.cutMinOctavesLow = prob.cfg.cutMinOctavesHigh = narrowestOctaves;
     return prob;
 }
 
-Refit refitBands (const std::vector<Band>& bands, double fs, int maxBands, bool shelves, double maxOctaves)
+Refit refitBands (const std::vector<Band>& bands, double fs, int maxBands, bool shelves, double maxOctaves,
+                  double narrowestOctaves)
 {
     const auto hasShelf = std::any_of (bands.begin(), bands.end(), [] (const Band& b) { return b.kind != BandKind::bell; });
     if (static_cast<int> (bands.size()) <= maxBands && (shelves || ! hasShelf))
         return { bands, false, static_cast<int> (bands.size()), 0.0, 0.0 };
 
-    const auto prob = refitProblem (bands, fs, maxBands, shelves, maxOctaves);
+    const auto prob = refitProblem (bands, fs, maxBands, shelves, maxOctaves, narrowestOctaves);
     const auto forward = maxBands > 0 ? fitBands (prob) : std::vector<Band> {};
     const auto backward = pruneBands (bands, prob, maxBands);
     const auto costForward = fitCost (prob, responseDb (forward, prob.freqs, fs));

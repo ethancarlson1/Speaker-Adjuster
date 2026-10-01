@@ -2038,6 +2038,13 @@ int main (int argc, char** argv)
                 check (snp.size() == 8 && snp[0].length() == 127 && snp[0].startsWith ("#4.0# \"") && snp[0].contains ("\" 4 0 0 2 1")
                            && snp[1] == "/mtx/02/eq ON" && bandLines && ep.getSummary().contains ("Matrix 2"),
                        "export panel: an X32 / M32 snippet for Matrix 2 (" + ep.getSummary() + ")");
+                const auto voicingShapes = std::count_if (exp.voicing.begin(), exp.voicing.end(),
+                                                          [] (const roomeq::VoicingBand& v) { return v.on && roomeq::hasGain (v.type); });
+                const auto deskCurve = roomeq::x32::deskCurve (exp);
+                check (static_cast<int> (deskCurve.bands.size()) == count + static_cast<int> (voicingShapes)
+                           && ep.getFitText().contains (voicingShapes > 0 ? "for the correction and voicing" : "for the correction,"),
+                       "export panel: the desk's EQ carries the correction and " + juce::String (static_cast<int> (voicingShapes))
+                           + " voicing bells and shelves (" + ep.getFitText() + ")");
                 ep.setSize (ExportPanel::preferredWidth, ExportPanel::preferredHeight);
                 writeSnapshot (ep, stem + "-export-x32.png");
 
