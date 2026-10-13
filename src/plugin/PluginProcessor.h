@@ -161,8 +161,13 @@ public:
     // The console's signal as it arrives, before the EQ (the channels averaged
     // to mono), for the spectrogram's Console view (plugin only).
     SampleFifo& getConsoleFifo() { return consoleFifo; }
-    // Which the show view's spectrogram shows. Saved with the session.
-    enum class SpectrogramSource { mic = 0, console };
+    // The same with the mic, interleaved (console, mic, console, mic, ...) so the
+    // two stay together, for the Delta panel. Silence while a measurement plays
+    // (the speakers aren't playing the program then). Plugin only.
+    SampleFifo& getDeltaFifo() { return deltaFifo; }
+    // What the show view's panel shows: the mic's spectrogram, the console's, or
+    // the delta between them. Saved with the session.
+    enum class SpectrogramSource { mic = 0, console, delta };
     SpectrogramSource getSpectrogramSource() const noexcept { return static_cast<SpectrogramSource> (spectrogramSource.load()); }
     void setSpectrogramSource (SpectrogramSource s) noexcept { spectrogramSource = static_cast<int> (s); }
 
@@ -215,6 +220,7 @@ private:
     SplMeter spl;
     SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips
     SampleFifo consoleFifo { 1 << 17 };
+    SampleFifo deltaFifo { 1 << 18 };   // pairs: an even size keeps them in step when the reader skips
     std::atomic<int> spectrogramSource { 0 };
     juce::TimedCallback splCollector { [this] { spl.collect(); } };   // keeps the Leqs going with the editor closed
 

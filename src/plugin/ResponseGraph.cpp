@@ -77,7 +77,8 @@ ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
     eqOnlyButton.setTooltip ("Just the EQ curves and voicing handles.");
 
     using Source = AdaptiveRoomEQProcessor::SpectrogramSource;
-    for (const auto& [button, source] : { std::pair { &micSourceButton, Source::mic }, std::pair { &consoleSourceButton, Source::console } })
+    for (const auto& [button, source] : { std::pair { &micSourceButton, Source::mic }, std::pair { &consoleSourceButton, Source::console },
+                                          std::pair { &deltaSourceButton, Source::delta } })
     {
         button->setRadioGroupId (8);
         button->setClickingTogglesState (true);
@@ -93,6 +94,11 @@ ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
     }
     micSourceButton.setTooltip ("The spectrogram of the measurement mic: what the room hears.");
     consoleSourceButton.setTooltip ("The spectrogram of the console's signal as it reaches the plugin, before the EQ: what's being sent.");
+    deltaSourceButton.setTooltip ("The mic against the console's signal before the EQ, over the last 10 s, measured from the show. "
+                                  "Above 0 dB the mic hears more of a frequency than the console sends (relative to the reference "
+                                  "band), below it less. Faint where the mic isn't hearing the console clearly: the crowd, the "
+                                  "stage, other speakers, notes the music isn't playing. The dashed line is what to expect: the "
+                                  "target with the voicing and level compensation.");
     updateCurves();
 }
 
@@ -107,7 +113,8 @@ void ResponseGraph::resized()
         eqOnlyButton.setBounds (row.removeFromRight (44));
         spectrogramButton.setBounds (row.removeFromRight (100));
         bothButton.setBounds (row.removeFromRight (60));
-        auto source = juce::Rectangle<int> (row.getX() - 124, row.getY(), 114, 21);   // a gap, then Mic / Console
+        auto source = juce::Rectangle<int> (row.getX() - 176, row.getY(), 166, 21);   // a gap, then Mic / Console / Delta
+        deltaSourceButton.setBounds (source.removeFromRight (56));
         consoleSourceButton.setBounds (source.removeFromRight (66));
         micSourceButton.setBounds (source);
     }
@@ -120,12 +127,179 @@ void ResponseGraph::showPanelChanged()
     bothButton.setToggleState (panel == Panel::both, juce::dontSendNotification);
     spectrogramButton.setToggleState (panel == Panel::spectrogram, juce::dontSendNotification);
     eqOnlyButton.setToggleState (panel == Panel::eq, juce::dontSendNotification);
-    const auto console = processor.getSpectrogramSource() == AdaptiveRoomEQProcessor::SpectrogramSource::console;
-    micSourceButton.setToggleState (! console, juce::dontSendNotification);
-    consoleSourceButton.setToggleState (console, juce::dontSendNotification);
-    for (auto* b : { &micSourceButton, &consoleSourceButton })   // only with a spectrogram to switch
+    using Source = AdaptiveRoomEQProcessor::SpectrogramSource;
+    const auto source = processor.getSpectrogramSource();
+    micSourceButton.setToggleState (source == Source::mic, juce::dontSendNotification);
+    consoleSourceButton.setToggleState (source == Source::console, juce::dontSendNotification);
+    deltaSourceButton.setToggleState (source == Source::delta, juce::dontSendNotification);
+    spectrogramButton.setButtonText (source == Source::delta ? "Delta" : "Spectrogram");
+    spectrogramButton.setTooltip (source == Source::delta ? "Just the Delta graph." : "Just the spectrogram (the last 20 s, newest at the top).");
+    for (auto* b : { &micSourceButton, &consoleSourceButton, &deltaSourceButton })   // only with a spectrogram or delta to switch
         b->setVisible (showsSpectrogram());
     repaint();
+}
+
+bool ResponseGraph::showsDelta() const
+{
+    return showsSpectrogram() && processor.getSpectrogramSource() == AdaptiveRoomEQProcessor::SpectrogramSource::delta;
+}
+
+bool ResponseGraph::updateDelta()
+{
+    const auto fs = processor.getSampleRate();
+    if (fs <= 0.0)
+        return false;
+    auto& fifo = processor.getDeltaFifo();
+    const auto band = processor.getReferenceBand();
+    if (delta == nullptr || ! juce::exactlyEqual (delta->sampleRate(), fs))
+        delta = std::make_unique<roomeq::LiveDeltaTracker> (fs, band);
+    delta->setReferenceBand (band);
+    deltaPairs.resize (8192);
+    deltaConsole.resize (deltaPairs.size() / 2);
+    deltaMic.resize (deltaPairs.size() / 2);
+    for (;;)
+    {
+        const auto skippedBefore = fifo.skipped();
+        const auto n = fifo.pull (deltaPairs.data(), static_cast<int> (deltaPairs.size()));
+        if (fifo.skipped() != skippedBefore)   // fell behind: what follows doesn't continue what came before
+            delta = std::make_unique<roomeq::LiveDeltaTracker> (fs, band);
+        if (n <= 0)
+            break;
+        const auto pairs = static_cast<std::size_t> (n / 2);
+        for (std::size_t i = 0; i < pairs; ++i)
+        {
+            deltaConsole[i] = deltaPairs[2 * i];
+            deltaMic[i] = deltaPairs[2 * i + 1];
+        }
+        delta->push (deltaConsole.data(), deltaMic.data(), pairs);
+    }
+    const auto frames = delta->framesAveraged();
+    const auto delay = delta->delaySamples();
+    if (frames == deltaFramesShown && delay == deltaDelayShown && juce::exactlyEqual (band.first, deltaBandShown.first)
+        && juce::exactlyEqual (band.second, deltaBandShown.second))
+        return false;
+    deltaFramesShown = frames;
+    deltaDelayShown = delay;
+    deltaBandShown = band;
+    deltaShown = delta->result();
+    return true;
+}
+
+std::vector<double> ResponseGraph::deltaAim() const
+{
+    const auto& grid = deltaShown.grid;
+    if (grid.empty())
+        return {};
+    const auto fs = processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0;
+    auto aim = processor.getTarget().db (grid);
+    const auto add = [&aim] (const std::vector<double>& db)
+    {
+        for (std::size_t i = 0; i < aim.size(); ++i)
+            aim[i] += db[i];
+    };
+    if (lastEq.voicingOn)
+        add (roomeq::responseDb (processor.getVoicingSections(), grid, fs));
+    if (processor.getLoudnessSettings().on && processor.getLoudness().getInfo().calibrated)
+        add (roomeq::responseDb (loudnessBands (processor.getLoudnessStatus()), grid, fs));
+    double sum = 0.0;
+    int count = 0;
+    for (std::size_t i = 0; i < grid.size(); ++i)
+        if (grid[i] >= deltaBandShown.first && grid[i] <= deltaBandShown.second)
+        {
+            sum += aim[i];
+            ++count;
+        }
+    if (count > 0)
+        for (auto& v : aim)
+            v -= sum / count;
+    return aim;
+}
+
+juce::String ResponseGraph::deltaStatus() const
+{
+    if (! deltaShown.delayMs)
+        return "Delta: waiting for music at both the console and the mic";
+    if (deltaShown.frames < 4)
+        return juce::String::fromUTF8 ("Delta: averaging\xe2\x80\xa6");
+    if (std::none_of (deltaShown.valid.begin(), deltaShown.valid.end(), [] (bool v) { return v; }))
+        return "Delta: the mic isn't hearing the console clearly";
+    return {};
+}
+
+void ResponseGraph::drawDelta (juce::Graphics& g, juce::Rectangle<float> area) const
+{
+    g.setColour (theme::plane);
+    g.fillRect (area);
+    const auto& d = deltaShown;
+    if (d.grid.empty() || d.frames == 0)
+        return;
+    const auto n = d.grid.size();
+    const auto zeroY = eqYFor (0.0, area);
+    const auto at = [&] (std::size_t i) { return juce::Point<float> (xFor (d.grid[i], area), eqYFor (juce::jlimit (eqBottom, eqTop, d.deltaDb[i]), area)); };
+
+    // Filled from 0 dB to the curve where it's reliable: warm above, cool below.
+    juce::Path fill, reliable, faint;
+    for (std::size_t i = 0; i < n;)
+    {
+        if (! d.valid[i])
+        {
+            ++i;
+            continue;
+        }
+        auto j = i;
+        while (j + 1 < n && d.valid[j + 1])
+            ++j;
+        fill.startNewSubPath (at (i).withY (zeroY));
+        reliable.startNewSubPath (at (i));
+        for (auto k = i; k <= j; ++k)
+        {
+            fill.lineTo (at (k));
+            if (k > i)
+                reliable.lineTo (at (k));
+        }
+        fill.lineTo (at (j).withY (zeroY));
+        fill.closeSubPath();
+        i = j + 1;
+    }
+    {
+        juce::Graphics::ScopedSaveState clip (g);
+        g.reduceClipRegion (area.withBottom (zeroY).toNearestInt());
+        g.setColour (theme::orange.withAlpha (0.35f));
+        g.fillPath (fill);
+    }
+    {
+        juce::Graphics::ScopedSaveState clip (g);
+        g.reduceClipRegion (area.withTop (zeroY).toNearestInt());
+        g.setColour (theme::blue.withAlpha (0.35f));
+        g.fillPath (fill);
+    }
+    // The whole curve, faint, then the reliable parts over it.
+    auto drawing = false;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        if (! std::isfinite (d.deltaDb[i]))
+        {
+            drawing = false;
+            continue;
+        }
+        drawing ? faint.lineTo (at (i)) : faint.startNewSubPath (at (i));
+        drawing = true;
+    }
+    g.setColour (theme::muted.withAlpha (0.55f));
+    g.strokePath (faint, juce::PathStrokeType (1.0f));
+    g.setColour (theme::ink);
+    g.strokePath (reliable, juce::PathStrokeType (2.0f));
+
+    // What to expect: the target with the voicing and level compensation.
+    const auto aim = deltaAim();
+    juce::Path aimPath;
+    for (std::size_t i = 0; i < aim.size(); ++i)
+    {
+        const juce::Point<float> pt (xFor (d.grid[i], area), eqYFor (juce::jlimit (eqBottom, eqTop, aim[i]), area));
+        i == 0 ? aimPath.startNewSubPath (pt) : aimPath.lineTo (pt);
+    }
+    g.setColour (theme::ink2.withAlpha (0.8f));
+    strokeDashed (g, aimPath, 1.4f, 6.0f, 4.0f);
 }
 
 const Spectrogram& ResponseGraph::shownSpectrogram() const
@@ -135,7 +309,7 @@ const Spectrogram& ResponseGraph::shownSpectrogram() const
 
 float ResponseGraph::showButtonsWidth() const
 {
-    return showsSpectrogram() ? 346.0f : 222.0f;   // Mic / Console, then Both / Spectrogram / EQ
+    return showsSpectrogram() ? 398.0f : 222.0f;   // Mic / Console / Delta, then Both / Spectrogram / EQ
 }
 
 bool ResponseGraph::showsSpectrogram() const
@@ -152,10 +326,15 @@ void ResponseGraph::timerCallback()
 {
     // The spectrogram keeps up while it's on screen (a session can open in the
     // show view before the editor has a window, so the timer runs regardless).
-    if (! showsSpectrogram() || ! isShowing())
+    if (! isShowing())
+        return;
+    const auto deltaMoved = updateDelta();   // always, so the average is ready when Delta is picked
+    if (! showsSpectrogram())
         return;
     spectrogram.update();          // both, so switching shows the last 20 s at once
     consoleSpectrogram.update();
+    if (showsDelta() && ! deltaMoved)
+        return;
     repaint (eqArea().expanded (2.0f).toNearestInt());
 }
 
@@ -197,7 +376,7 @@ void ResponseGraph::setShowMode (bool shouldShow)
         for (auto* b : { &bothButton, &spectrogramButton, &eqOnlyButton })
             b->setVisible (showMode);
         if (! showMode)
-            for (auto* b : { &micSourceButton, &consoleSourceButton })
+            for (auto* b : { &micSourceButton, &consoleSourceButton, &deltaSourceButton })
                 b->setVisible (false);
         if (showMode)
             startTimerHz (30);
@@ -329,15 +508,34 @@ juce::Rectangle<float> ResponseGraph::eqArea() const
 
 void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> area) const
 {
-    const auto spectrum = showsSpectrogram(), eq = showsEq();
+    const auto spectrum = showsSpectrogram(), eq = showsEq(), deltaView = showsDelta();
     const auto reserve = showButtonsWidth();
     const auto& shown = shownSpectrogram();
     const auto console = &shown == &consoleSpectrogram;
-    if (spectrum)
+    if (deltaView)
+        drawDelta (g, area);
+    else if (spectrum)
         shown.draw (g, area.toNearestInt(), eq ? 0.7f : 1.0f);
     if (eq)
     {
-        drawEq (g, area, spectrum, reserve);
+        std::vector<LegendItem> extra;
+        if (deltaView)
+            extra = { { "Delta (mic vs console)", theme::ink, false, "Delta" }, { "Expected", theme::ink2, true, "Expected" } };
+        drawEq (g, area, spectrum, reserve, extra);
+    }
+    else if (deltaView)
+    {
+        drawFrequencyAxis (g, area, true);
+        drawEqAxis (g, area);
+        g.setColour (theme::axis);
+        g.drawRect (area, 1.0f);
+        // Legend row: what it is, the key, and how late the mic hears the console.
+        const auto rowY = area.getY() - 22.0f;
+        const auto right = area.getRight() - reserve - 12.0f;
+        drawLegend (g, { area.getX(), rowY + 2.0f },
+                    { { "Delta (mic vs console)", theme::ink, false, "Delta" }, { "mic louder", theme::orange, false, "louder" },
+                      { "quieter", theme::blue, false }, { "expected", theme::ink2, true } },
+                    right);
     }
     else
     {
@@ -373,12 +571,27 @@ void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> are
         g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
                     juce::Rectangle<float> (0.0f, area.getBottom() - 12.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
     }
-    if (spectrum && ! shown.hearsSignal())
+    const auto status = deltaView ? deltaStatus()
+                        : spectrum && ! shown.hearsSignal()
+                            ? juce::String (console ? "Spectrogram: waiting for the console's signal" : "Spectrogram: waiting for the mic")
+                            : juce::String();
+    if (status.isNotEmpty())
     {
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (13.0f));
-        g.drawText (console ? "Spectrogram: waiting for the console's signal" : "Spectrogram: waiting for the mic",
-                    area.withTrimmedTop (area.getHeight() * 0.3f).withHeight (20.0f), juce::Justification::centred);
+        g.drawText (status, area.withTrimmedTop (area.getHeight() * 0.3f).withHeight (20.0f), juce::Justification::centred);
+    }
+    // How late the mic hears the console, in the corner (over the axes).
+    if (deltaView && deltaShown.delayMs)
+    {
+        g.setFont (juce::FontOptions (12.0f));
+        const auto text = "mic " + juce::String (*deltaShown.delayMs, 1) + " ms after the console, last 10 s";
+        const auto box = juce::Rectangle<float> (area.getX() + 8.0f, area.getY() + 6.0f,
+                                                 juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text) + 12.0f, 18.0f);
+        g.setColour (theme::plane.withAlpha (0.85f));
+        g.fillRoundedRectangle (box, 3.0f);
+        g.setColour (theme::ink2);
+        g.drawText (text, box, juce::Justification::centred);
     }
 }
 
@@ -393,8 +606,19 @@ juce::String ResponseGraph::showHoverText (juce::Point<float> p) const
     const auto panel = eqArea();
     if (showMode && panel.contains (p) && ! curves.grid.empty())
     {
-        const auto i = nearestIndex (curves.grid, hzFor (p.x, panel));
+        const auto hz = hzFor (p.x, panel);
+        const auto i = nearestIndex (curves.grid, hz);
         auto text = theme::formatHz (curves.grid[i]);
+        if (showsDelta() && ! deltaShown.grid.empty() && deltaShown.frames > 0)
+        {
+            const auto k = nearestIndex (deltaShown.grid, hz);
+            const auto db = deltaShown.deltaDb[k];
+            text << "   |   delta ";
+            if (! std::isfinite (db))
+                text << "not measured";
+            else
+                text << (db > 0.05 ? "+" : "") << juce::String (db, 1) << " dB" << (deltaShown.valid[k] ? "" : " (unreliable)");
+        }
         if (showsEq())
         {
             text << "   |   correction " << juce::String (curves.applied[i], 1) << " dB, voicing " << juce::String (curves.voicing[i], 1) << " dB";
@@ -698,15 +922,17 @@ void ResponseGraph::drawResponse (juce::Graphics& g, juce::Rectangle<float> area
         }
 }
 
-void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool overImage, float reserveRight) const
+void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool overImage, float reserveRight,
+                            const std::vector<LegendItem>& extraLegend) const
 {
     drawFrequencyAxis (g, area, true);
     drawEqAxis (g, area);
     g.setColour (theme::axis);
     g.drawRect (area, 1.0f);
 
-    std::vector<LegendItem> legend { { curves.correctionOn ? "System Correction" : "System Correction (off)", theme::aqua, ! curves.correctionOn,
-                                       curves.correctionOn ? "Correction" : "Correction (off)" } };
+    auto legend = extraLegend;
+    legend.push_back ({ curves.correctionOn ? "System Correction" : "System Correction (off)", theme::aqua, ! curves.correctionOn,
+                        curves.correctionOn ? "Correction" : "Correction (off)" });
     if (curves.showProposal)
         legend.push_back ({ "Proposed (not applied)", theme::aqua.withAlpha (0.7f), true, "Proposed" });
     legend.push_back ({ curves.voicingOn ? "Engineer Voicing" : "Engineer Voicing (off)", theme::magenta, ! curves.voicingOn,

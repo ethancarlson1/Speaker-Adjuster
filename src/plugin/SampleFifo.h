@@ -32,7 +32,10 @@ public:
         const auto w = written.load (std::memory_order_acquire);
         const auto safe = static_cast<std::uint64_t> (ring.size() / 2);
         if (w - read > safe)
+        {
+            skippedSoFar += w - safe - read;
             read = w - safe;
+        }
         const auto n = static_cast<int> (std::min<std::uint64_t> (w - read, static_cast<std::uint64_t> (std::max (0, max))));
         for (int i = 0; i < n; ++i)
             dest[i] = ring[static_cast<std::size_t> (read++ % ring.size())];
@@ -40,9 +43,11 @@ public:
     }
 
     std::uint64_t totalPushed() const noexcept { return written.load (std::memory_order_acquire); }
+    // Reader: how many samples it has skipped so far (what follows a skip isn't continuous with what came before).
+    std::uint64_t skipped() const noexcept { return skippedSoFar; }
 
 private:
     std::vector<float> ring;
     std::atomic<std::uint64_t> written { 0 };
-    std::uint64_t read = 0;
+    std::uint64_t read = 0, skippedSoFar = 0;
 };

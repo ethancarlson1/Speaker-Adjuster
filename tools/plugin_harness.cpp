@@ -2154,10 +2154,52 @@ int main (int argc, char** argv)
                 show.play (&music, 0.5);
                 spectrogram.update();
                 console.update();
+                showGraph->updateDelta();
             }
             const auto frames = spectrogram.getFramesAnalysed() - before, consoleFrames = console.getFramesAnalysed() - consoleBefore;
             check (frames > 20 * 20 && consoleFrames > 20 * 20 && console.hearsSignal(),
                    "22 s of music: " + juce::String (frames) + " mic and " + juce::String (consoleFrames) + " console spectrogram frames");
+
+            // The Delta graph, from the same music: the mic against the console's signal before the EQ.
+            const auto& dl = showGraph->getDelta();
+            int reliable = 0, points = 0;
+            double sumSq = 0.0;
+            const auto aim = [&]
+            {
+                // What to expect: the target, voicing and level compensation now, 0 dB on the reference band.
+                auto a = proc.getTarget().db (dl.grid);
+                const auto add = [&a] (const std::vector<double>& db) { for (std::size_t i = 0; i < a.size(); ++i) a[i] += db[i]; };
+                add (roomeq::responseDb (proc.getVoicingSections(), dl.grid, fs));
+                if (proc.getLoudnessSettings().on && proc.getLoudness().getInfo().calibrated)
+                    add (roomeq::responseDb (loudnessBands (proc.getLoudnessStatus()), dl.grid, fs));
+                const auto [lo, hi] = proc.getReferenceBand();
+                double sum = 0.0;
+                int count = 0;
+                for (std::size_t i = 0; i < a.size(); ++i)
+                    if (dl.grid[i] >= lo && dl.grid[i] <= hi)
+                    {
+                        sum += a[i];
+                        ++count;
+                    }
+                for (auto& v : a)
+                    v -= sum / count;
+                return a;
+            }();
+            for (std::size_t i = 0; i < dl.grid.size(); ++i)
+                if (dl.grid[i] >= 100.0 && dl.grid[i] <= 10000.0)
+                {
+                    ++points;
+                    if (dl.valid[i])
+                    {
+                        ++reliable;
+                        sumSq += (dl.deltaDb[i] - aim[i]) * (dl.deltaDb[i] - aim[i]);
+                    }
+                }
+            const auto rmsFromAim = reliable > 0 ? std::sqrt (sumSq / reliable) : 99.0;
+            check (dl.delayMs && *dl.delayMs > 1.0 && *dl.delayMs < 200.0 && dl.frames >= 20 && reliable > points * 8 / 10 && rmsFromAim < 4.0,
+                   "Delta: the mic " + juce::String (dl.delayMs ? *dl.delayMs : -1.0, 1) + " ms after the console, " + juce::String (dl.frames)
+                       + " frames, " + juce::String (reliable) + " of " + juce::String (points) + " points reliable (100 Hz - 10 kHz), "
+                       + juce::String (rmsFromAim, 1) + " dB RMS from what to expect");
             proc.getSpl().collect();
         }
         {
@@ -2170,7 +2212,7 @@ int main (int argc, char** argv)
             check (proc.getShowPanel() == Panel::both, "the spectrogram with the EQ over it by default");
             using Source = AdaptiveRoomEQProcessor::SpectrogramSource;
             check (proc.getSpectrogramSource() == Source::mic && &showGraph->shownSpectrogram() == &showGraph->getSpectrogram()
-                       && showGraph->getSourceButton (false).isVisible() && showGraph->getSourceButton (false).getToggleState(),
+                       && showGraph->getSourceButton (0).isVisible() && showGraph->getSourceButton (0).getToggleState(),
                    "the mic's spectrogram by default, with a Mic / Console switch");
             const auto panelHover = showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0));
             check (panelHover.contains ("correction") && panelHover.contains ("voicing"), "hovering the panel: " + panelHover);
@@ -2201,16 +2243,16 @@ int main (int argc, char** argv)
             check (proc.getEqSettings().voicing[5] == moved && ! showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0)).contains ("correction"),
                    "spectrogram only: the handles step aside");
             writeSnapshot (*editor, stem + "-show-spectrogram.png");
-            showGraph->getSourceButton (true).triggerClick();
+            showGraph->getSourceButton (1).triggerClick();
             for (int i = 0; i < 3; ++i)
                 pump (proc);
             check (proc.getSpectrogramSource() == Source::console && &showGraph->shownSpectrogram() == &showGraph->getConsoleSpectrogram()
-                       && showGraph->getSourceButton (true).getToggleState() && ! showGraph->getSourceButton (false).getToggleState(),
+                       && showGraph->getSourceButton (1).getToggleState() && ! showGraph->getSourceButton (0).getToggleState(),
                    "Console shows the console's spectrogram, and only Console is lit");
             writeSnapshot (*editor, stem + "-show-console.png");
             proc.setShowPanel (Panel::eq);
             showGraph->showPanelChanged();
-            check (! showGraph->getSourceButton (false).isVisible() && ! showGraph->getSourceButton (true).isVisible(),
+            check (! showGraph->getSourceButton (0).isVisible() && ! showGraph->getSourceButton (1).isVisible(),
                    "EQ only: no Mic / Console switch");
             writeSnapshot (*editor, stem + "-show-eq.png");
             juce::MemoryBlock saved;
@@ -2219,10 +2261,27 @@ int main (int argc, char** argv)
             restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
             check (restored.getShowPanel() == Panel::eq && restored.getSpectrogramSource() == Source::console,
                    "the choices are saved with the session");
-            showGraph->getSourceButton (false).triggerClick();
+            showGraph->getSourceButton (0).triggerClick();
             for (int i = 0; i < 3; ++i)
                 pump (proc);
             check (proc.getSpectrogramSource() == Source::mic, "Mic switches back");
+            showGraph->getSourceButton (2).triggerClick();
+            proc.setShowPanel (Panel::spectrogram);
+            showGraph->showPanelChanged();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (proc.getSpectrogramSource() == Source::delta && showGraph->showsDelta() && showGraph->getSourceButton (2).getToggleState()
+                       && showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0)).contains ("delta"),
+                   "Delta shows the delta, and hovering reads it out: " + showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0)));
+            writeSnapshot (*editor, stem + "-show-delta.png");
+            proc.setShowPanel (Panel::both);
+            showGraph->showPanelChanged();
+            const auto bothHover = showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0));
+            check (bothHover.contains ("delta") && bothHover.contains ("correction"), "Both: the delta with the EQ over it: " + bothHover);
+            writeSnapshot (*editor, stem + "-show-delta-both.png");
+            showGraph->getSourceButton (0).triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
             setParam (proc, "v6Freq", static_cast<float> (freqBefore));
             setParam (proc, "v6Gain", static_cast<float> (gainBefore));
             proc.setShowPanel (Panel::both);

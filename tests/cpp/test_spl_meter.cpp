@@ -105,10 +105,12 @@ TEST_CASE ("sample FIFO: the reader gets what's new, and skips ahead when it fal
     CHECK (fifo.pull (out.data(), 2000) == 200);           // the rest
     CHECK (out[199] == 299.0f);
     CHECK (fifo.pull (out.data(), 2000) == 0);             // nothing new
+    CHECK (fifo.skipped() == 0);
 
     for (int k = 0; k < 10; ++k)                            // 3000 more: far more than half the ring
         fifo.push (in.data(), 300);
     CHECK (fifo.pull (out.data(), 2000) == 512);           // the newest half
     CHECK (out[511] == 299.0f);
     CHECK (fifo.totalPushed() == 3300);
+    CHECK (fifo.skipped() == 3000 - 512);                  // what it couldn't keep
 }

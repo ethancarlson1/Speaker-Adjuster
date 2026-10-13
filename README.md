@@ -7,7 +7,7 @@ A VST3/AU plugin (plus a standalone app) that measures a PA in the room, correct
 - **Correct:** a conservative minimum-phase correction fitted to the average, applied on your say-so and checked by measuring through it.
 - **Engineer Voicing:** an 8-band voicing EQ on top of the correction.
 - **Level Compensation:** level calibration, level tracking and equal-loudness compensation (ISO 226:2003), so the balance approved at the reference level holds as the show gets quieter.
-- **Show:** a show mode with the mic's (or the console's) spectrogram, the EQ over it, the voicing and an SPL meter.
+- **Show:** a show mode with the mic's (or the console's) spectrogram or a live delta between them, the EQ over it, the voicing and an SPL meter.
 - **Zones:** one instance per zone (mains, subs, front fill, delay speakers) on a mono or stereo track, each judged on its own band, with a delay and polarity to line it up.
 
 So far all of this has only been checked against simulated rooms. The next step is a real PA, compared with Smaart or REW.
@@ -382,11 +382,23 @@ Its **Engineer Voicing** page is the voicing EQ, to adjust during the show. On b
 - **Spectrogram** shows it alone, with its time labels and colour key; the handles step aside.
 - **EQ** shows the curves alone, as in Tune.
 
-A **Mic / Console** switch beside it picks whose spectrogram it is, and is saved with the session too:
-- **Mic** (the default): the measurement mic, what the room hears.
-- **Console**: the console's signal as it reaches the plugin, before any of its EQ, the channels averaged to mono. It's what's being sent, so a build-up that shows on the mic and not here is the room or the PA, not the mix.
+A **Mic / Console / Delta** switch beside it picks what the panel shows, and is saved with the session too:
+- **Mic** (the default): the measurement mic's spectrogram, what the room hears.
+- **Console**: the spectrogram of the console's signal as it reaches the plugin, before any of its EQ, the channels averaged to mono. It's what's being sent, so a build-up that shows on the mic and not here is the room or the PA, not the mix.
+- **Delta**: the mic against the console's signal before the EQ, measured from the show itself over the last 10 s (the middle button then reads **Delta**, for the graph alone).
 
-Both are kept up to date while the show view is on screen, so switching shows the last 20 s at once. The legend uses short names ("Correction", "Voicing", "Level Comp.") when the window is too narrow for the full ones.
+Both spectrograms are kept up to date while the show view is on screen, so switching shows the last 20 s at once. The legend uses short names ("Correction", "Voicing", "Level Comp.") when the window is too narrow for the full ones.
+
+**The Delta graph** is a live transfer function, like a dual-FFT analyser's, on the EQ's ±12 dB scale:
+- Above 0 dB (filled warm) the mic hears more of a frequency than the console sends; below (filled blue), less. 0 dB is the reference band's average (250 Hz–4 kHz; 40–100 Hz for subs), so it shows tonal balance, not level.
+- The dashed line is what to expect: the target, with the voicing and the level compensation now, on the same 0 dB. Where the delta follows it, the tuning is holding; where it leaves it, something has changed (the room filling, the air, a different song's stage sound).
+- Faint, unfilled parts aren't reliable: the mic isn't hearing the console there (coherence under 0.5) because of the crowd, the stage, other speakers, or notes the music isn't playing.
+- The corner says how late the mic hears the console. The plugin finds that by itself (GCC-PHAT on the last 4 s, every 5 s, taken when both halves of those 4 s agree within 0.5 ms) and lines the two up before comparing.
+- Hovering reads out the delta at that frequency; with **Both**, the EQ too.
+
+How it's measured: Hann-windowed frames of about 1.4 s (65536 points at 48 kHz) every 0.5 s, averaged with a 10 s time constant; frames where the console is quieter than −70 dBFS don't count, so pauses leave it as it was; shown smoothed to 1/6 octave. While a measurement plays, the speakers aren't playing the program, so it pauses. It starts again from nothing if the plugin's window falls more than a couple of seconds behind (the show view hidden, for example).
+
+Like the old "change since soundcheck" graph (below), it moves with the stage: the mic hears drums, amps and wedges the console signal doesn't carry, or carries at another time. The coherence hides much of that but not all. It's most trustworthy in rooms where the PA is much louder than the stage, and above a few hundred hertz.
 
 The spectrogram covers the last 20 s, newest at the top. Each column is the energy in its slice of the axis, like an RTA, so pink noise reads flat. Colour is level against the loudest of the last few seconds, over 60 dB. It's an 8192-point FFT (about 6 Hz resolution) about 23 times a second, run by the UI only while the show view is on screen.
 
@@ -514,7 +526,7 @@ The harness drives the real processor against a simulated room. It checks:
 - measurements bypass the correction: with correction, voicing, level compensation shelves and high-pass all on, a sweep plays exactly as generated from its first sample, and a music capture's speakers get the music uncorrected once it has settled, with everything back afterwards;
 - selecting a capture (a position or a verify capture) highlights its curve and shows its measurement quality: a clean sweep high confidence, the rumble capture low (poor SNR at 31.5 Hz), the music capture with its coherence; Details with 100 ms of impulse response; still shown in the smallest window; and quality, coherence and impulse responses surviving the saved session;
 - level compensation: Amount at 75% (Natural) by default and the presets setting and following it, the PA's measured low end reaching it, the mic calibrator, the level calibration in the room, the tracked level against the output, the shelves the speakers get, the deadband, the high-pass, stepping aside during measurements, the re-check finding a 4 dB amp change from music, and at the default 30 s Speed a song with 6 dB dynamics barely moving the EQ while a loud song after a ballad is followed within 6 s;
-- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at the mic at 1 kHz (and not on the console's), both spectrograms keeping up with the music, and Mic / Console switching which is shown; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
+- the show view's SPL meter reading the 94 dB calibrator as 94.0 dB(A), LAeq and LCeq; the spectrogram placing a 1 kHz tone at the mic at 1 kHz (and not on the console's), both spectrograms keeping up with the music, and Mic / Console switching which is shown; the Delta graph from the same music (the delay found, the points from 100 Hz to 10 kHz reliable, and within 4 dB RMS of what to expect), its hover readout, alone and with the EQ over it; hovering it reading out the EQ; a voicing handle dragging over the spectrogram but not in Spectrogram-only; and the panel choice saved with the session;
 - zones: a mono track (and 5.1 refused), a sub measured on it and graded on 40–100 Hz, its fit staying at 150 Hz and below and cutting the room mode, switching the zone re-grading the captures and back again giving exactly the grades measured, and a saved session keeping its own range;
 - targets as files: House exported as CSV and JSON and imported back exactly, another tool's tab-separated text file imported, and a file that isn't a target refused with its line number;
 - export: the applied correction at the current Amount, the voicing bands that are on and the output gain; JSON, CSV and text files written and read back (the JSON parses, the CSV has a row per filter); and Copy putting the same text on the clipboard;

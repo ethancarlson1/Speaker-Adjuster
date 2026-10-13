@@ -3,10 +3,13 @@
 #include "plugin/EqStages.h"
 #include "plugin/MeasurementEngine.h"
 #include "plugin/Spectrogram.h"
+#include "roomeq/livedelta.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <limits>
+#include <memory>
+#include <optional>
 
 class AdaptiveRoomEQProcessor;
 
@@ -30,14 +33,24 @@ public:
     // Show view: instead of the measurements, a spectrogram with the EQ curves
     // and voicing handles over it, or either alone (Both / Spectrogram / EQ), on
     // the same frequency axis, with a readout on hover. The spectrogram is the
-    // mic's or the console's (the program as it reaches the plugin): Mic / Console.
+    // mic's or the console's (the program as it reaches the plugin), or in its
+    // place the Delta graph: the mic against the console's signal before the EQ,
+    // over the last 10 s (roomeq/livedelta.h). Mic / Console / Delta.
     void setShowMode (bool shouldShow);
     bool isShowMode() const { return showMode; }
     void showPanelChanged();                          // the processor's choice changed (tests, session restore)
     Spectrogram& getSpectrogram() { return spectrogram; }
     Spectrogram& getConsoleSpectrogram() { return consoleSpectrogram; }
     const Spectrogram& shownSpectrogram() const;      // the one the Mic / Console switch picks
-    juce::TextButton& getSourceButton (bool console) { return console ? consoleSourceButton : micSourceButton; }   // Mic / Console
+    juce::TextButton& getSourceButton (int source)   // 0 Mic, 1 Console, 2 Delta
+    {
+        return source == 2 ? deltaSourceButton : source == 1 ? consoleSourceButton : micSourceButton;
+    }
+    bool showsDelta() const;                          // the Delta graph is on screen
+    // Takes what's new from the processor's paired FIFO (the timer does, while the
+    // show view is on screen); true when the result moved. Tests call it directly.
+    bool updateDelta();
+    const roomeq::LiveDelta& getDelta() const { return deltaShown; }
     juce::String showHoverText (juce::Point<float> p) const;   // what hovering there says ("" for nothing), for tests
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
@@ -97,7 +110,9 @@ private:
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     // overImage: halos so the curves read over the spectrogram; reserveRight: room kept at the legend row's end.
-    void drawEq (juce::Graphics&, juce::Rectangle<float> area, bool overImage = false, float reserveRight = 0.0f) const;
+    // extraLegend: items put first in its legend row (the Delta graph's, under it).
+    void drawEq (juce::Graphics&, juce::Rectangle<float> area, bool overImage = false, float reserveRight = 0.0f,
+                 const std::vector<LegendItem>& extraLegend = {}) const;
     int selectedIndex() const;                          // among the fit positions, or -1
     const std::vector<double>* selectedCurve() const;   // the selected capture's curve (position or verify), or null
     juce::String selectedName() const;
@@ -139,6 +154,17 @@ private:
 
     Spectrogram spectrogram, consoleSpectrogram;
     juce::TextButton bothButton { "Both" }, spectrogramButton { "Spectrogram" }, eqOnlyButton { "EQ" };
-    juce::TextButton micSourceButton { "Mic" }, consoleSourceButton { "Console" };
+    juce::TextButton micSourceButton { "Mic" }, consoleSourceButton { "Console" }, deltaSourceButton { "Delta" };
     float showButtonsWidth() const;                   // the legend row's buttons, from the right
+
+    // The Delta graph.
+    std::unique_ptr<roomeq::LiveDeltaTracker> delta;
+    std::vector<float> deltaPairs, deltaConsole, deltaMic;
+    roomeq::LiveDelta deltaShown;
+    int deltaFramesShown = -1;
+    std::optional<std::size_t> deltaDelayShown;
+    std::pair<double, double> deltaBandShown;
+    std::vector<double> deltaAim() const;             // target + voicing + level compensation now, 0 dB on the reference band
+    void drawDelta (juce::Graphics&, juce::Rectangle<float> area) const;
+    juce::String deltaStatus() const;                 // what the graph is waiting for ("" when it has a curve)
 };
