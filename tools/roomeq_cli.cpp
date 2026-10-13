@@ -10,6 +10,7 @@
 //   roomeq_cli transfer-bands --fs 48000 --out output.f64 --mic mic.f64
 //   roomeq_cli refit --fs 48000 --bands bell:95:-6:4,low_shelf:60:2.5:0.7071 --max-bands 6
 //                    [--shelves 1 --max-octaves 3 --narrowest 0]
+//   roomeq_cli live-delta --fs 48000 --console console.f64 --mic mic.f64 [--block 4800 --band-lo 250 --band-hi 4000]
 //   roomeq_cli align-sub --fs 48000 --duration 5 --position MAINS=a.f64,b.f64 --position SUB=c.f64,d.f64
 //                        [--main-delay 0 --main-invert 0 --sub-delay 0 --sub-invert 0]
 //   roomeq_cli analyze --fs 48000 --duration 5 [--preroll 0.25] [--tail 2] [--level -12] [--smoothing 6]
@@ -26,6 +27,7 @@
 #include "roomeq/averaging.h"
 #include "roomeq/capture.h"
 #include "roomeq/correction.h"
+#include "roomeq/livedelta.h"
 #include "roomeq/loudness.h"
 #include "roomeq/quality.h"
 #include "roomeq/refit.h"
@@ -357,6 +359,24 @@ int run (int argc, char** argv)
         std::cout << "{\"refitted\":" << (r.refitted ? "true" : "false") << ",\"original_bands\":" << r.originalBands
                   << ",\"bands\":" << list (r.bands, bandJson) << ",\"max_error_db\":" << num (r.maxErrorDb)
                   << ",\"rms_error_db\":" << num (r.rmsErrorDb) << "}\n";
+        return 0;
+    }
+    if (args.command == "live-delta")
+    {
+        // Both files pushed block by block, as the plugin's UI does.
+        const auto console = readF64 (args.values.at ("console")), mic = readF64 (args.values.at ("mic"));
+        roomeq::LiveDeltaTracker tracker (cfg.fs, { args.get ("band-lo", 250.0), args.get ("band-hi", 4000.0) });
+        const auto block = static_cast<std::size_t> (args.get ("block", 4800));
+        const auto n = std::min (console.size(), mic.size());
+        for (std::size_t i = 0; i < n; i += block)
+            tracker.push (console.data() + i, mic.data() + i, std::min (block, n - i));
+        const auto r = tracker.result();
+        std::vector<double> valid;
+        for (auto v : r.valid)
+            valid.push_back (v ? 1.0 : 0.0);
+        std::cout << "{\"grid\":" << numbers (r.grid) << ",\"delta_db\":" << numbers (r.deltaDb)
+                  << ",\"coherence\":" << numbers (r.coherence) << ",\"valid\":" << numbers (valid)
+                  << ",\"delay_ms\":" << (r.delayMs ? num (*r.delayMs) : std::string ("null")) << ",\"frames\":" << r.frames << "}\n";
         return 0;
     }
     if (args.command == "align-sub")

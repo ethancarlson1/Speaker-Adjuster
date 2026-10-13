@@ -508,3 +508,37 @@ def test_refit_matches_python(max_bands, shelves, narrow):
     assert np.max(np.abs(filters.response_db(cpp_bands, grid, CFG.fs) - filters.response_db(py.bands, grid, CFG.fs))) < FIT_TOL_DB
     assert cpp["max_error_db"] == pytest.approx(py.max_error_db, abs=FIT_TOL_DB)
     assert cpp["rms_error_db"] == pytest.approx(py.rms_error_db, abs=FIT_TOL_DB)
+
+
+@pytest.mark.parametrize("stage, band", [(False, (250.0, 4000.0)), (True, (250.0, 4000.0)), (False, (40.0, 100.0))])
+def test_live_delta_matches_python(tmp_path, stage, band):
+    """The Delta panel: same delay, frames, curve, coherence and reliable points, block by block."""
+    import scipy.signal as ss
+
+    from roomeq import livedelta
+    from tests.test_livedelta import FS, pinkish, through_room
+
+    x = pinkish(20.0, 21)
+    y = through_room(x)
+    if stage:   # loud sound at the mic that the console doesn't send
+        sos = ss.butter(4, [200, 400], btype="bandpass", fs=FS, output="sos")
+        noise = ss.sosfilt(sos, np.random.default_rng(22).normal(0, 1, len(y)))
+        y = y + noise * 4 * np.std(y) / np.std(noise)
+    cpp = run_cli("live-delta", "--fs", FS, "--console", save(tmp_path, "console", x), "--mic", save(tmp_path, "mic", y),
+                  "--block", 4800, "--band-lo", band[0], "--band-hi", band[1])
+    t = livedelta.LiveDeltaTracker(FS, ref_band=band)
+    for i in range(0, len(x), 4800):
+        t.push(x[i:i + 4800], y[i:i + 4800])
+    py = t.result()
+
+    assert cpp["delay_ms"] == pytest.approx(py.delay_ms, abs=1e-9) and cpp["frames"] == py.frames
+    assert_curve(cpp["grid"], py.grid, "grid")
+    coh = as_array(cpp["coherence"])
+    assert np.array_equal(np.isnan(coh), np.isnan(py.coherence))
+    assert np.nanmax(np.abs(coh - py.coherence)) < 1e-9
+    valid = np.array(cpp["valid"], dtype=bool)
+    near = np.abs(py.coherence - livedelta.LiveDeltaConfig().coherence_min) < 1e-6
+    assert np.array_equal(valid[~near], py.valid[~near])
+    assert_curve(cpp["delta_db"], py.delta_db, "delta")
+    if stage:
+        assert not np.any(py.valid[(py.grid >= 240) & (py.grid <= 340)])
