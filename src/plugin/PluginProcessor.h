@@ -158,6 +158,13 @@ public:
     // The show view's SPL meter and spectrogram, from the mic (plugin only).
     SplMeter& getSpl() { return spl; }
     SampleFifo& getMicFifo() { return micFifo; }
+    // The console's signal as it arrives, before the EQ (the channels averaged
+    // to mono), for the spectrogram's Console view (plugin only).
+    SampleFifo& getConsoleFifo() { return consoleFifo; }
+    // Which the show view's spectrogram shows. Saved with the session.
+    enum class SpectrogramSource { mic = 0, console };
+    SpectrogramSource getSpectrogramSource() const noexcept { return static_cast<SpectrogramSource> (spectrogramSource.load()); }
+    void setSpectrogramSource (SpectrogramSource s) noexcept { spectrogramSource = static_cast<int> (s); }
 
     // The editor's mode (0 Setup, 1 Tune, 2 Show) and whether Advanced is on; saved with the session (not parameters).
     int getUiMode() const noexcept { return uiMode.load(); }
@@ -207,6 +214,8 @@ private:
     std::atomic<int> exportFormat { 0 }, exportBands { 0 }, x32Strip { 0 }, x32Number { 1 };
     SplMeter spl;
     SampleFifo micFifo { 1 << 17 };   // ~1.4 s the spectrogram can fall behind (at 48 kHz) before it skips
+    SampleFifo consoleFifo { 1 << 17 };
+    std::atomic<int> spectrogramSource { 0 };
     juce::TimedCallback splCollector { [this] { spl.collect(); } };   // keeps the Leqs going with the editor closed
 
     // Parameter values the audio thread reads each block.

@@ -466,6 +466,26 @@ void AdaptiveRoomEQProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         spl.process (mic, numSamples);
         micFifo.push (mic, numSamples);
     }
+    // The spectrogram's Console view: the program as it arrives, before anything
+    // here changes it, the channels averaged to mono (in chunks: no allocation).
+    if (! standalone)
+    {
+        const auto in = getBusBuffer (buffer, true, 0);
+        if (const auto channels = in.getNumChannels(); channels > 0)
+        {
+            constexpr int chunk = 256;
+            float mono[chunk];
+            const auto gain = 1.0f / static_cast<float> (channels);
+            for (int start = 0; start < numSamples; start += chunk)
+            {
+                const auto n = juce::jmin (chunk, numSamples - start);
+                juce::FloatVectorOperations::copyWithMultiply (mono, in.getReadPointer (0, start), gain, n);
+                for (int ch = 1; ch < channels; ++ch)
+                    juce::FloatVectorOperations::addWithMultiply (mono, in.getReadPointer (ch, start), gain, n);
+                consoleFifo.push (mono, n);
+            }
+        }
+    }
     // Counted in processed audio, not wall time, so it works however fast the host runs.
     if (micBlockPeak > micSignalFloor)
         samplesSinceMicSignal.store (0, std::memory_order_relaxed);
@@ -876,6 +896,7 @@ void AdaptiveRoomEQProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.setProperty ("x32Strip", x32Strip.load(), nullptr);
     root.setProperty ("x32Number", x32Number.load(), nullptr);
     root.setProperty ("showPanel", showPanel.load(), nullptr);
+    root.setProperty ("spectrogramSource", spectrogramSource.load(), nullptr);
     const auto custom = getCustomTarget();
     juce::ValueTree ct ("CustomTarget");
     ct.setProperty ("name", juce::String::fromUTF8 (custom.name.c_str()), nullptr);
@@ -917,6 +938,7 @@ void AdaptiveRoomEQProcessor::setStateInformation (const void* data, int sizeInB
     setExportChoice ({ static_cast<int> (root.getProperty ("exportFormat", 0)), static_cast<int> (root.getProperty ("exportBands", 0)),
                        static_cast<int> (root.getProperty ("x32Strip", 0)), static_cast<int> (root.getProperty ("x32Number", 1)) });
     showPanel = juce::jlimit (0, 2, static_cast<int> (root.getProperty ("showPanel", 0)));
+    spectrogramSource = juce::jlimit (0, 1, static_cast<int> (root.getProperty ("spectrogramSource", 0)));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

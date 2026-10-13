@@ -181,7 +181,7 @@ void Spectrogram::writeRow()
     std::fill (rowLevels.begin(), rowLevels.end(), -300.0f);
 }
 
-bool Spectrogram::hearsTheMic() const
+bool Spectrogram::hearsSignal() const
 {
     return frames > 0 && juce::Time::getMillisecondCounter() - lastDataMs <= 2000;
 }

@@ -2134,6 +2134,7 @@ int main (int argc, char** argv)
                 if (auto* gr = dynamic_cast<ResponseGraph*> (c))
                     showGraph = gr;
             auto& spectrogram = showGraph->getSpectrogram();
+            auto& console = showGraph->getConsoleSpectrogram();
             SimulatedRoom room (7.0, 41, 1e-3, 0.0);
             Show show { proc, room, 0.0, {}, {}, {} };
             Music music;
@@ -2141,17 +2142,22 @@ int main (int argc, char** argv)
             show.micSignal = [] (std::size_t n) { return static_cast<float> (0.05 * std::sin (juce::MathConstants<double>::twoPi * 1000.0 * static_cast<double> (n) / fs)); };
             show.play (nullptr, 1.0);
             spectrogram.update();
+            console.update();
             check (std::abs (spectrogram.getNewestPeakHz() / 1000.0 - 1.0) < 0.05,
                    "a 1 kHz tone at the mic shows at " + juce::String (spectrogram.getNewestPeakHz(), 0) + " Hz");
+            check (console.getFramesAnalysed() > 0 && std::abs (console.getNewestPeakHz() / 1000.0 - 1.0) > 0.05,
+                   "the console's spectrogram doesn't hear the mic's tone");
             show.micSignal = {};
-            const auto before = spectrogram.getFramesAnalysed();
+            const auto before = spectrogram.getFramesAnalysed(), consoleBefore = console.getFramesAnalysed();
             for (int s = 0; s < 44; ++s)   // the UI's timer takes what's new 30 times a second; every 0.5 s here
             {
                 show.play (&music, 0.5);
                 spectrogram.update();
+                console.update();
             }
-            const auto frames = spectrogram.getFramesAnalysed() - before;
-            check (frames > 20 * 20, "22 s of music: " + juce::String (frames) + " spectrogram frames");
+            const auto frames = spectrogram.getFramesAnalysed() - before, consoleFrames = console.getFramesAnalysed() - consoleBefore;
+            check (frames > 20 * 20 && consoleFrames > 20 * 20 && console.hearsSignal(),
+                   "22 s of music: " + juce::String (frames) + " mic and " + juce::String (consoleFrames) + " console spectrogram frames");
             proc.getSpl().collect();
         }
         {
@@ -2162,6 +2168,10 @@ int main (int argc, char** argv)
                 if (auto* gr = dynamic_cast<ResponseGraph*> (c))
                     showGraph = gr;
             check (proc.getShowPanel() == Panel::both, "the spectrogram with the EQ over it by default");
+            using Source = AdaptiveRoomEQProcessor::SpectrogramSource;
+            check (proc.getSpectrogramSource() == Source::mic && &showGraph->shownSpectrogram() == &showGraph->getSpectrogram()
+                       && showGraph->getSourceButton (false).isVisible() && showGraph->getSourceButton (false).getToggleState(),
+                   "the mic's spectrogram by default, with a Mic / Console switch");
             const auto panelHover = showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0));
             check (panelHover.contains ("correction") && panelHover.contains ("voicing"), "hovering the panel: " + panelHover);
 
@@ -2191,14 +2201,28 @@ int main (int argc, char** argv)
             check (proc.getEqSettings().voicing[5] == moved && ! showGraph->showHoverText (showGraph->getShowPanelPoint (1000.0)).contains ("correction"),
                    "spectrogram only: the handles step aside");
             writeSnapshot (*editor, stem + "-show-spectrogram.png");
+            showGraph->getSourceButton (true).triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (proc.getSpectrogramSource() == Source::console && &showGraph->shownSpectrogram() == &showGraph->getConsoleSpectrogram()
+                       && showGraph->getSourceButton (true).getToggleState() && ! showGraph->getSourceButton (false).getToggleState(),
+                   "Console shows the console's spectrogram, and only Console is lit");
+            writeSnapshot (*editor, stem + "-show-console.png");
             proc.setShowPanel (Panel::eq);
             showGraph->showPanelChanged();
+            check (! showGraph->getSourceButton (false).isVisible() && ! showGraph->getSourceButton (true).isVisible(),
+                   "EQ only: no Mic / Console switch");
             writeSnapshot (*editor, stem + "-show-eq.png");
             juce::MemoryBlock saved;
             proc.getStateInformation (saved);
             AdaptiveRoomEQProcessor restored;
             restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
-            check (restored.getShowPanel() == Panel::eq, "the choice is saved with the session");
+            check (restored.getShowPanel() == Panel::eq && restored.getSpectrogramSource() == Source::console,
+                   "the choices are saved with the session");
+            showGraph->getSourceButton (false).triggerClick();
+            for (int i = 0; i < 3; ++i)
+                pump (proc);
+            check (proc.getSpectrogramSource() == Source::mic, "Mic switches back");
             setParam (proc, "v6Freq", static_cast<float> (freqBefore));
             setParam (proc, "v6Gain", static_cast<float> (gainBefore));
             proc.setShowPanel (Panel::both);

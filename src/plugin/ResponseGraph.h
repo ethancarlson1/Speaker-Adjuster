@@ -6,6 +6,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <limits>
+
 class AdaptiveRoomEQProcessor;
 
 // The response graph. Top: each position (level-aligned), the power average,
@@ -25,13 +27,17 @@ public:
     void setData (std::shared_ptr<const MeasurementEngine::Display> display, int selectedId);
     void refresh();                                   // polled: repaints if the EQ or target changed
 
-    // Show view: instead of the measurements, the mic's spectrogram with the EQ
-    // curves and voicing handles over it, or either alone (Both / Spectrogram /
-    // EQ), on the same frequency axis, with a readout on hover.
+    // Show view: instead of the measurements, a spectrogram with the EQ curves
+    // and voicing handles over it, or either alone (Both / Spectrogram / EQ), on
+    // the same frequency axis, with a readout on hover. The spectrogram is the
+    // mic's or the console's (the program as it reaches the plugin): Mic / Console.
     void setShowMode (bool shouldShow);
     bool isShowMode() const { return showMode; }
     void showPanelChanged();                          // the processor's choice changed (tests, session restore)
     Spectrogram& getSpectrogram() { return spectrogram; }
+    Spectrogram& getConsoleSpectrogram() { return consoleSpectrogram; }
+    const Spectrogram& shownSpectrogram() const;      // the one the Mic / Console switch picks
+    juce::TextButton& getSourceButton (bool console) { return console ? consoleSourceButton : micSourceButton; }   // Mic / Console
     juce::String showHoverText (juce::Point<float> p) const;   // what hovering there says ("" for nothing), for tests
     std::function<void (int band)> onVoicingBandSelected;
     void setSelectedVoicingBand (int band);
@@ -84,8 +90,10 @@ private:
     void drawFrequencyAxis (juce::Graphics&, juce::Rectangle<float> area, bool labels) const;
     void drawLevelAxis (juce::Graphics&, juce::Rectangle<float> area) const;
     void drawEqAxis (juce::Graphics&, juce::Rectangle<float> area) const;
-    struct LegendItem { juce::String label; juce::Colour colour; bool dashed; };
-    static float drawLegend (juce::Graphics&, juce::Point<float> at, const std::vector<LegendItem>& items);   // returns where it ends
+    struct LegendItem { juce::String label; juce::Colour colour; bool dashed; juce::String shortLabel = {}; };
+    // Returns where it ends. Past maxRight, the short labels; still past it, the items that don't fit are left out.
+    static float drawLegend (juce::Graphics&, juce::Point<float> at, const std::vector<LegendItem>& items,
+                             float maxRight = std::numeric_limits<float>::max());
     void drawHover (juce::Graphics&) const;
     void drawResponse (juce::Graphics&, juce::Rectangle<float> area) const;
     // overImage: halos so the curves read over the spectrogram; reserveRight: room kept at the legend row's end.
@@ -129,6 +137,8 @@ private:
     int draggingPoint = -1;
     std::vector<std::pair<double, double>> dragPoints;
 
-    Spectrogram spectrogram;
+    Spectrogram spectrogram, consoleSpectrogram;
     juce::TextButton bothButton { "Both" }, spectrogramButton { "Spectrogram" }, eqOnlyButton { "EQ" };
+    juce::TextButton micSourceButton { "Mic" }, consoleSourceButton { "Console" };
+    float showButtonsWidth() const;                   // the legend row's buttons, from the right
 };

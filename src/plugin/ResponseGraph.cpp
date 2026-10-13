@@ -52,7 +52,9 @@ std::size_t nearestIndex (const std::vector<double>& grid, double hz)
 } // namespace
 
 ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
-    : processor (p), spectrogram (p.getMicFifo(), [&p] { return p.getSampleRate(); })
+    : processor (p),
+      spectrogram (p.getMicFifo(), [&p] { return p.getSampleRate(); }),
+      consoleSpectrogram (p.getConsoleFifo(), [&p] { return p.getSampleRate(); })
 {
     using Panel = AdaptiveRoomEQProcessor::ShowPanel;
     const std::array<std::pair<juce::TextButton*, Panel>, 3> choices { { { &bothButton, Panel::both },
@@ -70,9 +72,27 @@ ResponseGraph::ResponseGraph (AdaptiveRoomEQProcessor& p)
         };
         addChildComponent (button);
     }
-    bothButton.setTooltip ("The mic's spectrogram with the EQ curves over it: drag a voicing handle to where you see a build-up.");
-    spectrogramButton.setTooltip ("Just the mic's spectrogram (the last 20 s, newest at the top).");
+    bothButton.setTooltip ("The spectrogram with the EQ curves over it: drag a voicing handle to where you see a build-up.");
+    spectrogramButton.setTooltip ("Just the spectrogram (the last 20 s, newest at the top).");
     eqOnlyButton.setTooltip ("Just the EQ curves and voicing handles.");
+
+    using Source = AdaptiveRoomEQProcessor::SpectrogramSource;
+    for (const auto& [button, source] : { std::pair { &micSourceButton, Source::mic }, std::pair { &consoleSourceButton, Source::console } })
+    {
+        button->setRadioGroupId (8);
+        button->setClickingTogglesState (true);
+        button->setColour (juce::TextButton::buttonOnColourId, theme::blue.withAlpha (0.6f));
+        button->onClick = [this, b = button, which = source]
+        {
+            if (! b->getToggleState())   // the button being switched off clicks too
+                return;
+            processor.setSpectrogramSource (which);
+            showPanelChanged();
+        };
+        addChildComponent (button);
+    }
+    micSourceButton.setTooltip ("The spectrogram of the measurement mic: what the room hears.");
+    consoleSourceButton.setTooltip ("The spectrogram of the console's signal as it reaches the plugin, before the EQ: what's being sent.");
     updateCurves();
 }
 
@@ -82,10 +102,14 @@ void ResponseGraph::resized()
     {
         const auto area = eqArea().toNearestInt();
         spectrogram.setSize (area.getWidth(), area.getHeight());
+        consoleSpectrogram.setSize (area.getWidth(), area.getHeight());
         auto row = juce::Rectangle<int> (area.getRight() - 214, area.getY() - 25, 214, 21);
         eqOnlyButton.setBounds (row.removeFromRight (44));
         spectrogramButton.setBounds (row.removeFromRight (100));
         bothButton.setBounds (row.removeFromRight (60));
+        auto source = juce::Rectangle<int> (row.getX() - 124, row.getY(), 114, 21);   // a gap, then Mic / Console
+        consoleSourceButton.setBounds (source.removeFromRight (66));
+        micSourceButton.setBounds (source);
     }
 }
 
@@ -96,7 +120,22 @@ void ResponseGraph::showPanelChanged()
     bothButton.setToggleState (panel == Panel::both, juce::dontSendNotification);
     spectrogramButton.setToggleState (panel == Panel::spectrogram, juce::dontSendNotification);
     eqOnlyButton.setToggleState (panel == Panel::eq, juce::dontSendNotification);
+    const auto console = processor.getSpectrogramSource() == AdaptiveRoomEQProcessor::SpectrogramSource::console;
+    micSourceButton.setToggleState (! console, juce::dontSendNotification);
+    consoleSourceButton.setToggleState (console, juce::dontSendNotification);
+    for (auto* b : { &micSourceButton, &consoleSourceButton })   // only with a spectrogram to switch
+        b->setVisible (showsSpectrogram());
     repaint();
+}
+
+const Spectrogram& ResponseGraph::shownSpectrogram() const
+{
+    return processor.getSpectrogramSource() == AdaptiveRoomEQProcessor::SpectrogramSource::console ? consoleSpectrogram : spectrogram;
+}
+
+float ResponseGraph::showButtonsWidth() const
+{
+    return showsSpectrogram() ? 346.0f : 222.0f;   // Mic / Console, then Both / Spectrogram / EQ
 }
 
 bool ResponseGraph::showsSpectrogram() const
@@ -115,7 +154,8 @@ void ResponseGraph::timerCallback()
     // show view before the editor has a window, so the timer runs regardless).
     if (! showsSpectrogram() || ! isShowing())
         return;
-    spectrogram.update();
+    spectrogram.update();          // both, so switching shows the last 20 s at once
+    consoleSpectrogram.update();
     repaint (eqArea().expanded (2.0f).toNearestInt());
 }
 
@@ -156,6 +196,9 @@ void ResponseGraph::setShowMode (bool shouldShow)
         showMode = shouldShow;
         for (auto* b : { &bothButton, &spectrogramButton, &eqOnlyButton })
             b->setVisible (showMode);
+        if (! showMode)
+            for (auto* b : { &micSourceButton, &consoleSourceButton })
+                b->setVisible (false);
         if (showMode)
             startTimerHz (30);
         else
@@ -287,9 +330,11 @@ juce::Rectangle<float> ResponseGraph::eqArea() const
 void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> area) const
 {
     const auto spectrum = showsSpectrogram(), eq = showsEq();
-    const auto reserve = 222.0f;   // the Both / Spectrogram / EQ buttons
+    const auto reserve = showButtonsWidth();
+    const auto& shown = shownSpectrogram();
+    const auto console = &shown == &consoleSpectrogram;
     if (spectrum)
-        spectrogram.draw (g, area.toNearestInt(), eq ? 0.7f : 1.0f);
+        shown.draw (g, area.toNearestInt(), eq ? 0.7f : 1.0f);
     if (eq)
     {
         drawEq (g, area, spectrum, reserve);
@@ -303,7 +348,8 @@ void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> are
         const auto rowY = area.getY() - 22.0f;
         g.setFont (juce::FontOptions (12.0f));
         g.setColour (theme::ink2);
-        const auto title = "Mic spectrogram, last " + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s";
+        const auto title = juce::String (console ? "Console" : "Mic") + " spectrogram, last "
+                           + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s";
         const auto titleWidth = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), title) + 8.0f;
         g.drawText (title, juce::Rectangle<float> (area.getX(), rowY, titleWidth, 18.0f), juce::Justification::centredLeft);
         auto key = juce::Rectangle<float> (area.getRight() - reserve - 250.0f, rowY, 250.0f, 18.0f);
@@ -327,12 +373,12 @@ void ResponseGraph::drawShowPanel (juce::Graphics& g, juce::Rectangle<float> are
         g.drawText (juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (juce::roundToInt (Spectrogram::historySeconds)) + " s",
                     juce::Rectangle<float> (0.0f, area.getBottom() - 12.0f, area.getX() - 6.0f, 14.0f), juce::Justification::centredRight);
     }
-    if (spectrum && ! spectrogram.hearsTheMic())
+    if (spectrum && ! shown.hearsSignal())
     {
         g.setColour (theme::ink2);
         g.setFont (juce::FontOptions (13.0f));
-        g.drawText ("Spectrogram: waiting for the mic", area.withTrimmedTop (area.getHeight() * 0.3f).withHeight (20.0f),
-                    juce::Justification::centred);
+        g.drawText (console ? "Spectrogram: waiting for the console's signal" : "Spectrogram: waiting for the mic",
+                    area.withTrimmedTop (area.getHeight() * 0.3f).withHeight (20.0f), juce::Justification::centred);
     }
 }
 
@@ -528,12 +574,22 @@ void ResponseGraph::drawEqAxis (juce::Graphics& g, juce::Rectangle<float> area) 
     }
 }
 
-float ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const std::vector<LegendItem>& items)
+float ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const std::vector<LegendItem>& items, float maxRight)
 {
     g.setFont (juce::FontOptions (12.0f));
+    const auto widthOf = [&g] (const juce::String& label) { return juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), label); };
+    const auto labelOf = [] (const LegendItem& item, bool brief) { return brief && item.shortLabel.isNotEmpty() ? item.shortLabel : item.label; };
+    auto full = at.x;
+    for (const auto& item : items)
+        full += 24.0f + widthOf (item.label) + 18.0f;
+    const auto brief = full - 18.0f > maxRight;
     auto x = at.x;
     for (const auto& item : items)
     {
+        const auto label = labelOf (item, brief);
+        const auto w = widthOf (label);
+        if (x + 24.0f + w > maxRight)
+            break;
         juce::Path swatch;
         swatch.startNewSubPath (x, at.y + 7.0f);
         swatch.lineTo (x + 18.0f, at.y + 7.0f);
@@ -543,8 +599,7 @@ float ResponseGraph::drawLegend (juce::Graphics& g, juce::Point<float> at, const
         else
             g.strokePath (swatch, juce::PathStrokeType (2.2f));
         g.setColour (theme::ink2);
-        const auto w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), item.label);
-        g.drawText (item.label, juce::Rectangle<float> (x + 24.0f, at.y, w + 4.0f, 14.0f), juce::Justification::centredLeft);
+        g.drawText (label, juce::Rectangle<float> (x + 24.0f, at.y, w + 4.0f, 14.0f), juce::Justification::centredLeft);
         x += 24.0f + w + 18.0f;
     }
     return x - 18.0f;
@@ -650,15 +705,18 @@ void ResponseGraph::drawEq (juce::Graphics& g, juce::Rectangle<float> area, bool
     g.setColour (theme::axis);
     g.drawRect (area, 1.0f);
 
-    std::vector<LegendItem> legend { { curves.correctionOn ? "System Correction" : "System Correction (off)", theme::aqua, ! curves.correctionOn } };
+    std::vector<LegendItem> legend { { curves.correctionOn ? "System Correction" : "System Correction (off)", theme::aqua, ! curves.correctionOn,
+                                       curves.correctionOn ? "Correction" : "Correction (off)" } };
     if (curves.showProposal)
-        legend.push_back ({ "Proposed (not applied)", theme::aqua.withAlpha (0.7f), true });
-    legend.push_back ({ curves.voicingOn ? "Engineer Voicing" : "Engineer Voicing (off)", theme::magenta, ! curves.voicingOn });
+        legend.push_back ({ "Proposed (not applied)", theme::aqua.withAlpha (0.7f), true, "Proposed" });
+    legend.push_back ({ curves.voicingOn ? "Engineer Voicing" : "Engineer Voicing (off)", theme::magenta, ! curves.voicingOn,
+                        curves.voicingOn ? "Voicing" : "Voicing (off)" });
     const auto loudnessActive = curves.showLoudness && curves.loudnessOn && curves.loudnessCalibrated;
     if (curves.showLoudness)
         legend.push_back ({ ! curves.loudnessOn ? "Level Compensation (off)" : curves.loudnessCalibrated ? "Level Compensation now" : "Level Compensation (not calibrated)",
-                            theme::gold, ! loudnessActive });
-    const auto legendEnd = drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend);
+                            theme::gold, ! loudnessActive,
+                            ! curves.loudnessOn ? "Level Comp. (off)" : curves.loudnessCalibrated ? "Level Comp." : "Level Comp. (not set)" });
+    const auto legendEnd = drawLegend (g, { area.getX(), area.getY() - 22.0f }, legend, area.getRight() - reserveRight - 12.0f);
 
     // Output level match, on the legend row's right (left out when there's no room).
     {

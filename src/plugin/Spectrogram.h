@@ -9,9 +9,9 @@
 #include <functional>
 #include <vector>
 
-// The show view's spectrogram of the mic: frequency across, on the graph's
-// 20 Hz-20 kHz log axis (the EQ curves are drawn over it, and the change bars
-// above it line up), time down with the newest at the top, about 20 s of it.
+// The show view's spectrogram of the mic or of the console's signal:
+// frequency across, on the graph's 20 Hz-20 kHz log axis (the EQ curves are
+// drawn over it), time down with the newest at the top, about 20 s of it.
 //
 // Each column is the energy in its slice of the axis (the power density there
 // times its width, like an RTA), so pink noise reads flat. Colour is level against the
@@ -36,7 +36,7 @@ public:
     void update();
     // Draws it into `area` (the size given to setSize).
     void draw (juce::Graphics&, juce::Rectangle<int> area, float opacity) const;
-    bool hearsTheMic() const;   // analysed something in the last 2 s
+    bool hearsSignal() const;   // analysed a signal in the last 2 s
     int getFramesAnalysed() const { return frames; }
     double getNewestPeakHz() const { return newestPeakHz; }   // the loudest column of the newest frame
 
